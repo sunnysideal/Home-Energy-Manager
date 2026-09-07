@@ -38,8 +38,8 @@ container build time rather than vendored into this repository.
 
 ## Migrating an existing local installation
 
-Version 0.1.15 includes a one-time learned-state migration path. First upgrade the local
-Home Energy Manager installation to the local 0.1.15 migration release and set
+Version 0.1.16 includes a one-time learned-state migration path. First upgrade the local
+Home Energy Manager installation to the local 0.1.16 migration release and set
 `migration_action` to `export`. Copy `home_energy_manager_migration_v1.zip` from the
 local app config folder into this repository-installed app's config folder, stop the local
 app, then set this installation to `migration_action: import` for its first start. After

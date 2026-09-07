@@ -87,7 +87,7 @@ def export_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
             raise RuntimeError("No learned-state files exist in /data; nothing to export")
         manifest = {
             "format_version": 1,
-            "home_energy_manager_version": "0.1.15",
+            "home_energy_manager_version": "0.1.16",
             "files": files,
         }
         (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -150,7 +150,7 @@ def import_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
             restored.append(name)
         marker.write_text(json.dumps({
             "format_version": 1,
-            "imported_by_version": "0.1.15",
+            "imported_by_version": "0.1.16",
             "bundle": str(bundle),
             "files": restored,
         }, indent=2) + "\n")
@@ -159,26 +159,34 @@ def import_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
 def handle_migration(raw: dict) -> None:
     action = str(raw.get("migration_action", "none") or "none").strip().lower()
     if action == "none":
-        return
+        return "continue"
+    if action == "bootstrap":
+        ADDON_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        print(f"[manager] migration bootstrap ready: {ADDON_CONFIG_DIR}", flush=True)
+        print("[manager] no components started and no learned-state databases created", flush=True)
+        return "stop"
     if action == "export":
         export_migration_bundle()
-        return
+        return "continue"
     if action == "import":
         import_migration_bundle()
-        return
+        return "continue"
     raise RuntimeError(f"Unknown migration_action: {action}")
 
 def load_and_split_options():
     raw = json.loads(OPTIONS.read_text())
-    handle_migration(raw)
+    migration_result = handle_migration(raw)
+    if migration_result == "stop":
+        return False
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.15"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.16"
     for name, path in COMPONENT_OPTIONS.items():
         section = raw.get(name)
         if not isinstance(section, dict):
             raise RuntimeError(f"Missing or invalid configuration section: {name}")
         path.write_text(json.dumps(section, separators=(",", ":")))
+    return True
 
 def stop_all(signum=None, frame=None):
     global stopping
@@ -203,7 +211,8 @@ def stop_all(signum=None, frame=None):
     sys.exit(0 if signum is not None else 1)
 
 def main():
-    load_and_split_options()
+    if not load_and_split_options():
+        return
     signal.signal(signal.SIGTERM, stop_all)
     signal.signal(signal.SIGINT, stop_all)
 

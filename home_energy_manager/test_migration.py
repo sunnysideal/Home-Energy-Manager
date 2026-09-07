@@ -54,3 +54,12 @@ def test_import_refuses_existing_state(tmp_path):
         assert "Refusing migration import" in str(exc)
     else:
         raise AssertionError("import should refuse existing state")
+
+
+def test_bootstrap_only_creates_config_directory(tmp_path, monkeypatch):
+    config_dir = tmp_path / "addon_config"
+    monkeypatch.setattr(launcher, "ADDON_CONFIG_DIR", config_dir)
+    result = launcher.handle_migration({"migration_action": "bootstrap"})
+    assert result == "stop"
+    assert config_dir.is_dir()
+    assert not any(tmp_path.glob("*.db"))
