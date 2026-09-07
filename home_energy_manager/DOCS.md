@@ -1,5 +1,5 @@
 
-## v0.1.16 — local-to-GitHub migration support
+## v0.1.17 — local-to-GitHub migration support
 
 This release adds a safe transfer path for learned state when moving from a local
 Home Assistant installation to the GitHub repository installation.
@@ -15,7 +15,7 @@ The app maps its private `addon_config` folder at `/config` and adds an optional
   `/data` directory. Checksums and `PRAGMA integrity_check` are verified first. The import
   refuses to overwrite existing learned-state files and writes a one-time import marker.
 
-For migration: upgrade the local app to 0.1.16, set `migration_action: export`, copy the
+For migration: upgrade the local app to 0.1.17, set `migration_action: export`, copy the
 bundle from `/addon_configs/local_home_energy_manager/` into the GitHub-installed app's
 `/addon_configs/<repository-id>_home_energy_manager/` folder, stop the local app, set the
 GitHub app to `migration_action: import`, and start it. After a successful import, set the
