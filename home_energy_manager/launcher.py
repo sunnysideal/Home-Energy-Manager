@@ -133,7 +133,7 @@ def export_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
         options_copy.write_text(json.dumps(options, indent=2) + "\n")
         manifest = {
             "format_version": 2,
-            "home_energy_manager_version": "0.1.17",
+            "home_energy_manager_version": "0.1.18",
             "files": files,
             "options": {
                 "name": MIGRATION_OPTIONS_NAME,
@@ -222,14 +222,14 @@ def import_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
                 restored.append(name)
             marker.write_text(json.dumps({
                 "format_version": format_version,
-                "imported_by_version": "0.1.17",
+                "imported_by_version": "0.1.18",
                 "bundle": str(bundle),
                 "files": restored,
             }, indent=2) + "\n")
             print(f"[manager] migration import completed: {', '.join(restored) if restored else 'no learned-state files'}", flush=True)
 
         if imported_options is None:
-            raise RuntimeError("Migration bundle does not contain app configuration; export again with local v0.1.17")
+            raise RuntimeError("Migration bundle does not contain app configuration; export again with local v0.1.18")
         _restore_supervisor_options(imported_options)
 
 def handle_migration(raw: dict) -> None:
@@ -258,7 +258,7 @@ def load_and_split_options():
         return False
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.17"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.18"
     for name, path in COMPONENT_OPTIONS.items():
         section = raw.get(name)
         if not isinstance(section, dict):
