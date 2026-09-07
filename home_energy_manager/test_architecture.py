@@ -34,8 +34,8 @@ for forbidden in ("battery_soc", "export_generated", "charge_rate_w", "degree_da
     assert forbidden not in launcher, f"Energy/control logic leaked into launcher: {forbidden}"
 
 cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-assert set(cfg["options"]) == component_names | {"mqtt", "migration_action"}
-assert set(cfg["schema"]) == component_names | {"mqtt", "migration_action"}
+assert set(cfg["options"]) == component_names | {"mqtt"}
+assert set(cfg["schema"]) == component_names | {"mqtt"}
 
 print("Architecture separation checks passed.")
 

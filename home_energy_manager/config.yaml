@@ -1,5 +1,5 @@
 name: Home Energy Manager
-version: 0.1.18
+version: 0.1.20
 slug: home_energy_manager
 description: ASHP forecasting, whole-home energy forecasting and battery control in
   one add-on, with components kept strictly separate.
@@ -11,14 +11,10 @@ boot: auto
 init: false
 homeassistant_api: true
 hassio_api: true
-hassio_role: manager
+hassio_role: default
 services:
 - mqtt:want
-map:
-- type: addon_config
-  read_only: false
 options:
-  migration_action: bootstrap
   ashp_forecaster:
     ch_energy_entity: sensor.ashp_electrical_energy_ch
     outdoor_temperature_entity: sensor.ecomax360i_outdoor_temperature
@@ -82,8 +78,6 @@ options:
       discharge_target_2: ''
     load:
       energy_total_kwh: ''
-      ev_included_in_battery_load: false
-      ev_charging_entity: binary_sensor.octopus_slot_actually_charging
     solar:
       energy_total_kwh: ''
       solcast_today: sensor.solcast_pv_forecast_forecast_today
@@ -98,7 +92,6 @@ options:
       import_next_day_rates: ''
       export_current_day_rates: ''
       export_next_day_rates: ''
-      intelligent_dispatching: ''
     ashp:
       forecast_48h: sensor.ashp_forecast_next_48h
       ch_energy_total_kwh: sensor.ashp_electrical_energy_ch
@@ -106,14 +99,15 @@ options:
     meter:
       import_energy_total_kwh: ''
       export_energy_total_kwh: ''
+    ev:
+      energy_total_kwh: ''
+      smart_charging_dispatch_entity: ''
+      smart_charging_active_entity: ''
   controller:
     status_entity_id: sensor.home_energy_controller
     home_energy_forecast_entity: sensor.home_energy_forecast
     safety_buffer_soc: 20
     operation_mode: maximise_export
-    intelligent_go_enabled: true
-    intelligent_dispatch_entity: ''
-    intelligent_car_charging_entity: binary_sensor.octopus_slot_actually_charging
     power_down_enabled: true
     power_down_events_entity: ''
     power_down_import_baseline_entity: ''
@@ -143,6 +137,9 @@ options:
     rate_match_tolerance_pct: 5
     rate_match_tolerance_w: 100
     controller_refresh_timeout_seconds: 90
+    ev_smart_charging_enabled: true
+    ev_smart_charging_dispatch_entity: ''
+    ev_smart_charging_active_entity: binary_sensor.octopus_slot_actually_charging
   mqtt:
     enabled: true
     auto_discover_broker: true
@@ -155,7 +152,6 @@ options:
     topic_prefix: home_energy_manager
     migrate_legacy_states: true
 schema:
-  migration_action: list(bootstrap|none|export|import)?
   ashp_forecaster:
     ch_energy_entity: str
     outdoor_temperature_entity: str
@@ -219,8 +215,6 @@ schema:
       discharge_target_2: str
     load:
       energy_total_kwh: str
-      ev_included_in_battery_load: bool
-      ev_charging_entity: str
     solar:
       energy_total_kwh: str
       solcast_today: str
@@ -235,7 +229,6 @@ schema:
       import_next_day_rates: str
       export_current_day_rates: str
       export_next_day_rates: str
-      intelligent_dispatching: str
     ashp:
       forecast_48h: str
       ch_energy_total_kwh: str
@@ -243,14 +236,15 @@ schema:
     meter:
       import_energy_total_kwh: str?
       export_energy_total_kwh: str?
+    ev:
+      energy_total_kwh: str
+      smart_charging_dispatch_entity: str
+      smart_charging_active_entity: str
   controller:
     status_entity_id: str
     home_energy_forecast_entity: str
     safety_buffer_soc: int(1,99)
     operation_mode: list(maximise_export|minimise_export|export_generated)
-    intelligent_go_enabled: bool
-    intelligent_dispatch_entity: str
-    intelligent_car_charging_entity: str
     power_down_enabled: bool
     power_down_events_entity: str
     power_down_import_baseline_entity: str
@@ -281,6 +275,9 @@ schema:
     rate_match_tolerance_pct: float
     rate_match_tolerance_w: int
     controller_refresh_timeout_seconds: int(30,600)
+    ev_smart_charging_enabled: bool
+    ev_smart_charging_dispatch_entity: str
+    ev_smart_charging_active_entity: str
   mqtt:
     enabled: bool
     auto_discover_broker: bool

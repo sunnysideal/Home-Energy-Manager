@@ -111,7 +111,7 @@ When the remaining target is at least all energy available above inverter reserv
 
 Deep calibration uses the same principle. A deep-calibration discharge is a long discharge-to-reserve window. Once actual SOC at reserve is observed, the controller records the low endpoint and waits `reserve_dwell_minutes` (default 30) before allowing the full recharge to 100%.
 
-In `export_generated` mode, `PauseCharge` is scheduled across one continuous forecast-defined solar window, from the first to the last `forecast_no_slots` interval whose forecast PV exceeds the configured equivalent-power threshold (default 100 W). Instantaneous PV is deliberately ignored so clouds do not make the pause state chatter. Small forecast gaps inside the window remain paused, encouraging direct PV export rather than battery round-tripping. A confirmed Intelligent Go half-hour preserves this solar `PauseCharge` when no battery top-up is required; a genuinely required cheap charge may temporarily override it.
+In `export_generated` mode, `PauseCharge` is scheduled across one continuous forecast-defined solar window, from the first to the last `forecast_no_slots` interval whose forecast PV exceeds the configured equivalent-power threshold (default 100 W). Instantaneous PV is deliberately ignored so clouds do not make the pause state chatter. Small forecast gaps inside the window remain paused, encouraging direct PV export rather than battery round-tripping. A confirmed EV Smart Charging half-hour preserves this solar `PauseCharge` when no battery top-up is required; a genuinely required cheap charge may temporarily override it.
 
 
 ## v0.1.6: Forecaster-driven entity discovery
@@ -303,16 +303,16 @@ export-generated discharge, maximise-export discharge and calibration. The
 quantity discharged is controlled by the slot start/end times.
 
 
-## v0.1.14: confirmed Intelligent Go half-hours
+## v0.1.14: confirmed EV Smart Charging half-hours
 
-Adds current-slot Intelligent Go control using:
+Adds current-slot EV Smart Charging control using:
 
 `binary_sensor.octopus_slot_actually_charging`
 
-(default; configurable as `intelligent_car_charging_entity`).
+(default; configurable as `ev_smart_charging_active_entity`).
 
 Rules:
-- Future/planned Intelligent dispatches are never assumed to be cheap.
+- Future/planned EV Smart Charging dispatches are never assumed to be cheap.
 - The first observed `on` confirms the entire enclosing 30-minute settlement
   period as cheap.
 - Confirmation remains valid until the half-hour boundary even if the sensor
@@ -335,9 +335,9 @@ and also watches half-hour boundaries, so export can resume/replan promptly when
 a confirmed slot ends.
 
 
-## v0.1.15: planned Intelligent dispatches defer new normal export
+## v0.1.15: planned EV Smart Charging dispatches defer new normal export
 
-Adds `intelligent_dispatch_entity`, pointing at BottlecapDave's Intelligent
+Adds `ev_smart_charging_dispatch_entity`, pointing at BottlecapDave's Intelligent
 dispatch entity containing `planned_dispatches`.
 
 Planned dispatches remain advisory only:
@@ -385,9 +385,9 @@ existing `finally` path, the database is committed/closed, and the process exits
 normally rather than looking like an application crash.
 
 
-## v0.1.17: Intelligent Go uses PauseDischarge when no top-up is needed
+## v0.1.17: EV Smart Charging uses PauseDischarge when no top-up is needed
 
-A confirmed Intelligent Go half-hour no longer charges the house battery merely
+A confirmed EV Smart Charging half-hour no longer charges the house battery merely
 because the normal overnight mode target is above current SOC.
 
 If the no-slots forecast already carries the battery to the normal off-peak
@@ -469,7 +469,7 @@ Behaviour:
 - if a scheduled wake-up is superseded by a controller-refresh publication
   before it is handled, it is discarded and control waits for the next scheduled
   forecast.
-- Intelligent Go confirmation/dispatch changes remain force wake-ups and are
+- EV Smart Charging confirmation/dispatch changes remain force wake-ups and are
   coalesced without losing their force semantics.
 - logs now include the forecast sequence, trigger and generation timestamp used
   for every control pass.
@@ -492,7 +492,7 @@ Control transaction barrier:
   barrier; that forecast remains display-only and is never a normal control input.
 - the next scheduled forecast after the barrier clears is the next normal
   controller input.
-- forced Intelligent Go/dispatch wake-ups remain able to re-evaluate immediately.
+- forced EV Smart Charging/dispatch wake-ups remain able to re-evaluate immediately.
 
 Timing diagnostics:
 - every process logs elapsed time for learning, planning, change calculation,
@@ -551,7 +551,7 @@ The discharge target invariant remains unchanged: target SOC is always the
 configured reserve and discharge quantity is controlled only by slot duration.
 
 
-## v0.1.23: Intelligent Go overlay + EV-adjusted export
+## v0.1.23: EV Smart Charging overlay + EV-adjusted export
 
 - House-side export is no longer assumed to be utility-grid export. A persistent
   30-second accounting stream credits export only when the car-charging signal
@@ -562,7 +562,7 @@ configured reserve and discharge quantity is controlled only by slot duration.
   car-charging export remain visible as diagnostics.
 - The regular overnight cheap period is no longer used to pre-export the current
   day's forecast solar generation.
-- Confirmed Intelligent Go now overlays the normal plan. If no extra charge is
+- Confirmed EV Smart Charging now overlays the normal plan. If no extra charge is
   useful, the future overnight charge schedule is preserved and the confirmed
   half-hour uses PauseDischarge.
 - A confirmed daytime Intelligent slot may force-charge only the extra stored
@@ -578,7 +578,7 @@ configured reserve and discharge quantity is controlled only by slot duration.
 ## v0.1.24: authoritative controller rules
 
 - Added `AGENTS.md` as the authoritative behavioural contract for future changes.
-- Added explicit hard invariants for export timing, Intelligent Go, EV-adjusted export accounting,
+- Added explicit hard invariants for export timing, EV Smart Charging, EV-adjusted export accounting,
   discharge target, overnight charging, safety buffer, and Power Down.
 - Added `test_invariants.py` to mechanically check key invariants before release.
 - Added an `app.py` source header requiring future maintainers/AI agents to read `AGENTS.md`
@@ -592,11 +592,11 @@ configured reserve and discharge quantity is controlled only by slot duration.
   house load or discharge losses rather than becoming grid export.
 - The controller still aims for the full generation-matched export first. If the
   full target would cross the guardrail, the evening export is shortened.
-- A confirmed daytime Intelligent Go slot evaluates the same full-target SOC
+- A confirmed daytime EV Smart Charging slot evaluates the same full-target SOC
   requirement. If extra stored energy is needed, it charges only enough to make
   the full generation-matched export reachable while preserving the safety
   buffer at the regular off-peak boundary.
-- Planned Intelligent dispatches remain advisory only; energy is not assumed
+- Planned EV Smart Charging dispatches remain advisory only; energy is not assumed
   until a settlement half-hour is actually confirmed cheap.
 
 
@@ -621,5 +621,5 @@ for inverter/battery-side export metering.
 - Export Generated derives a continuous daytime PauseCharge window from `forecast_no_slots` only.
 - The default meaningful-PV threshold is 100 W equivalent (`export_generated_solar_threshold_w`) and is scaled to the forecast slot duration.
 - Instantaneous PV power is not used, avoiding cloud-driven pause toggling.
-- Confirmed Intelligent Go preserves the solar PauseCharge window when no top-up is needed, but required cheap charging still overrides it.
+- Confirmed EV Smart Charging preserves the solar PauseCharge window when no top-up is needed, but required cheap charging still overrides it.
 - Actual/credited export accounting and the generation-matching target are unchanged.

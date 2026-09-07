@@ -71,9 +71,9 @@ def resolve_dynamic_thresholds(client: "HAClient", cfg: Config) -> Config:
     if not (math.isfinite(winter_below) and math.isfinite(summer_above)):
         LOG.warning("Summer-mode threshold entity values are not finite; using configured fallback")
         return cfg
-    if winter_below >= summer_above:
+    if winter_below > summer_above:
         raise ValueError(
-            f"Invalid summer-mode thresholds from Home Assistant: off={winter_below}, on={summer_above}"
+            f"Inverted summer-mode thresholds from Home Assistant: off={winter_below}, on={summer_above}"
         )
     return replace(cfg, winter_mode_below_c=winter_below, summer_mode_above_c=summer_above)
 
@@ -614,9 +614,9 @@ def build_training(client: HAClient, store: Store, cfg: Config, tz: ZoneInfo) ->
                 winter_below = fallback_off
             if summer_above is None:
                 summer_above = fallback_on
-            if winter_below >= summer_above:
+            if winter_below > summer_above:
                 LOG.warning(
-                    "Ignoring training day %s because historical thresholds are invalid at %s: %.2f/%.2f C",
+                    "Ignoring training day %s because historical thresholds are inverted at %s: %.2f/%.2f C",
                     day, cursor.isoformat(), winter_below, summer_above,
                 )
                 slots = []

@@ -276,14 +276,14 @@ class Controller:
         return {'start':a,'end':b}
 
     async def intelligent_planned_slots(self):
-        """Return future/current planned Intelligent dispatch intervals.
+        """Return future/current planned EV Smart Charging dispatch intervals.
 
         These are advisory only. They must never be treated as guaranteed cheap
         energy. They are used solely to avoid *starting* a normal export that
         would overlap an upcoming planned car-dispatch window.
         """
-        entity=str(self.c.get('intelligent_dispatch_entity','')).strip()
-        if not self.c.get('intelligent_go_enabled',True) or not entity:
+        entity=str(self.c.get('ev_smart_charging_dispatch_entity','')).strip()
+        if not self.c.get('ev_smart_charging_enabled',True) or not entity:
             return []
         st=await self.ha.state(entity)
         if not st:return []
@@ -302,16 +302,16 @@ class Controller:
         return sorted(out,key=lambda z:z[0])
 
     async def intelligent_go_info(self):
-        """Confirm an Intelligent Go settlement slot from the user's reliable sensor.
+        """Confirm an EV Smart Charging settlement slot from the user's reliable sensor.
 
         A single observed ON at any point confirms the whole enclosing 30-minute
         settlement period. Confirmation is persisted until the slot boundary so
         a brief sensor OFF or controller restart cannot make the controller
         resume export within that already-confirmed cheap half-hour.
         """
-        entity=str(self.c.get('intelligent_car_charging_entity',
-                              'binary_sensor.octopus_slot_actually_charging')).strip()
-        if not self.c.get('intelligent_go_enabled',True) or not entity:
+        entity=str(self.c.get('ev_smart_charging_active_entity',
+                              '')).strip()
+        if not self.c.get('ev_smart_charging_enabled',True) or not entity:
             return {'enabled':False,'entity_id':entity,'sensor_on':False,'confirmed':False,
                     'slot_start':None,'slot_end':None}
         st=await self.ha.state(entity)
@@ -327,7 +327,7 @@ class Controller:
                 prior=self.db.get('intelligent_confirmed_slot')
                 if not isinstance(prior,dict) or prior.get('start')!=iso(a) or prior.get('end')!=iso(b):
                     self.db.set('intelligent_confirmed_slot',{'start':iso(a),'end':iso(b)})
-                    LOG.info('Intelligent Go slot confirmed by %s: %s-%s',
+                    LOG.info('EV Smart Charging slot confirmed by %s: %s-%s',
                              entity,a.strftime('%H:%M'),b.strftime('%H:%M'))
         confirmed=slot is not None
         return {
@@ -386,8 +386,8 @@ class Controller:
             return None
 
         export_entity=str(self.c.get('grid_export_energy_total_entity','')).strip()
-        car_entity=str(self.c.get('intelligent_car_charging_entity',
-                                  'binary_sensor.octopus_slot_actually_charging')).strip()
+        car_entity=str(self.c.get('ev_smart_charging_active_entity',
+                                  '')).strip()
         if not export_entity:
             return None
 
@@ -642,7 +642,7 @@ class Controller:
         """Return extra stored battery kWh needed for the full export target.
 
         This uses exactly the same SOC-depletion model as the evening guardrail.
-        A confirmed daytime Intelligent slot can therefore add only the energy
+        A confirmed daytime EV Smart Charging slot can therefore add only the energy
         required to make the full generation-matched export reachable while the
         predicted SOC at regular off-peak arrival remains at/above the buffer.
         """
@@ -1444,13 +1444,13 @@ class Controller:
                     discharge_kind='none'
                     planned_export=0.0
 
-        # Planned Intelligent dispatches are advisory only, but they block the
+        # Planned EV Smart Charging dispatches are advisory only, but they block the
         # START of a new normal export. This avoids beginning an export shortly
         # before a likely car-charging slot and then exporting into the car.
         #
         # Important distinctions:
         #   * an already-active export is NOT stopped for a merely planned slot;
-        #   * a confirmed Intelligent slot still pre-empts active export;
+        #   * a confirmed EV Smart Charging slot still pre-empts active export;
         #   * Power Down export is not blocked by a merely planned Intelligent
         #     slot because Power Down is a known paid event.
         planned_block=None
@@ -1466,7 +1466,7 @@ class Controller:
                 # assume the dispatch is real; simply avoid starting export now.
                 # The controller will replan at/after the boundary from fresh
                 # export totals and SOC.
-                LOG.info('Deferring export %s-%s because Intelligent dispatch is planned %s-%s',
+                LOG.info('Deferring export %s-%s because EV Smart Charging dispatch is planned %s-%s',
                          es.strftime('%H:%M'),de.strftime('%H:%M'),
                          planned_block[0].strftime('%H:%M'),planned_block[1].strftime('%H:%M'))
                 es=planned_block[1].replace(second=0,microsecond=0)
@@ -1566,14 +1566,14 @@ class Controller:
             if cs and ce and cs.astimezone(self.tz)<=n<ce.astimezone(self.tz) and not waiting_for_floor and not export_waiting_floor:
                 cstart=cs.astimezone(self.tz); cend=control_w['end'].replace(second=0,microsecond=0); rate=int(self.confirmed.get('charge_rate_w',rate)); target=int(self.confirmed.get('charge_target_soc',target)); needs_charge=True
 
-        # Confirmed Intelligent Go is a hard current-slot override.
+        # Confirmed EV Smart Charging is a hard current-slot override.
         #
         charge_slot_target=int(target)
 
         # A confirmed slot is cheap for the whole enclosing 30-minute settlement
         # period. Never force export during it.
         #
-        # Intelligent Go overlays the normal plan. If no extra charge is useful,
+        # EV Smart Charging overlays the normal plan. If no extra charge is useful,
         # preserve the normal future charge slot and just PauseDischarge. If the
         # current confirmed half-hour is genuinely useful for cheap charging,
         # temporarily use slot 1 for that half-hour; the next control pass
@@ -1683,7 +1683,7 @@ class Controller:
             'calibration':self.calibration_attrs(),
             'intelligent_go':{
                 'enabled':bool(intelligent.get('enabled')),
-                'dispatch_entity':str(self.c.get('intelligent_dispatch_entity','')).strip() or None,
+                'dispatch_entity':str(self.c.get('ev_smart_charging_dispatch_entity','')).strip() or None,
                 'planned_dispatches':[{'start':iso(a),'end':iso(b)} for a,b,_e in intelligent_planned],
                 'export_deferred_for_planned':bool(planned_block),
                 'planned_block_start':iso(planned_block[0]) if planned_block else None,
@@ -1879,7 +1879,7 @@ class Controller:
             LOG.info('Plan: mode=%s calibration=%s offpeak=%s-%s charge=%s-%s @ %dW target=%d%% est_charge_start_soc=%s%% discharge=%s-%s @ %dW kind=%s no_slots_offpeak_soc=%d%% forced_soc_adjust=%.1f%% reachable=%s plan_changed=%s inverter_writes=%d',p['operation']['mode'],p['calibration']['state'],parse_dt(p['offpeak']['start']).strftime('%H:%M'),parse_dt(p['offpeak']['end']).strftime('%H:%M'),parse_dt(p['charge']['start']).strftime('%H:%M'),parse_dt(p['charge']['end']).strftime('%H:%M'),p['charge']['rate_w'],p['charge']['target_soc'],str(p['forecast'].get('estimated_charge_start_soc')),parse_dt(p['discharge']['start']).strftime('%H:%M'),parse_dt(p['discharge']['end']).strftime('%H:%M'),p['discharge']['rate_w'],p['discharge'].get('kind','timed'),p['forecast']['overnight_start_soc_no_slots'],float(p['forecast'].get('planned_discharge_soc_adjustment_pct') or 0),str(p['forecast'].get('charge_target_reachable')),'yes' if self.changes else 'no',self.confirmed_writes_this_apply)
             if p.get('intelligent_go',{}).get('confirmed'):
                 ig=p['intelligent_go']
-                LOG.info('Intelligent Go: confirmed slot=%s-%s sensor=%s state=%s export_suspended=yes pause=%s charge_reason=%s charge_target=%s export_topup_needed=%.2fkWh export_shortfall=%.2fkWh',
+                LOG.info('EV Smart Charging: confirmed slot=%s-%s sensor=%s state=%s export_suspended=yes pause=%s charge_reason=%s charge_target=%s export_topup_needed=%.2fkWh export_shortfall=%.2fkWh',
                          parse_dt(ig['slot_start']).strftime('%H:%M'),
                          parse_dt(ig['slot_end']).strftime('%H:%M'),
                          ig.get('confirmation_entity'),ig.get('sensor_state'),
@@ -2179,13 +2179,13 @@ async def main():
             pass
 
     forecast_entity=await resolve_forecast_entity(ha,cfg)
-    intelligent_entity=str(cfg.get('intelligent_car_charging_entity','binary_sensor.octopus_slot_actually_charging')).strip()
-    intelligent_dispatch_entity=str(cfg.get('intelligent_dispatch_entity','')).strip()
+    intelligent_entity=str(cfg.get('ev_smart_charging_active_entity','')).strip()
+    intelligent_dispatch_entity=str(cfg.get('ev_smart_charging_dispatch_entity','')).strip()
     # Forecast events are wake-up signals, not forecast snapshots. Keep at most
     # one pending wake-up and always read the CURRENT HA forecast when handling
     # it. This prevents a FIFO backlog of obsolete forecast objects.
     #
-    # A force wake-up (Intelligent confirmation/planned-dispatch change) is
+    # A force wake-up (EV Smart Charging confirmation/planned-dispatch change) is
     # sticky when coalescing so it cannot be lost behind a scheduled forecast.
     event_queue=asyncio.Queue(maxsize=1)
     subscription_ready=asyncio.Event()

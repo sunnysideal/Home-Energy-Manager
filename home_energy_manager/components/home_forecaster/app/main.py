@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import sqlite3
+import statistics
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, time as dtime, timedelta, timezone
@@ -196,6 +197,13 @@ class Store:
     def count_days(self, table: str) -> int:
         row = self.db.execute(f"SELECT COUNT(DISTINCT day) FROM {table}").fetchone()
         return int(row[0]) if row else 0
+
+    def profile_values(self, profile: str) -> list[float]:
+        rows = self.db.execute(
+            "SELECT energy_kwh FROM fallback_slots WHERE profile=? ORDER BY day,start_iso",
+            (profile,),
+        ).fetchall()
+        return [float(r["energy_kwh"]) for r in rows]
 
     def prune_before(self, day: date) -> None:
         ds = day.isoformat()
@@ -465,14 +473,8 @@ def model_day(client: HAClient, store: Store, cfg: Config, day: date, tz: ZoneIn
     ch_e = cfg.section("ashp")["ch_energy_total_kwh"]
     dhw_e = cfg.section("ashp")["dhw_energy_total_kwh"]
     pv_e = cfg.section("solar")["energy_total_kwh"]
-    load_cfg = cfg.section("load")
-    ev_included = bool(load_cfg.get("ev_included_in_battery_load", False))
-    ev_e = str(load_cfg.get("ev_charging_entity") or "").strip()
-    entities = [load_e, ch_e, dhw_e, pv_e]
-    if ev_included:
-        if not ev_e:
-            raise HAError("EV is configured as included in battery house load but load.ev_charging_entity is blank")
-        entities.append(ev_e)
+    ev_e = str(cfg.section("ev").get("energy_total_kwh") or "").strip()
+    entities = [load_e, ch_e, dhw_e, pv_e] + ([ev_e] if ev_e else [])
     start, end = day_bounds(day, tz)
     # Ask for a little lead-in so a state before midnight is available for nearest-before differencing.
     hist = client.history(entities, start - timedelta(hours=2), end, timeout=90)
@@ -489,16 +491,15 @@ def model_day(client: HAClient, store: Store, cfg: Config, day: date, tz: ZoneIn
         ch = 0.0 if ch_raw is None else ch_raw
         dhw = 0.0 if dhw_raw is None else dhw_raw
 
-        # Baseline learning requires total load; CH/DHW may safely fall back to zero if absent.
-        # EV load is never learned/forecast. If the configured battery load includes
-        # the EV, omit any interval where EV charging was active or cannot be ruled out.
-        ev_clean = True
-        if ev_included:
-            ev_state = ev_active_during(hist.get(ev_e, []), a, b)
-            ev_clean = (ev_state is False)
-        if load is not None and ev_clean:
+        # Baseline is the battery-side house load. EV is modelled separately at
+        # the true-grid boundary and therefore is not subtracted here.
+        if load is not None:
             baseline = max(min_slot_kwh, load - ch - dhw)
             store.save_baseline(day, a, slot_key(a), baseline)
+        if ev_e:
+            ev = diff_cumulative(hist.get(ev_e, []), a, b)
+            if ev is not None and ev >= 0:
+                store.save_fallback(day, "ev", a, slot_key(a), ev)
 
         # Fallback profiles and DHW learning are independent of total-load availability.
         if pv is not None:
@@ -666,6 +667,60 @@ def parse_dispatches(state: dict[str, Any] | None, attr: str) -> list[tuple[date
     return out
 
 
+def parse_smart_dispatches(state: dict[str, Any] | None, attr: str) -> list[dict[str, Any]]:
+    if not state:
+        return []
+    val = state.get("attributes", {}).get(attr, [])
+    if isinstance(val, str):
+        try: val = json.loads(val)
+        except Exception: val = []
+    out=[]
+    for x in val if isinstance(val,list) else []:
+        if not isinstance(x,dict): continue
+        try:
+            start=parse_dt(x.get("start") or x.get("start_time") or x.get("dispatch_start"))
+            end=parse_dt(x.get("end") or x.get("end_time") or x.get("dispatch_end"))
+            if end<=start: continue
+        except Exception:
+            continue
+        energy=None
+        for key in ("energy_kwh","charge_kwh","charge_in_kwh","energy","kwh"):
+            try:
+                if x.get(key) is not None:
+                    energy=float(x[key]); break
+            except (TypeError,ValueError): pass
+        power=None
+        for key in ("power_kw","charge_power_kw","chargePointPowerInKw","power"):
+            try:
+                if x.get(key) is not None:
+                    power=float(x[key]); break
+            except (TypeError,ValueError): pass
+        out.append({"start":start,"end":end,"energy_kwh":energy,"power_kw":power,"raw":x})
+    return out
+
+def learned_ev_power_kw(store: Store) -> float | None:
+    # Historical cumulative CT energy is stored in half-hour fallback slots.
+    # Ignore tiny standby/noise values and use the median active-slot power.
+    vals=[v for v in store.profile_values("ev") if v >= 0.20]
+    if not vals: return None
+    return statistics.median(vals) / 0.5
+
+def ev_energy_for_slot(start: datetime, end: datetime, dispatches: list[dict[str, Any]], learned_kw: float | None) -> float:
+    total=0.0
+    for d in dispatches:
+        ds,de=d["start"],d["end"]
+        lo=max(start.astimezone(timezone.utc),ds.astimezone(timezone.utc))
+        hi=min(end.astimezone(timezone.utc),de.astimezone(timezone.utc))
+        overlap_h=max(0.0,(hi-lo).total_seconds()/3600.0)
+        if overlap_h<=0: continue
+        dur_h=max(1e-9,(de.astimezone(timezone.utc)-ds.astimezone(timezone.utc)).total_seconds()/3600.0)
+        if d.get("energy_kwh") is not None:
+            total += max(0.0,float(d["energy_kwh"])) * overlap_h/dur_h
+        else:
+            kw=d.get("power_kw") if d.get("power_kw") is not None else learned_kw
+            if kw is not None: total += max(0.0,float(kw))*overlap_h
+    return total
+
 def interval_overlaps(a: datetime, b: datetime, x: datetime, y: datetime) -> bool:
     return a.astimezone(timezone.utc) < y.astimezone(timezone.utc) and x.astimezone(timezone.utc) < b.astimezone(timezone.utc)
 
@@ -823,13 +878,8 @@ def recent_baseline_multiplier(client: HAClient, store: Store, cfg: Config, now:
     load_e = cfg.section("load")["energy_total_kwh"]
     ch_e = cfg.section("ashp")["ch_energy_total_kwh"]
     dhw_e = cfg.section("ashp")["dhw_energy_total_kwh"]
-    load_cfg = cfg.section("load")
-    ev_included = bool(load_cfg.get("ev_included_in_battery_load", False))
-    ev_e = str(load_cfg.get("ev_charging_entity") or "").strip()
     start = now - timedelta(hours=RECENT_LOOKBACK_HOURS + 1)
     entities = [load_e, ch_e, dhw_e]
-    if ev_included and ev_e:
-        entities.append(ev_e)
     hist = client.history(entities, start, now, timeout=45)
     floor = float(cfg.setting("minimum_baseline_w", 200)) / 1000 * 0.5
     now_floor = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
@@ -837,12 +887,6 @@ def recent_baseline_multiplier(client: HAClient, store: Store, cfg: Config, now:
     actual_sum = expected_sum = 0.0
     valid = 0
     for a, b in zip(boundaries[:-1], boundaries[1:]):
-        if ev_included:
-            if not ev_e:
-                continue
-            ev_state = ev_active_during(hist.get(ev_e, []), a, b)
-            if ev_state is not False:
-                continue
         load = diff_cumulative(hist.get(load_e, []), a, b)
         if load is None:
             continue
@@ -1421,11 +1465,24 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
         target_end = target_start + timedelta(hours=6)
         reasons.append("Regular overnight cheap block could not be identified reliably: 23:30-05:30 fallback used")
 
-    dispatch_state = client.state_optional(t["intelligent_dispatching"])
-    planned = parse_dispatches(dispatch_state, "planned_dispatches")
+    ev_cfg = cfg.section("ev")
+    dispatch_entity = str(ev_cfg.get("smart_charging_dispatch_entity") or "").strip()
+    active_entity = str(ev_cfg.get("smart_charging_active_entity") or "").strip()
+    dispatch_state = client.state_optional(dispatch_entity) if dispatch_entity else None
+    planned_details = parse_smart_dispatches(dispatch_state, "planned_dispatches")
+    planned = [(d["start"], d["end"]) for d in planned_details]
     completed = parse_dispatches(dispatch_state, "completed_dispatches")
+    learned_ev_kw = learned_ev_power_kw(store)
+    # A live active entity confirms the current settlement half-hour even if the
+    # supplier has not yet reflected it in planned_dispatches.
+    if active_entity and bool_state(client.state_optional(active_entity)):
+        cur_start = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
+        cur_end = cur_start + timedelta(minutes=30)
+        if not any(interval_overlaps(cur_start, cur_end, d["start"], d["end"]) for d in planned_details):
+            planned_details.append({"start":cur_start,"end":cur_end,"energy_kwh":None,"power_kw":None,"raw":{"confirmed":True}})
+            planned.append((cur_start,cur_end))
     if dispatch_state is None:
-        reasons.append("Intelligent dispatch entity unavailable: dynamic cheap slots ignored")
+        reasons.append("EV Smart Charging dispatch entity unavailable: dynamic cheap slots and EV forecast ignored")
 
     # Simulate both scenarios from the same world inputs:
     #   forecast          = current programmed inverter slots included
@@ -1447,6 +1504,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
         if any(interval_overlaps(s, e, ds, de) for ds, de in planned) and cheap_rate_p is not None:
             ir = cheap_rate_p
 
+        ev_kwh = ev_energy_for_slot(s, e, planned_details, learned_ev_kw)
         slot = {
             "start_dt": s, "duration_h": dh, "baseline_kwh": base,
             "ch_kwh": ch, "dhw_kwh": dhw,
@@ -1463,11 +1521,16 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             slot, batt, soc_kwh, charge_eff, discharge_eff
         )
         soc_pct = int(round(100 * soc_kwh / batt["capacity"]))
+        # EV sits outside the battery/inverter grid meter but inside the true
+        # utility meter. Add EV at that boundary without changing battery SOC.
+        true_net = imp - exp + ev_kwh
+        imp, exp = max(0.0, true_net), max(0.0, -true_net)
         import_cost = imp * ir if ir is not None else 0.0
         export_income = exp * er if er is not None else 0.0
         out = {
             "start": s.isoformat(),
             "baseline_kwh": round(base, 2), "ch_kwh": round(ch, 2), "dhw_kwh": round(dhw, 2),
+            "ev_kwh": round(ev_kwh, 2),
             "load_kwh": round(base + ch + dhw, 2), "pv_kwh": round(pv, 2),
             "battery_kwh": round(batt_kwh, 2),
             "import_kwh": round(imp, 2), "export_kwh": round(exp, 2), "soc": pre_soc_pct,
@@ -1489,11 +1552,14 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             slot, no_slots_batt, no_slots_soc_kwh, charge_eff, discharge_eff
         )
         no_soc_pct = int(round(100 * no_slots_soc_kwh / batt["capacity"]))
+        no_true_net = no_imp - no_exp + ev_kwh
+        no_imp, no_exp = max(0.0, no_true_net), max(0.0, -no_true_net)
         no_import_cost = no_imp * ir if ir is not None else 0.0
         no_export_income = no_exp * er if er is not None else 0.0
         no_out = {
             "start": s.isoformat(),
             "baseline_kwh": round(base, 2), "ch_kwh": round(ch, 2), "dhw_kwh": round(dhw, 2),
+            "ev_kwh": round(ev_kwh, 2),
             "load_kwh": round(base + ch + dhw, 2), "pv_kwh": round(pv, 2),
             "battery_kwh": round(no_batt_kwh, 2),
             "import_kwh": round(no_imp, 2), "export_kwh": round(no_exp, 2), "soc": no_pre_soc_pct,
@@ -1620,9 +1686,10 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             "export_entity": exp_e,
             "import_source": import_meter_source,
             "export_source": export_meter_source,
-            "ev_included_in_battery_load": bool(cfg.section("load").get("ev_included_in_battery_load", False)),
-            "ev_charging_entity": str(cfg.section("load").get("ev_charging_entity") or ""),
-            "ev_forecasted": False,
+            "ev_energy_entity": str(cfg.section("ev").get("energy_total_kwh") or ""),
+            "ev_smart_charging_dispatch_entity": str(cfg.section("ev").get("smart_charging_dispatch_entity") or ""),
+            "ev_smart_charging_active_entity": str(cfg.section("ev").get("smart_charging_active_entity") or ""),
+            "ev_forecasted": True,
         },
         "controller_inputs": {
             "version": 4,
@@ -1659,7 +1726,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
                 "max_discharge_rate_w": int(round(float(batt["max_rate_w"]))),
                 "grid_import_meter_source": import_meter_source,
                 "grid_export_meter_source": export_meter_source,
-                "ev_included_in_battery_load": bool(cfg.section("load").get("ev_included_in_battery_load", False)),
+                "ev_energy_entity": str(cfg.section("ev").get("energy_total_kwh") or ""),
             },
         },
         "today": {
@@ -1704,12 +1771,8 @@ def completed_load_slots(client: HAClient, cfg: Config, day: date, now: datetime
         return []
     load_cfg = cfg.section("load")
     entity = load_cfg["energy_total_kwh"]
-    ev_included = bool(load_cfg.get("ev_included_in_battery_load", False))
-    ev_e = str(load_cfg.get("ev_charging_entity") or "").strip()
-    entities = [entity] + ([ev_e] if ev_included and ev_e else [])
-    all_hist = client.history(entities, start - timedelta(hours=2), floor_end, timeout=60)
+    all_hist = client.history([entity], start - timedelta(hours=2), floor_end, timeout=60)
     hist = all_hist.get(entity, [])
-    ev_hist = all_hist.get(ev_e, []) if ev_e else []
     boundaries = real_half_hours(start, floor_end)
     if not boundaries or boundaries[0] != start:
         boundaries.insert(0, start)
@@ -1717,10 +1780,6 @@ def completed_load_slots(client: HAClient, cfg: Config, day: date, now: datetime
         boundaries.append(floor_end)
     out: list[dict[str, Any]] = []
     for a, b in zip(boundaries[:-1], boundaries[1:]):
-        if ev_included:
-            ev_state = ev_active_during(ev_hist, a, b) if ev_e else None
-            if ev_state is not False:
-                continue
         val = diff_cumulative(hist, a, b)
         if val is None or val < 0:
             continue
@@ -1883,8 +1942,9 @@ def model_signature(cfg: Config) -> str:
         "history_days": int(cfg.setting("history_days", 28)),
         "minimum_baseline_w": int(cfg.setting("minimum_baseline_w", 200)),
         "load": cfg.section("load").get("energy_total_kwh"),
-        "ev_included_in_battery_load": bool(cfg.section("load").get("ev_included_in_battery_load", False)),
-        "ev_charging_entity": cfg.section("load").get("ev_charging_entity"),
+        "ev_energy_entity": cfg.section("ev").get("energy_total_kwh"),
+        "ev_smart_charging_dispatch_entity": cfg.section("ev").get("smart_charging_dispatch_entity"),
+        "ev_smart_charging_active_entity": cfg.section("ev").get("smart_charging_active_entity"),
         "ch": cfg.section("ashp").get("ch_energy_total_kwh"),
         "dhw": cfg.section("ashp").get("dhw_energy_total_kwh"),
         "pv": cfg.section("solar").get("energy_total_kwh"),

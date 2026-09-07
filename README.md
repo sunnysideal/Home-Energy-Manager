@@ -38,12 +38,4 @@ container build time rather than vendored into this repository.
 
 ## Migrating an existing local installation
 
-Version 0.1.17 includes a one-time learned-state migration path. First upgrade the local
-Home Energy Manager installation to the local 0.1.17 migration release and set
-`migration_action` to `export`. Copy `home_energy_manager_migration_v1.zip` from the
-local app config folder into this repository-installed app's config folder, stop the local
-app, then set this installation to `migration_action: import` for its first start. After
-the import succeeds, return the setting to `none`.
-
-The migration bundle transfers the three learned SQLite databases and the last forecast;
-Home Assistant Supervisor options are copied separately in the app configuration UI.
+Home Energy Manager is now distributed directly from this GitHub repository.

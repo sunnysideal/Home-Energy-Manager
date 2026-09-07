@@ -1,27 +1,9 @@
+## v0.1.19 — zero-width ASHP hysteresis
 
-## v0.1.18 — local-to-GitHub migration support
-
-This release adds a safe transfer path for learned state when moving from a local
-Home Assistant installation to the GitHub repository installation.
-
-The app maps its private `addon_config` folder at `/config` and adds an optional
-`migration_action` setting:
-
-- `none` — normal operation (default).
-- `export` — before starting the engines, create
-  `/config/home_energy_manager_migration_v1.zip` from the persistent learned-state files.
-  SQLite databases are copied with SQLite's backup API and integrity-checked.
-- `import` — before starting the engines, validate and restore that bundle into a fresh
-  `/data` directory. Checksums and `PRAGMA integrity_check` are verified first. The import
-  refuses to overwrite existing learned-state files and writes a one-time import marker.
-
-For migration: upgrade the local app to 0.1.18, set `migration_action: export`, copy the
-bundle from `/addon_configs/local_home_energy_manager/` into the GitHub-installed app's
-`/addon_configs/<repository-id>_home_energy_manager/` folder, stop the local app, set the
-GitHub app to `migration_action: import`, and start it. After a successful import, set the
-action back to `none`. Supervisor options themselves are deliberately not included in the
-bundle; copy those through the Home Assistant app configuration UI.
-
+- Equal summer-mode thresholds are valid and are treated as zero-width hysteresis.
+- Only inverted historical thresholds (lower threshold greater than upper threshold) are rejected.
+- The completed one-off local-to-GitHub migration machinery has been removed.
+- Supervisor access is reduced from the temporary migration `manager` role to the default role; MQTT service discovery remains enabled.
 
 ## 0.1.5 compatibility fixes
 

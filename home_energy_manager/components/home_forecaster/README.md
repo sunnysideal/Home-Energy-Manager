@@ -95,7 +95,7 @@ The add-on retains:
 - Solcast PV
 - GivEnergy battery simulation
 - Octopus import/export tariffs
-- Intelligent dispatch tariff treatment
+- EV Smart Charging dispatch tariff treatment
 - frozen midnight forecast comparison entity
 - 5-minute forecast cycle and startup forecast
 - persistent model/history cache
