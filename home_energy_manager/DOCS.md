@@ -1,226 +1,244 @@
-## v0.1.19 — zero-width ASHP hysteresis
+# Home Energy Manager
 
-- Equal summer-mode thresholds are valid and are treated as zero-width hysteresis.
-- Only inverted historical thresholds (lower threshold greater than upper threshold) are rejected.
-- The completed one-off local-to-GitHub migration machinery has been removed.
-- Supervisor access is reduced from the temporary migration `manager` role to the default role; MQTT service discovery remains enabled.
+Home Energy Manager combines three separate engines in one Home Assistant app:
 
-## 0.1.5 compatibility fixes
+- **ASHP Energy Forecaster** — learns and forecasts CH/DHW electrical demand.
+- **Home Energy Forecaster** — forecasts house load, ASHP, PV, EV, grid, battery SOC and cost.
+- **Home Energy Controller** — plans and applies battery charge/discharge/pause settings.
 
-- Existing installations no longer fail configuration validation when `export_generated_solar_threshold_w` is absent; the controller retains its 100 W code default.
-- The controller auto-discovers the Home Energy Forecast sensor when an MQTT registry migration has given it a different entity ID.
-- MQTT discovery now supplies `default_entity_id` so fresh installs request canonical short entity IDs such as `sensor.home_energy_forecast`.
-- The launcher now reports the package version consistently.
+> Stop any old standalone copies before running this app. Do not run two controller instances against the same inverter.
 
-# Home Energy Manager v0.1.4
+## Configuration guidance
 
-Single Home Assistant add-on package containing three deliberately separate components:
+The Configuration tab contains inline names and descriptions for every option. This document contains the same settings as a complete reference.
 
-- **ASHP Energy Forecaster v0.2.0**
-- **Home Energy Forecaster v0.2.10**
-- **Home Energy Controller v0.1.27**
+**Entity IDs:** enter the complete Home Assistant entity ID, such as `sensor.example`. Fields described as cumulative energy should normally use monotonically increasing kWh sensors rather than instantaneous power sensors.
 
-The merge is packaging/orchestration only. The three engines remain separate processes,
-separate source directories, separate configuration namespaces, and separate databases.
-They continue to communicate through the same Home Assistant entities/API as the current
-standalone add-ons.
+**Optional fields:** fields shown as optional may be left blank/omitted. If you explicitly configure a true utility meter, Home Energy Manager treats it as authoritative rather than silently changing accounting source when it is unavailable.
 
-## Important before first start
+**EV Smart Charging:** this is supplier-independent terminology. The dispatch entity should expose planned smart-charging slots (including Kraken-style `planned_dispatches` where available); the EV energy entity is the measured cumulative kWh source used to learn charging power.
 
-**Stop and disable the three standalone add-ons before starting Home Energy Manager.**
+## ASHP forecaster
 
-In particular, do not run the standalone Home Energy Controller at the same time as this
-package: both would be capable of writing the inverter.
+Learns space-heating and hot-water demand from historical Home Assistant data and publishes a forward ASHP energy forecast.
 
-The new add-on has its own `/data` directory, so existing SQLite learning/cache files are
-not automatically copied from the old add-ons. The forecasters can rebuild history from
-Home Assistant Recorder data. Controller charge-curve learning starts fresh unless its
-database is migrated manually.
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **CH energy total** (`ch_energy_entity`) | `str` | `sensor.ashp_electrical_energy_ch` | Cumulative kWh sensor for ASHP space-heating electrical energy. Use a monotonically increasing energy sensor. |
+| **Outdoor temperature** (`outdoor_temperature_entity`) | `str` | `sensor.ecomax360i_outdoor_temperature` | Outdoor-air temperature sensor used for degree-day learning and heating-mode decisions. |
+| **Weather forecast** (`weather_entity`) | `str` | `weather.forecast_home` | Home Assistant weather entity used to obtain forecast outdoor temperatures. |
+| **Degree-day base temperature** (`base_temperature_c`) | `float` | `15.5` | Base temperature in °C used when calculating heating degree days. |
+| **Summer-mode off threshold entity** (`summer_mode_off_entity`) | `str` | `number.ecomax360i_summer_mode_off` | Entity containing the controller threshold below which heating/winter mode is selected. Equal off/on thresholds are allowed. |
+| **Summer-mode on threshold entity** (`summer_mode_on_entity`) | `str` | `number.ecomax360i_summer_mode_on` | Entity containing the controller threshold above which summer mode is selected. Equal off/on thresholds are allowed. |
+| **Fallback winter threshold** (`winter_mode_below_c`) | `float(-30,30)` | `11.0` | Fallback °C threshold used when the configured summer-mode threshold entities cannot be read. |
+| **Fallback summer threshold** (`summer_mode_above_c`) | `float(-30,30)` | `12.0` | Fallback °C threshold used when the configured summer-mode threshold entities cannot be read. |
+| **Initial kWh per degree day** (`initial_kwh_per_degree_day`) | `float` | `1.55` | Starting CH energy coefficient used until sufficient history has been learned. |
+| **CH training days** (`training_days`) | `int(1,180)` | `30` | Maximum number of historical days used to learn space-heating demand. |
+| **Minimum daily degree days** (`minimum_daily_degree_days`) | `float(0,20)` | `2.0` | Days below this heating-degree-day total are excluded from CH coefficient training. |
+| **Minimum daily CH energy** (`minimum_daily_ch_kwh`) | `float(0,100)` | `2.0` | Days with less CH electrical energy than this are excluded from CH coefficient training. |
+| **Forecast horizon** (`forecast_hours`) | `int(1,168)` | `48` | Number of hours of ASHP demand to forecast. |
+| **ASHP forecast interval** (`forecast_interval_minutes`) | `int(5,60)` | `30` | Length in minutes of each ASHP forecast slot. |
+| **ASHP update interval** (`update_minutes`) | `int(5,60)` | `15` | How often, in minutes, the ASHP forecast is recalculated. |
+| **DHW energy total** (`dhw_energy_entity`) | `str` | `sensor.ashp_electrical_energy_dhw` | Cumulative kWh sensor for ASHP domestic-hot-water electrical energy. |
+| **DHW mode** (`dhw_mode_entity`) | `str` | `select.dhw_mode` | Entity reporting the heat-pump DHW operating mode, used to understand scheduled/disabled hot-water operation. |
+| **DHW tank temperature** (`dhw_tank_temperature_entity`) | `str` | `sensor.dhw_temperature` | Current hot-water cylinder temperature sensor. |
+| **DHW target temperature** (`dhw_target_temperature_entity`) | `str` | `number.dhw_target_temperature` | Entity containing the configured hot-water target temperature. |
+| **DHW hysteresis** (`dhw_hysteresis_entity`) | `str` | `number.dhw_hysteresis` | Entity containing the DHW reheating hysteresis used to estimate when a heating cycle is required. |
+| **DHW schedule entity prefix** (`dhw_schedule_prefix`) | `str` | `number.dhw_dhw_schedule_` | Common entity-ID prefix for the DHW schedule entities. The forecaster appends the weekday/period suffixes it expects. |
+| **DHW history days** (`dhw_history_days`) | `int(7,90)` | `28` | Number of historical days used when learning domestic-hot-water consumption. |
+| **DHW activity threshold** (`dhw_activity_threshold_kwh`) | `float(0,10)` | `0.2` | Minimum interval energy in kWh treated as a genuine DHW heating event rather than meter noise. |
 
-## Source layout
+## Home energy forecaster
 
-```text
-home_energy_manager/
-  AGENTS.md
-  launcher.py
-  components/
-    ashp_forecaster/
-    home_forecaster/
-    controller/
-  config.yaml
-  Dockerfile
-  run.sh
-  test_architecture.py
-```
+Builds the whole-home forecast from household demand, ASHP, solar, battery, tariff, meter and EV inputs.
 
-`launcher.py` contains no energy logic. It only splits the single add-on configuration into
-private component option files and supervises the three child processes.
+### General forecast settings
 
-## Configuration
+Core model timing, history and efficiency settings.
 
-The Home Assistant add-on options page now has three top-level namespaces:
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **Timezone** (`timezone`) | `str` | `Europe/London` | IANA timezone used for tariff periods, schedules and forecast timestamps, for example Europe/London. |
+| **Home-load history days** (`history_days`) | `int(7,90)` | `28` | Number of historical days used to learn normal household load. |
+| **Weight matching weekdays** (`day_of_week_weighting`) | `bool` | `true` | Give additional weight to historical days matching the weekday being forecast. |
+| **Same-weekday weight** (`same_weekday_weight`) | `float(1.0,10.0)` | `1.5` | Multiplier applied to matching weekdays when weekday weighting is enabled. |
+| **Home forecast interval** (`forecast_interval_minutes`) | `int(1,60)` | `5` | Length in minutes of each whole-home forecast slot. |
+| **Controller refresh request entity** (`controller_refresh_request_entity`) | `str` | `sensor.home_energy_forecast_refresh_request` | Internal Home Assistant entity used by the controller to request an immediate post-plan forecast refresh. Normally leave at the default. |
+| **Fallback charge efficiency** (`charge_efficiency`) | `float(0.5,1.0)` | `0.95` | Battery charge efficiency used when learned charge-curve information is unavailable. Enter as a fraction, e.g. 0.95. |
+| **Fallback discharge efficiency** (`discharge_efficiency`) | `float(0.5,1.0)` | `0.95` | Battery discharge efficiency used when learned information is unavailable. Enter as a fraction, e.g. 0.95. |
+| **Minimum baseline load** (`minimum_baseline_w`) | `int(0,5000)` | `200` | Minimum non-EV/non-ASHP household load in watts enforced by the forecast model. |
+| **Log level** (`log_level`) | `list(INFO|DEBUG)` | `INFO` | INFO for normal operation or DEBUG for detailed diagnostic logging. |
 
-- `ashp_forecaster`
-- `home_forecaster`
-- `controller`
+### Battery entities
 
-All existing component options remain inside their corresponding namespace.
+Entities describing battery state, limits, operating modes and inverter charge/discharge schedules.
 
-## Existing Home Assistant entity interfaces
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **Battery state of charge** (`soc`) | `str` | blank | Current battery SOC sensor, in percent. |
+| **Battery capacity** (`capacity_kwh`) | `str` | blank | Entity containing usable/nominal battery capacity in kWh. |
+| **Battery reserve SOC** (`reserve_soc`) | `str` | blank | Entity containing the configured minimum battery reserve percentage. |
+| **Inverter maximum rate** (`inverter_max_rate_w`) | `str` | blank | Entity containing the inverter maximum battery charge/discharge power in watts. |
+| **Battery charge rate** (`charge_rate_w`) | `str` | blank | Entity containing the currently configured battery charge power/rate in watts. |
+| **Battery discharge rate** (`discharge_rate_w`) | `str` | blank | Entity containing the currently configured battery discharge power/rate in watts. |
+| **Eco mode** (`eco_mode`) | `str` | blank | Entity reporting whether the inverter/battery eco operating mode is enabled. |
+| **Charge schedule enabled** (`charge_schedule_enabled`) | `str` | blank | Entity reporting whether scheduled battery charging is enabled. |
+| **Discharge schedule enabled** (`discharge_schedule_enabled`) | `str` | blank | Entity reporting whether scheduled battery discharge is enabled. |
+| **Pause mode** (`pause_mode`) | `str` | blank | Entity reporting the inverter pause mode, such as PauseCharge. |
+| **Pause start** (`pause_start`) | `str` | blank | Entity containing the active inverter pause-slot start time. |
+| **Pause end** (`pause_end`) | `str` | blank | Entity containing the active inverter pause-slot end time. |
+| **Charge slot 1 start** (`charge_start_1`) | `str` | blank | Entity containing battery charge slot 1 start time. |
+| **Charge slot 1 end** (`charge_end_1`) | `str` | blank | Entity containing battery charge slot 1 end time. |
+| **Charge slot 1 target SOC** (`charge_target_1`) | `str` | blank | Entity containing the target SOC percentage for charge slot 1. |
+| **Charge slot 2 start** (`charge_start_2`) | `str` | blank | Entity containing battery charge slot 2 start time. |
+| **Charge slot 2 end** (`charge_end_2`) | `str` | blank | Entity containing battery charge slot 2 end time. |
+| **Charge slot 2 target SOC** (`charge_target_2`) | `str` | blank | Entity containing the target SOC percentage for charge slot 2. |
+| **Discharge slot 1 start** (`discharge_start_1`) | `str` | blank | Entity containing battery discharge slot 1 start time. |
+| **Discharge slot 1 end** (`discharge_end_1`) | `str` | blank | Entity containing battery discharge slot 1 end time. |
+| **Discharge slot 1 target SOC** (`discharge_target_1`) | `str` | blank | Entity containing the target SOC percentage for discharge slot 1. |
+| **Discharge slot 2 start** (`discharge_start_2`) | `str` | blank | Entity containing battery discharge slot 2 start time. |
+| **Discharge slot 2 end** (`discharge_end_2`) | `str` | blank | Entity containing battery discharge slot 2 end time. |
+| **Discharge slot 2 target SOC** (`discharge_target_2`) | `str` | blank | Entity containing the target SOC percentage for discharge slot 2. |
 
-The package intentionally preserves the existing entity interfaces for this first merged
-release, including:
+### House load
 
-- `sensor.ashp_forecast_next_48h`
-- `sensor.home_energy_forecast`
-- `sensor.home_energy_controller`
+Input used to learn normal household consumption.
 
-This keeps the merge low risk. A native Home Assistant integration can be considered
-separately later.
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **House-load energy total** (`energy_total_kwh`) | `str` | blank | Cumulative kWh sensor for the load measured behind the battery/inverter. EV should not be included when the charger is outside that measurement point. |
 
-## Persistent files
+### Solar PV
 
-The components retain distinct files:
+PV generation history and Solcast forecast entities.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **Solar generation energy total** (`energy_total_kwh`) | `str` | blank | Cumulative kWh sensor for measured PV generation. |
+| **Solcast today** (`solcast_today`) | `str` | `sensor.solcast_pv_forecast_forecast_today` | Solcast entity providing today’s PV forecast and detailed forecast attributes. |
+| **Solcast tomorrow** (`solcast_tomorrow`) | `str` | `sensor.solcast_pv_forecast_forecast_tomorrow` | Solcast entity providing tomorrow’s PV forecast and detailed forecast attributes. |
+| **Solcast day 3** (`solcast_day_3`) | `str?` | `sensor.solcast_pv_forecast_forecast_day_3` | Optional Solcast entity for the third forecast day, used when the forecast horizon reaches it. |
+
+### Tariff and inverter meter inputs
+
+Import/export tariff entities plus cumulative grid energy seen by the battery/inverter. True whole-property meters can be configured separately below.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **Inverter-side import energy** (`import_energy_total_kwh`) | `str` | blank | Cumulative grid-import kWh seen by the battery/inverter meter. Used as a fallback when no true whole-property import meter is configured. |
+| **Inverter-side export energy** (`export_energy_total_kwh`) | `str` | blank | Cumulative grid-export kWh seen by the battery/inverter meter. Used as a fallback when no true whole-property export meter is configured. |
+| **Current import rate** (`import_current_rate`) | `str` | blank | Entity containing the current electricity import price. |
+| **Current export rate** (`export_current_rate`) | `str` | blank | Entity containing the current electricity export price. |
+| **Import rates today** (`import_current_day_rates`) | `str` | blank | Entity whose attributes contain today’s time-of-use import-rate periods. |
+| **Import rates tomorrow** (`import_next_day_rates`) | `str` | blank | Entity whose attributes contain tomorrow’s time-of-use import-rate periods. |
+| **Export rates today** (`export_current_day_rates`) | `str` | blank | Entity whose attributes contain today’s export-rate periods. |
+| **Export rates tomorrow** (`export_next_day_rates`) | `str` | blank | Entity whose attributes contain tomorrow’s export-rate periods. |
+
+### ASHP forecast inputs
+
+ASHP forecast and measured CH/DHW totals consumed by the whole-home forecaster.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **ASHP 48-hour forecast** (`forecast_48h`) | `str` | `sensor.ashp_forecast_next_48h` | ASHP Forecaster entity containing the detailed forward CH/DHW forecast. |
+| **ASHP CH energy total** (`ch_energy_total_kwh`) | `str` | `sensor.ashp_electrical_energy_ch` | Cumulative kWh space-heating electrical energy used to separate CH from base house load. |
+| **ASHP DHW energy total** (`dhw_energy_total_kwh`) | `str` | `sensor.ashp_electrical_energy_dhw` | Cumulative kWh domestic-hot-water electrical energy used to separate DHW from base house load. |
+
+### True whole-property grid meters
+
+Optional authoritative utility/smart-meter cumulative energy sensors. Use these when loads such as an EV charger sit outside the battery/inverter grid meter.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **True grid import energy** (`import_energy_total_kwh`) | `str?` | blank | Optional cumulative whole-property import kWh sensor. When configured it is authoritative; temporary unavailability causes a visible forecast error rather than silent fallback. |
+| **True grid export energy** (`export_energy_total_kwh`) | `str?` | blank | Optional cumulative whole-property export kWh sensor. When configured it is authoritative; temporary unavailability causes a visible forecast error rather than silent fallback. |
+
+### EV charging
+
+EV metering and supplier-independent smart-charging inputs. Compatible with Kraken-style planned dispatches used by providers such as Octopus and EDF.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **EV energy total** (`energy_total_kwh`) | `str` | blank | Cumulative kWh sensor measuring EV charger consumption, for example an energy sensor derived from a CT clamp. Used to learn typical EV charging power. |
+| **EV Smart Charging dispatches** (`smart_charging_dispatch_entity`) | `str` | blank | Entity whose attributes provide planned smart-charging dispatches/slots. Forecast EV timing comes from these slots. |
+| **EV Smart Charging active** (`smart_charging_active_entity`) | `str` | blank | Optional entity indicating that a smart EV charging slot is currently active; used to confirm the present interval. |
+
+## Controller
+
+Plans and applies battery charge/discharge/pause settings from the latest forecast.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **Controller status entity** (`status_entity_id`) | `str` | `sensor.home_energy_controller` | Entity ID requested for the controller’s published Home Assistant status sensor. |
+| **Home energy forecast entity** (`home_energy_forecast_entity`) | `str` | `sensor.home_energy_forecast` | Whole-home forecast sensor consumed by the controller. Auto-discovery can recover the MQTT entity if its registry ID differs. |
+| **Safety buffer SOC** (`safety_buffer_soc`) | `int(1,99)` | `20` | Battery SOC percentage the controller aims to preserve as a guardrail against forecast error and unexpected load. |
+| **Operation mode** (`operation_mode`) | `list(maximise_export|minimise_export|export_generated)` | `maximise_export` | Battery strategy: maximise_export, minimise_export, or export_generated. |
+| **Power-down handling** (`power_down_enabled`) | `bool` | `true` | Enable special handling for configured power-down events. |
+| **Power-down events entity** (`power_down_events_entity`) | `str` | blank | Optional entity describing upcoming power-down/outage events used by the controller. |
+| **Power-down import baseline** (`power_down_import_baseline_entity`) | `str` | blank | Optional baseline entity used by power-down planning for grid import. |
+| **Power-down export baseline** (`power_down_export_baseline_entity`) | `str` | blank | Optional baseline entity used by power-down planning for grid export. |
+| **Minimise-export minimum SOC** (`minimise_export_min_soc`) | `int(1,99)` | `25` | Minimum SOC percentage maintained while operating in minimise_export mode. |
+| **Battery calibration** (`calibration_enabled`) | `bool` | `true` | Allow periodic full-charge and deep-cycle calibration behavior. |
+| **Full-charge interval** (`top_full_every_days`) | `int(1,365)` | `14` | Maximum number of days between calibration charges to 100%. |
+| **Deep-cycle interval** (`deep_cycle_every_days`) | `int(1,730)` | `60` | Maximum number of days between calibration discharges toward the configured floor. |
+| **Deep-cycle floor SOC** (`deep_cycle_floor_soc`) | `int(1,20)` | `4` | SOC percentage used as the target floor for a calibration deep cycle. |
+| **Reserve dwell time** (`reserve_dwell_minutes`) | `int(0,180)` | `30` | Minutes the battery should remain at reserve during applicable calibration/deep-cycle behavior. |
+| **Preferred export start** (`export_start`) | `str` | `20:00` | Earliest preferred clock time for scheduled export in modes that deliberately export stored energy. |
+| **Export-generated solar threshold** (`export_generated_solar_threshold_w`) | `int(0,2000)?` | — | PV power threshold used when identifying meaningful generation for export-generated pause behavior. If omitted, the controller uses its internal default. |
+| **Preferred charge C-rate** (`preferred_charge_c_rate`) | `float` | `0.25` | Preferred battery charge rate expressed as a fraction of battery capacity per hour. |
+| **Maximum charge C-rate** (`max_charge_c_rate`) | `float` | `0.4` | Maximum allowed battery charge C-rate used by planning. |
+| **Controller discharge rate** (`discharge_rate_w`) | `int(0,20000)` | `0` | Requested scheduled discharge power in watts. Zero allows the controller/inverter logic to use its normal configured maximum where supported. |
+| **Charge safety margin** (`charge_safety_margin_minutes`) | `int(0,120)` | `10` | Extra minutes added to planned charging so the target SOC is reached despite modelling error. |
+| **Generic dwell time** (`generic_dwell_minutes`) | `int(0,120)` | `15` | Minimum duration used to avoid unnecessary rapid changes between controller actions. |
+| **Forecast stale threshold** (`forecast_stale_minutes`) | `int(1,120)` | `15` | Maximum acceptable forecast age in minutes before the controller treats it as stale. |
+| **Future timestamp tolerance** (`future_tolerance_minutes`) | `int(0,30)` | `2` | Allowed number of minutes that a forecast timestamp may appear to be in the future because of timing differences. |
+| **Schedule time deadband** (`time_deadband_minutes`) | `int(0,30)` | `3` | Do not rewrite inverter schedule times when the proposed change is within this many minutes of the existing setting. |
+| **Power-rate deadband** (`rate_deadband_w`) | `int(0,2000)` | `100` | Do not rewrite charge/discharge rates when the proposed change differs by less than this many watts. |
+| **Energy deadband** (`energy_deadband_kwh`) | `float` | `0.1` | Ignore very small forecast energy differences below this kWh amount when deciding whether a plan materially changed. |
+| **Charge variance threshold** (`charge_variance_threshold_kwh`) | `float` | `0.5` | Forecast charge-energy difference in kWh required before charge-plan variance is considered significant. |
+| **Export variance threshold** (`export_variance_threshold_kwh`) | `float` | `0.2` | Forecast export-energy difference in kWh required before export-plan variance is considered significant. |
+| **Write retry attempts** (`write_retry_attempts`) | `int(1,10)` | `4` | Maximum attempts for an inverter setting write that does not confirm successfully. |
+| **Write retry delay** (`write_retry_delay_seconds`) | `int(1,600)` | `10` | Seconds to wait between failed inverter-setting write attempts. |
+| **Learning sample interval** (`sample_interval_seconds`) | `int(5,300)` | `30` | Seconds between controller observations used for battery charge-curve/session learning. |
+| **Rate match tolerance (%)** (`rate_match_tolerance_pct`) | `float` | `5` | Percentage tolerance when deciding whether observed battery power matches the commanded charge/discharge rate. |
+| **Rate match tolerance (W)** (`rate_match_tolerance_w`) | `int` | `100` | Absolute watt tolerance used alongside the percentage rate-match tolerance. |
+| **Forecast refresh timeout** (`controller_refresh_timeout_seconds`) | `int(30,600)` | `90` | Maximum seconds the controller waits for its requested post-write forecast refresh before allowing normal scheduled control to resume. |
+| **EV Smart Charging awareness** (`ev_smart_charging_enabled`) | `bool` | `true` | Allow EV smart-charging slots to influence controller planning, for example by treating confirmed smart-charge slots as cheap charging opportunities. |
+| **EV Smart Charging dispatches** (`ev_smart_charging_dispatch_entity`) | `str` | blank | Supplier-independent entity containing planned EV smart-charging slots/dispatches. |
+| **EV Smart Charging active** (`ev_smart_charging_active_entity`) | `str` | `binary_sensor.octopus_slot_actually_charging` | Entity indicating that a smart EV charging slot is currently active. |
+
+## MQTT publishing
+
+Home Assistant MQTT Discovery and state publishing. Supervisor broker discovery is recommended.
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| **Enable MQTT** (`enabled`) | `bool` | `true` | Publish Home Energy Manager entities through MQTT Discovery. Components fall back to REST state publishing for a run if MQTT is unavailable. |
+| **Discover MQTT broker** (`auto_discover_broker`) | `bool` | `true` | Ask Home Assistant Supervisor for the configured MQTT service connection. Recommended when using the official Mosquitto broker/app. |
+| **MQTT host** (`host`) | `str?` | blank | Optional explicit broker hostname. Leave blank when automatic broker discovery is enabled and working. |
+| **MQTT port** (`port`) | `int(1,65535)` | `1883` | Broker TCP port, normally 1883 without TLS. |
+| **MQTT username** (`username`) | `str?` | blank | Optional explicit MQTT username. Normally unnecessary with Supervisor broker discovery. |
+| **MQTT password** (`password`) | `password?` | blank | Optional explicit MQTT password. Normally unnecessary with Supervisor broker discovery. |
+| **MQTT TLS/SSL** (`ssl`) | `bool` | `false` | Use TLS for an explicitly configured MQTT broker connection. |
+| **Discovery prefix** (`discovery_prefix`) | `str` | `homeassistant` | Home Assistant MQTT Discovery prefix. Normally leave as homeassistant. |
+| **Topic prefix** (`topic_prefix`) | `str` | `home_energy_manager` | Root MQTT topic used for Home Energy Manager state and availability messages. |
+| **Migrate legacy REST entities** (`migrate_legacy_states`) | `bool` | `true` | Before MQTT discovery, remove legacy REST-created states so Home Assistant can register the MQTT entities without creating suffixed duplicates. |
+
+## Published/persistent data
+
+Persistent learned state is stored in the app `/data` directory:
 
 - `/data/ashp_forecast.db`
 - `/data/home_energy_forecaster.db`
 - `/data/last_forecast.json`
 - `/data/controller.db`
 
-## Development rule
+MQTT Discovery groups user-facing entities under the Home Energy Manager devices. If MQTT is unavailable during startup, a component can fall back to its REST publishing path for that run.
 
-Read `AGENTS.md` before changing package architecture, and read
-`components/controller/AGENTS.md` before changing controller behaviour.
+## Development
 
-
-## v0.1.1 — true meter import/export + EV load declaration
-
-Under `home_forecaster.meter`, optional true utility-meter cumulative entities can
-be configured:
-
-```yaml
-meter:
-  import_energy_total_kwh: ""
-  export_energy_total_kwh: ""
-```
-
-A configured true-meter entity is preferred when live/numeric; otherwise that
-direction falls back to the existing inverter/battery cumulative entity in
-`home_forecaster.tariff`.
-
-EV relationship to the battery house-load sensor is declared under:
-
-```yaml
-load:
-  ev_included_in_battery_load: false
-  ev_charging_entity: binary_sensor.octopus_slot_actually_charging
-```
-
-The default is `false`, matching a topology where the EV charger is outside the
-battery house-load measurement. EV load is never forecast. If set to `true`,
-EV-active/unknown intervals are excluded from baseline learning, recent-load
-correction, and load forecast comparison rather than teaching the model EV demand.
-
-When true utility-meter export is active, the controller uses it directly for
-`export_generated`; the EV-adjusted house-export proxy is used only on fallback
-battery/inverter export metering.
-
-
-## v0.1.2 — controller refresh-handshake recovery
-
-The merged-package startup race is fixed in two layers:
-
-1. If a controller refresh request is already pending after the Home Energy
-   Forecaster finishes startup/history rebuilding, its first published forecast
-   is tagged `controller_refresh` rather than `startup`.
-2. The controller refresh barrier has a failsafe timeout, configurable as
-   `controller_refresh_timeout_seconds` (default 90 seconds). If an explicit
-   refresh is missed or misclassified, the next fresh forecast clears the
-   barrier and control resumes.
-
-The normal post-write refresh remains display-only and is not fed back into
-another control pass.
-
-
-## v0.1.3 — Home Assistant MQTT Discovery devices
-
-The existing output entity IDs are preserved, but when MQTT is available they
-are now created through Home Assistant MQTT Discovery and grouped into three
-devices:
-
-- **Home Energy Manager – ASHP Forecaster**
-  - `sensor.ashp_forecast_next_30m`
-  - `sensor.ashp_forecast_remaining_today`
-  - `sensor.ashp_forecast_next_24h`
-  - `sensor.ashp_forecast_next_48h`
-  - `sensor.ashp_forecast_ch_next_48h`
-  - `sensor.ashp_forecast_dhw_next_48h`
-  - `sensor.ashp_forecast_kwh_per_degree_day`
-- **Home Energy Manager – Home Forecaster**
-  - `sensor.home_energy_forecast`
-  - `sensor.home_energy_forecast_health`
-  - `sensor.home_energy_forecast_comparison`
-- **Home Energy Manager – Controller**
-  - `sensor.home_energy_controller`
-
-MQTT is a Home Assistant presentation/state transport only. The ASHP forecaster,
-home forecaster, and controller remain separate processes and MQTT is not their
-business-logic bus.
-
-### Broker setup
-
-`mqtt.enabled` defaults to `true`. The add-on first asks Supervisor for the
-configured MQTT service/broker. Explicit host/port/credentials can be supplied
-under the top-level `mqtt` section if required.
-
-If MQTT cannot be connected during component startup, that component logs a
-warning and uses its existing Home Assistant REST state publishing path for that
-run. Energy forecasting/control therefore does not depend on MQTT being healthy.
-
-Discovery and state messages are retained. Each component publishes an
-availability topic with an MQTT last-will of `offline`.
-
-`mqtt.migrate_legacy_states` defaults to `true`; before first discovery of an
-entity in a process run, the old raw REST-created state is removed so Home
-Assistant can register the MQTT entity under the existing entity ID instead of
-creating a suffixed duplicate.
-
-The internal controller refresh request entity remains REST-published deliberately;
-it is an internal handshake rather than a user-facing device entity.
-
-
-## v0.1.4 — Export Generated direct-solar pause
-
-The controller now uses the home forecaster's no-slots PV forecast to keep `PauseCharge` active across the continuous meaningful-solar window in `export_generated` mode. This favours direct PV export and avoids unnecessary battery round-trip losses. Instantaneous PV is not used for the decision; confirmed Intelligent cheap charging can still override the pause when charging is genuinely required.
-
-## v0.1.7
-
-- Normalise every inverter schedule/pause time to whole-minute resolution before writing GivTCP select entities.
-- Fix Export Generated solar PauseCharge startup boundaries such as `11:30:27`, which Home Assistant/GivTCP rejected with HTTP 500.
-- Controller v0.1.33.
-
-
-
-
-## v0.1.9
-
-- Explicitly configured smart-meter import/export cumulative energy entities are now authoritative.
-- The forecaster no longer silently switches to inverter/battery cumulative totals after a transient state lookup failure.
-- Forecast logs now identify the selected grid import/export source and entity.
-- If a configured smart-meter entity is unavailable or non-numeric, the forecast fails visibly with the entity and source named, rather than changing accounting models.
-- Export Generated logging now calls the raw value `raw_export_sensor` rather than the misleading `raw_meter`.
-- Controller v0.1.35.
-
-
-
-## v0.1.14: battery learning visibility
-
-- Exposes `sensor.home_energy_manager_battery_charge_curve` with chart-friendly SOC-band curve data in the `curve` attribute.
-- Exposes `sensor.home_energy_manager_battery_learning` with session, observation and learning status.
-- Exposes configured charge, discharge and round-trip efficiency sensors from the Home Forecaster.
-- The package does not yet learn a discharge curve or inverter idle loss; these are explicitly reported as unsupported in the learning-status attributes rather than publishing invented measurements.
+Read `AGENTS.md` before changing package architecture, and `components/controller/AGENTS.md` before changing controller behaviour.
 
 ## Licence
 
-Home Energy Manager is released under the MIT License. See the repository root `LICENSE` and
-`THIRD_PARTY_NOTICES.md` files for details.
+Home Energy Manager is released under the MIT License. See the repository root `LICENSE` and `THIRD_PARTY_NOTICES.md` files.
