@@ -1,0 +1,104 @@
+configuration:
+  status_entity_id:
+    name: "Output · Controller status entity"
+    description: "Entity published by the controller for health, current plan, operation mode, calibration state and recent changes. Normally leave as sensor.home_energy_controller."
+
+  home_energy_forecast_entity:
+    name: "Forecast · Home Energy Forecast sensor"
+    description: "Main sensor published by Home Energy Forecaster v0.2.8 or newer. Normally sensor.home_energy_forecast. The controller automatically discovers all battery and inverter entity IDs from this sensor."
+
+  operation_mode:
+    name: "Operation · Strategy"
+    description: "maximise_export fills cheaply overnight and exports surplus; minimise_export preserves room for solar and avoids unnecessary export; export_generated aims to match total daily grid export to expected daily solar generation."
+
+  safety_buffer_soc:
+    name: "Operation · Export safety buffer SOC"
+    description: "Minimum forecast SOC retained at the next cheap-rate start during pre-offpeak forced export. Default 20%."
+
+  minimise_export_min_soc:
+    name: "Operation · Minimum overnight SOC"
+    description: "In minimise_export mode, force an overnight top-up only when forecast SOC is below this value. Default 25%."
+
+  calibration_enabled:
+    name: "Calibration · Enable SOC maintenance"
+    description: "Enable periodic full and deep SOC calibration maintenance."
+
+  top_full_every_days:
+    name: "Calibration · Maximum days without 100%"
+    description: "Force a full charge if 100% has not naturally been observed for this many days. Default 14."
+
+  deep_cycle_every_days:
+    name: "Calibration · Deep cycle interval"
+    description: "How often to seek a reserve endpoint followed by a full recharge. Default 60 days."
+
+  deep_cycle_floor_soc:
+    name: "Calibration · Deep cycle floor SOC"
+    description: "Low endpoint requested for deep calibration. Normally equal to the inverter reserve; default 4%."
+
+  reserve_dwell_minutes:
+    name: "Calibration · Reserve dwell"
+    description: "Minimum period to remain at the observed reserve endpoint before the following 100% recharge. Default 30 minutes."
+
+  export_start:
+    name: "Export · Evening export start"
+    description: "Local time at which evening forced export may begin. Default 20:00."
+
+  preferred_charge_c_rate:
+    name: "Charging · Preferred C-rate"
+    description: "Preferred overnight charging rate as a fraction of battery capacity. 0.25 means 0.25C."
+
+  max_charge_c_rate:
+    name: "Charging · Maximum policy C-rate"
+    description: "Soft controller maximum charging C-rate. Live inverter/BMS limits discovered from the forecaster still take precedence."
+
+  discharge_rate_w:
+    name: "Export · Forced discharge power"
+    description: "Requested forced discharge/export power in watts. Set 0 to use the discovered inverter/BMS maximum."
+
+  charge_safety_margin_minutes:
+    name: "Charging · Safety margin"
+    description: "Extra minutes allowed so scheduled charging should complete before cheap rate ends."
+
+  generic_dwell_minutes:
+    name: "Charging · Initial top-balance dwell"
+    description: "Initial assumed near-100% taper/top-balance time until learned behaviour is available."
+
+  forecast_stale_minutes:
+    name: "Forecast safety · Stale after"
+    description: "Maximum forecast age in minutes before optimisation is stopped."
+
+  future_tolerance_minutes:
+    name: "Forecast safety · Future timestamp tolerance"
+    description: "Maximum minutes a forecast timestamp may appear ahead of the controller clock."
+
+  time_deadband_minutes:
+    name: "Write control · Schedule-time deadband"
+    description: "Minimum schedule-time change before rewriting inverter settings, except safety stops."
+
+  rate_deadband_w:
+    name: "Write control · Power deadband"
+    description: "Minimum charge/discharge power change before rewriting inverter settings."
+
+  energy_deadband_kwh:
+    name: "Reporting · Planned-energy deadband"
+    description: "Minimum planned-energy change before reporting it as material."
+
+  charge_variance_threshold_kwh:
+    name: "Reporting · Charge variance threshold"
+    description: "Planned-versus-actual overnight charge difference considered material."
+
+  export_variance_threshold_kwh:
+    name: "Reporting · Export variance threshold"
+    description: "Planned-versus-actual forced export difference considered material."
+
+  write_retry_attempts:
+    name: "Write safety · Attempts per plan"
+    description: "Maximum write/readback attempts for a changed inverter field."
+
+  write_retry_delay_seconds:
+    name: "Write safety · Retry backoff base"
+    description: "Base seconds for progressive retry waits. With 10 seconds, retries wait 10s, 20s, 30s, and so on."
+
+  sample_interval_seconds:
+    name: "Learning · Sampling interval"
+    description: "How often live battery SOC and power are sampled for learning and calibration."

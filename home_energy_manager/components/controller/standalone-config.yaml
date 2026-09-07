@@ -1,0 +1,87 @@
+name: Home Energy Controller
+version: 0.1.37
+slug: home_energy_controller
+description: Forecast-driven battery controller for Home Assistant
+arch:
+- amd64
+- aarch64
+- armv7
+startup: application
+boot: auto
+init: false
+homeassistant_api: true
+options:
+  status_entity_id: sensor.home_energy_controller
+  home_energy_forecast_entity: sensor.home_energy_forecast
+  safety_buffer_soc: 20
+  operation_mode: maximise_export
+  intelligent_go_enabled: true
+  intelligent_dispatch_entity: ''
+  intelligent_car_charging_entity: binary_sensor.octopus_slot_actually_charging
+  power_down_enabled: true
+  power_down_events_entity: ''
+  power_down_import_baseline_entity: ''
+  power_down_export_baseline_entity: ''
+  minimise_export_min_soc: 25
+  calibration_enabled: true
+  top_full_every_days: 14
+  deep_cycle_every_days: 60
+  deep_cycle_floor_soc: 4
+  reserve_dwell_minutes: 30
+  export_start: '20:00'
+  preferred_charge_c_rate: 0.25
+  max_charge_c_rate: 0.4
+  discharge_rate_w: 0
+  charge_safety_margin_minutes: 10
+  generic_dwell_minutes: 15
+  forecast_stale_minutes: 15
+  future_tolerance_minutes: 2
+  time_deadband_minutes: 3
+  rate_deadband_w: 100
+  energy_deadband_kwh: 0.1
+  charge_variance_threshold_kwh: 0.5
+  export_variance_threshold_kwh: 0.2
+  write_retry_attempts: 4
+  write_retry_delay_seconds: 10
+  sample_interval_seconds: 30
+  rate_match_tolerance_pct: 5
+  rate_match_tolerance_w: 100
+  controller_refresh_timeout_seconds: 90
+schema:
+  status_entity_id: str
+  home_energy_forecast_entity: str
+  safety_buffer_soc: int(1,99)
+  operation_mode: list(maximise_export|minimise_export|export_generated)
+  intelligent_go_enabled: bool
+  intelligent_dispatch_entity: str
+  intelligent_car_charging_entity: str
+  power_down_enabled: bool
+  power_down_events_entity: str
+  power_down_import_baseline_entity: str
+  power_down_export_baseline_entity: str
+  minimise_export_min_soc: int(1,99)
+  calibration_enabled: bool
+  top_full_every_days: int(1,365)
+  deep_cycle_every_days: int(1,730)
+  deep_cycle_floor_soc: int(1,20)
+  reserve_dwell_minutes: int(0,180)
+  export_start: str
+  export_generated_solar_threshold_w: int(0,2000)?
+  preferred_charge_c_rate: float
+  max_charge_c_rate: float
+  discharge_rate_w: int(0,20000)
+  charge_safety_margin_minutes: int(0,120)
+  generic_dwell_minutes: int(0,120)
+  forecast_stale_minutes: int(1,120)
+  future_tolerance_minutes: int(0,30)
+  time_deadband_minutes: int(0,30)
+  rate_deadband_w: int(0,2000)
+  energy_deadband_kwh: float
+  charge_variance_threshold_kwh: float
+  export_variance_threshold_kwh: float
+  write_retry_attempts: int(1,10)
+  write_retry_delay_seconds: int(1,600)
+  sample_interval_seconds: int(5,300)
+  rate_match_tolerance_pct: float
+  rate_match_tolerance_w: int
+  controller_refresh_timeout_seconds: int(30,600)

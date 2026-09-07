@@ -1,0 +1,140 @@
+name: Home Energy Forecaster
+version: 0.2.14
+slug: home_energy_forecaster
+description: Read-only household, ASHP, PV, battery and tariff forecaster; CH/DHW
+  forecast supplied by ASHP Energy Forecaster.
+url: https://github.com/your-user/home-energy-forecaster-addon
+arch:
+- aarch64
+- amd64
+- armv7
+init: false
+startup: application
+boot: auto
+homeassistant_api: true
+options:
+  settings:
+    timezone: Europe/London
+    history_days: 28
+    day_of_week_weighting: true
+    same_weekday_weight: 1.5
+    forecast_interval_minutes: 5
+    controller_refresh_request_entity: sensor.home_energy_forecast_refresh_request
+    charge_efficiency: 0.95
+    discharge_efficiency: 0.95
+    minimum_baseline_w: 200
+    log_level: INFO
+  battery:
+    soc: ''
+    capacity_kwh: ''
+    reserve_soc: ''
+    inverter_max_rate_w: ''
+    charge_rate_w: ''
+    discharge_rate_w: ''
+    eco_mode: ''
+    charge_schedule_enabled: ''
+    discharge_schedule_enabled: ''
+    pause_mode: ''
+    pause_start: ''
+    pause_end: ''
+    charge_start_1: ''
+    charge_end_1: ''
+    charge_target_1: ''
+    charge_start_2: ''
+    charge_end_2: ''
+    charge_target_2: ''
+    discharge_start_1: ''
+    discharge_end_1: ''
+    discharge_target_1: ''
+    discharge_start_2: ''
+    discharge_end_2: ''
+    discharge_target_2: ''
+  load:
+    energy_total_kwh: ''
+    ev_included_in_battery_load: false
+    ev_charging_entity: binary_sensor.octopus_slot_actually_charging
+  solar:
+    energy_total_kwh: ''
+    solcast_today: sensor.solcast_pv_forecast_forecast_today
+    solcast_tomorrow: sensor.solcast_pv_forecast_forecast_tomorrow
+    solcast_day_3: sensor.solcast_pv_forecast_forecast_day_3
+  tariff:
+    import_energy_total_kwh: ''
+    export_energy_total_kwh: ''
+    import_current_rate: ''
+    export_current_rate: ''
+    import_current_day_rates: ''
+    import_next_day_rates: ''
+    export_current_day_rates: ''
+    export_next_day_rates: ''
+    intelligent_dispatching: ''
+  ashp:
+    forecast_48h: sensor.ashp_forecast_next_48h
+    ch_energy_total_kwh: sensor.ashp_electrical_energy_ch
+    dhw_energy_total_kwh: sensor.ashp_electrical_energy_dhw
+  meter:
+    import_energy_total_kwh: ''
+    export_energy_total_kwh: ''
+schema:
+  settings:
+    timezone: str
+    history_days: int(7,90)
+    day_of_week_weighting: bool
+    same_weekday_weight: float(1.0,10.0)
+    forecast_interval_minutes: int(1,60)
+    controller_refresh_request_entity: str
+    charge_efficiency: float(0.5,1.0)
+    discharge_efficiency: float(0.5,1.0)
+    minimum_baseline_w: int(0,5000)
+    log_level: list(INFO|DEBUG)
+  battery:
+    soc: str
+    capacity_kwh: str
+    reserve_soc: str
+    inverter_max_rate_w: str
+    charge_rate_w: str
+    discharge_rate_w: str
+    eco_mode: str
+    charge_schedule_enabled: str
+    discharge_schedule_enabled: str
+    pause_mode: str
+    pause_start: str
+    pause_end: str
+    charge_start_1: str
+    charge_end_1: str
+    charge_target_1: str
+    charge_start_2: str
+    charge_end_2: str
+    charge_target_2: str
+    discharge_start_1: str
+    discharge_end_1: str
+    discharge_target_1: str
+    discharge_start_2: str
+    discharge_end_2: str
+    discharge_target_2: str
+  load:
+    energy_total_kwh: str
+    ev_included_in_battery_load: bool
+    ev_charging_entity: str
+  solar:
+    energy_total_kwh: str
+    solcast_today: str
+    solcast_tomorrow: str
+    solcast_day_3: str?
+  tariff:
+    import_energy_total_kwh: str
+    export_energy_total_kwh: str
+    import_current_rate: str
+    export_current_rate: str
+    import_current_day_rates: str
+    import_next_day_rates: str
+    export_current_day_rates: str
+    export_next_day_rates: str
+    intelligent_dispatching: str
+  ashp:
+    forecast_48h: str
+    ch_energy_total_kwh: str
+    dhw_energy_total_kwh: str
+  meter:
+    import_energy_total_kwh: str?
+    export_energy_total_kwh: str?
