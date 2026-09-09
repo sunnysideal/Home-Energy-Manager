@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 
-DHW_MODEL_SCHEMA_VERSION = 4
+DHW_MODEL_SCHEMA_VERSION = 5
 
 
 def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
@@ -72,6 +72,21 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
     cycle_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_heating_cycles)")}
     if "target_temp_c" not in cycle_columns:
         db.execute("ALTER TABLE dhw_heating_cycles ADD COLUMN target_temp_c REAL")
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dhw_demand_profile (
+            day_type TEXT NOT NULL,
+            slot_index INTEGER NOT NULL,
+            expected_kwh REAL NOT NULL,
+            probability REAL NOT NULL,
+            typical_kwh REAL NOT NULL,
+            sample_days INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(day_type, slot_index)
+        )
+        """
+    )
 
     db.execute(
         """
