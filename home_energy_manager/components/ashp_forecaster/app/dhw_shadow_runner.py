@@ -23,6 +23,7 @@ HA_API = "http://supervisor/core/api"
 DB_PATH = Path(os.environ.get("ASHP_FORECASTER_DB_PATH", "/data/ashp_forecast.db"))
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+LEGACY_FORECAST_ENTITY = "sensor.ashp_forecast_next_48h"
 
 
 def _ha_json(token: str, path: str) -> dict | None:
@@ -58,6 +59,23 @@ def _state_float(token: str, entity_id: str) -> float | None:
     except ValueError:
         return None
     return value if math.isfinite(value) else None
+
+
+def _legacy_dhw_by_start(token: str) -> dict[str, float]:
+    state = _ha_json(token, f"/states/{quote(LEGACY_FORECAST_ENTITY, safe='.')}") or {}
+    attributes = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+    forecast = attributes.get("forecast") if isinstance(attributes.get("forecast"), list) else []
+    out: dict[str, float] = {}
+    for row in forecast:
+        if not isinstance(row, dict):
+            continue
+        try:
+            start = datetime.fromisoformat(str(row["start"])).astimezone(timezone.utc).isoformat()
+            dhw = max(0.0, float(row.get("dhw_kwh", 0.0)))
+        except (KeyError, TypeError, ValueError):
+            continue
+        out[start] = dhw
+    return out
 
 
 def _schedule_bits(token: str, prefix: str) -> dict[str, int]:
@@ -127,12 +145,20 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
         step_minutes=5,
     )
     forecast_ts = datetime.now(timezone.utc)
-    checkpoints = persist_shadow_validation(db, slots, forecast_ts=forecast_ts)
+    legacy = _legacy_dhw_by_start(token)
+    checkpoints = persist_shadow_validation(
+        db,
+        slots,
+        forecast_ts=forecast_ts,
+        legacy_dhw_by_start=legacy,
+    )
     total_dhw = sum(slot.dhw_kwh for slot in slots)
+    legacy_total = sum(legacy.values())
     LOG.info(
         "DHW shadow forecast stored: slots=%d checkpoints=%d next_48h_dhw=%.2fkWh "
-        "start_upper=%.1fC start_lower=%.1fC target=%.1fC mode=%s",
-        len(slots), checkpoints, total_dhw, upper, lower, target, mode,
+        "legacy_snapshot=%.2fkWh legacy_slots=%d start_upper=%.1fC start_lower=%.1fC "
+        "target=%.1fC mode=%s",
+        len(slots), checkpoints, total_dhw, legacy_total, len(legacy), upper, lower, target, mode,
     )
     return checkpoints
 
@@ -147,9 +173,7 @@ def main() -> None:
     timezone_name = str(ha_cfg.get("time_zone") or "UTC")
 
     db = sqlite3.connect(DB_PATH, timeout=30)
-    db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     ensure_dhw_model_schema(db)
-    db.commit()
 
     while True:
         try:
