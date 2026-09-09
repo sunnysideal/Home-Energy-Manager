@@ -24,6 +24,7 @@ COPY components/ashp_forecaster/app/dhw_cycle_tracker.py /app/runtime/ashp_forec
 COPY components/ashp_forecaster/app/dhw_cycle_learner.py /app/runtime/ashp_forecaster/dhw_cycle_learner.py
 COPY components/ashp_forecaster/app/dhw_demand_learner.py /app/runtime/ashp_forecaster/dhw_demand_learner.py
 COPY components/ashp_forecaster/app/dhw_shadow_forecast.py /app/runtime/ashp_forecaster/dhw_shadow_forecast.py
+COPY components/ashp_forecaster/app/dhw_shadow_runner.py /app/runtime/ashp_forecaster/dhw_shadow_runner.py
 COPY components/ashp_forecaster/app/dhw_collector.py /app/runtime/ashp_forecaster/dhw_collector.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/controller/app.py /app/runtime/controller/app.py
