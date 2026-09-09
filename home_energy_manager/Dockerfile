@@ -11,6 +11,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY launcher.py /app/launcher.py
+COPY config_migration.py /app/config_migration.py
 # Copy component entry points explicitly into a stable runtime layout.
 # This avoids relying on nested component source layout at runtime.
 RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/controller
