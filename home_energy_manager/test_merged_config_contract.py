@@ -2,6 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent
 
 spec = importlib.util.spec_from_file_location("hem_launcher_contract", ROOT / "launcher.py")
@@ -13,22 +15,21 @@ spec.loader.exec_module(launcher)
 
 def test_merged_config_keeps_home_assistant_api_permissions_and_canonical_shape():
     text = (ROOT / "config.yaml").read_text()
-    assert "homeassistant_api: true" in text
-    assert "hassio_api: true" in text
-    assert "hassio_role: default" in text
+    cfg = yaml.safe_load(text)
+    assert cfg["homeassistant_api"] is True
+    assert cfg["hassio_api"] is True
+    assert cfg["hassio_role"] == "default"
 
-    options_text, schema_text = text.split("\nschema:\n", 1)
-    # One MQTT values block in options and one MQTT type block in schema; duplicate
-    # option keys would silently replace real values in YAML parsers.
-    assert options_text.count("\n  mqtt:\n") == 1
-    assert schema_text.count("\n  mqtt:\n") == 1
+    assert isinstance(cfg["options"].get("mqtt"), dict)
+    assert isinstance(cfg["schema"].get("mqtt"), dict)
 
-    assert "\n  home_forecaster:\n    settings:\n" in options_text
-    assert "\n    solar:\n" in options_text
-    assert "\n    meter:\n" in options_text
-    assert "\n      forecast_48h: sensor.ashp_forecast_next_48h\n" in options_text
-    assert "\n      ch_energy_total_kwh: sensor.ashp_electrical_energy_ch\n" in options_text
-    assert "\n      dhw_energy_total_kwh: sensor.ashp_electrical_energy_dhw\n" in options_text
+    hf = cfg["options"]["home_forecaster"]
+    assert isinstance(hf.get("settings"), dict)
+    assert isinstance(hf.get("solar"), dict)
+    assert isinstance(hf.get("meter"), dict)
+    assert hf["ashp"]["forecast_48h"] == "sensor.ashp_forecast_next_48h"
+    assert hf["ashp"]["ch_energy_total_kwh"] == "sensor.ashp_electrical_energy_ch"
+    assert hf["ashp"]["dhw_energy_total_kwh"] == "sensor.ashp_electrical_energy_dhw"
 
 
 def test_standalone_home_forecaster_shape_is_normalised_for_merged_runtime():
