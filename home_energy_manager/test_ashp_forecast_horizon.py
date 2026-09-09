@@ -2,7 +2,6 @@ import importlib.util
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
@@ -20,10 +19,6 @@ runner = importlib.util.module_from_spec(spec)
 sys.modules["forecast_runner"] = runner
 assert spec.loader is not None
 spec.loader.exec_module(runner)
-
-
-class FakeBase:
-    pass
 
 
 def test_weather_extension_reaches_beyond_configured_48_hour_horizon(monkeypatch):
@@ -61,3 +56,18 @@ def test_weather_is_not_extended_when_provider_already_covers_horizon(monkeypatc
     monkeypatch.setattr(legacy.HAClient, "get_hourly_weather", lambda self, entity_id: list(raw))
 
     assert client.get_hourly_weather("weather.test") == raw
+
+
+def test_timezone_lookup_falls_back_to_addon_timezone_when_ha_config_fails(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/London")
+
+    class FailingClient:
+        def get_config(self):
+            raise RuntimeError("Home Assistant API GET /config failed: 401 Unauthorized")
+
+    assert runner._timezone_name(FailingClient()) == "Europe/London"
+
+
+def test_invalid_addon_timezone_falls_back_to_utc(monkeypatch):
+    monkeypatch.setenv("TZ", "Not/A-Timezone")
+    assert runner._fallback_timezone_name() == "UTC"
