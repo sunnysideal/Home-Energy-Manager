@@ -177,6 +177,10 @@ def build_shadow_forecast(
     return out
 
 
+def _half_hour_start(dt: datetime) -> datetime:
+    return dt.replace(minute=0 if dt.minute < 30 else 30, second=0, microsecond=0)
+
+
 def persist_shadow_validation(
     db: sqlite3.Connection,
     slots: list[ShadowSlot],
@@ -187,7 +191,7 @@ def persist_shadow_validation(
     step_minutes: int = 5,
     legacy_dhw_by_start: dict[str, float] | None = None,
 ) -> int:
-    """Store 30-minute checkpoints and optional legacy DHW for like-for-like scoring."""
+    """Store only complete clock-aligned 30-minute intervals for like-for-like scoring."""
     if not slots:
         return 0
     forecast_ts = forecast_ts or datetime.now(timezone.utc)
@@ -195,17 +199,25 @@ def persist_shadow_validation(
         forecast_ts = forecast_ts.replace(tzinfo=timezone.utc)
     forecast_iso = forecast_ts.astimezone(timezone.utc).isoformat()
     legacy_dhw_by_start = legacy_dhw_by_start or {}
-    written = 0
     steps_per_checkpoint = max(1, int(round(30 / step_minutes)))
+
+    groups: dict[datetime, list[ShadowSlot]] = {}
+    for slot in slots:
+        groups.setdefault(_half_hour_start(slot.start), []).append(slot)
+
+    written = 0
     with db:
-        for offset in range(0, len(slots), steps_per_checkpoint):
-            chunk = slots[offset:offset + steps_per_checkpoint]
-            if not chunk:
+        for interval_start in sorted(groups):
+            chunk = sorted(groups[interval_start], key=lambda s: s.start)
+            # Skip the partial interval at the start/end of a forecast. A valid comparison
+            # must cover exactly the same clock half-hour as the production legacy slot.
+            expected_starts = [interval_start + timedelta(minutes=i * step_minutes) for i in range(steps_per_checkpoint)]
+            if len(chunk) != steps_per_checkpoint or [slot.start for slot in chunk] != expected_starts:
                 continue
             endpoint = chunk[-1]
-            target_time = endpoint.start + timedelta(minutes=step_minutes)
+            target_time = interval_start + timedelta(minutes=30)
             target_iso = target_time.astimezone(timezone.utc).isoformat()
-            slot_start_iso = chunk[0].start.astimezone(timezone.utc).isoformat()
+            slot_start_iso = interval_start.astimezone(timezone.utc).isoformat()
             predicted_dhw = sum(slot.dhw_kwh for slot in chunk)
             legacy_dhw = legacy_dhw_by_start.get(slot_start_iso)
             db.execute(
