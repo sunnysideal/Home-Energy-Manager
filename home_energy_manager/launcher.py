@@ -135,7 +135,7 @@ def export_migration_bundle(
 
         manifest = {
             "format_version": 2,
-            "home_energy_manager_version": "0.1.38",
+            "home_energy_manager_version": "0.1.39",
             "files": files,
         }
         (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -203,8 +203,6 @@ def import_migration_bundle(
             if format_version >= 2 and "options.json" in names:
                 migrated_options = json.loads(archive.read("options.json"))
 
-        # A previous successful v1 import marker means the learned DBs are already
-        # authoritative.  A v2 bundle may still restore the saved add-on options.
         restored = []
         if not marker_exists:
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -218,7 +216,7 @@ def import_migration_bundle(
                 restored.append(name)
             marker.write_text(json.dumps({
                 "format_version": format_version,
-                "imported_by_version": "0.1.38",
+                "imported_by_version": "0.1.39",
                 "bundle": str(bundle),
                 "files": restored,
             }, indent=2) + "\n")
@@ -306,7 +304,7 @@ def load_and_split_options():
     if isinstance(canonical_mqtt, dict):
         mqtt = canonical_mqtt
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.38"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.39"
 
     print(
         "[manager] config migration: "
