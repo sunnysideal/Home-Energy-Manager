@@ -10,11 +10,11 @@ from __future__ import annotations
 import sqlite3
 
 
-DHW_MODEL_SCHEMA_VERSION = 1
+DHW_MODEL_SCHEMA_VERSION = 2
 
 
 def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
-    """Create DHW thermal-model tables without modifying legacy forecast data."""
+    """Create/migrate DHW thermal-model tables without modifying legacy forecast data."""
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS dhw_thermal_samples (
@@ -24,12 +24,17 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
             dhw_heating INTEGER NOT NULL DEFAULT 0,
             immersion_heating INTEGER NOT NULL DEFAULT 0,
             dhw_energy_delta_kwh REAL,
+            dhw_energy_total_kwh REAL,
             ambient_temp_c REAL,
             outdoor_temp_c REAL,
             valid INTEGER NOT NULL DEFAULT 1
         )
         """
     )
+    sample_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_thermal_samples)")}
+    if "dhw_energy_total_kwh" not in sample_columns:
+        db.execute("ALTER TABLE dhw_thermal_samples ADD COLUMN dhw_energy_total_kwh REAL")
+
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS dhw_draw_events (
