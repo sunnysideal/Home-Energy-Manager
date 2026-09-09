@@ -15,6 +15,9 @@ COPY launcher.py /app/launcher.py
 # This avoids relying on nested component source layout at runtime.
 RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/controller
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
+COPY components/ashp_forecaster/app/runner.py /app/runtime/ashp_forecaster/runner.py
+COPY components/ashp_forecaster/app/dhw_model.py /app/runtime/ashp_forecaster/dhw_model.py
+COPY components/ashp_forecaster/app/dhw_collector.py /app/runtime/ashp_forecaster/dhw_collector.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/controller/app.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
