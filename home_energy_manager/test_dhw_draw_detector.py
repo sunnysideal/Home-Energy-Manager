@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -8,6 +9,7 @@ MODULE_PATH = ROOT / "components" / "ashp_forecaster" / "app" / "dhw_draw_detect
 spec = importlib.util.spec_from_file_location("dhw_draw_detector", MODULE_PATH)
 mod = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
 
