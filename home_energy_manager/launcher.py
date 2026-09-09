@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+from config_migration import migrate_runtime_options
+
 OPTIONS = Path("/data/options.json")
 COMPONENT_OPTIONS = {
     "ashp_forecaster": Path("/data/options_ashp_forecaster.json"),
@@ -18,98 +20,31 @@ children = []
 stopping = False
 
 
-def _setdefault_from(target: dict, key: str, source: dict, source_key: str | None = None, default=None) -> None:
-    source_key = source_key or key
-    if key not in target:
-        target[key] = source.get(source_key, default)
-
-
-def _normalise_home_forecaster(hf: dict) -> None:
-    """Normalize merged/standalone config variants to the v0.2.14 runtime contract.
-
-    v0.1.31 accidentally shipped the standalone-style Home Forecaster schema in the
-    merged add-on. Preserve users' saved values from that release while restoring the
-    canonical merged runtime structure expected by components/home_forecaster/app/main.py.
-    """
-    settings = hf.setdefault("settings", {})
-    for key, default in (
-        ("timezone", "Europe/London"),
-        ("history_days", 28),
-        ("day_of_week_weighting", True),
-        ("same_weekday_weight", 1.5),
-        ("forecast_interval_minutes", 5),
-        ("controller_refresh_request_entity", "sensor.home_energy_forecast_refresh_request"),
-        ("charge_efficiency", 0.95),
-        ("discharge_efficiency", 0.95),
-        ("minimum_baseline_w", 200),
-        ("log_level", "INFO"),
-    ):
-        _setdefault_from(settings, key, hf, default=default)
-
-    battery = hf.setdefault("battery", {})
-    for key in ("charge_target_1", "charge_target_2", "discharge_target_1", "discharge_target_2"):
-        standalone_key = key.replace("_target_", "_target_soc_")
-        _setdefault_from(battery, key, battery, standalone_key, "")
-
-    load = hf.setdefault("load", {})
-    load.setdefault("energy_total_kwh", "")
-
-    pv = hf.get("pv") if isinstance(hf.get("pv"), dict) else {}
-    solar = hf.setdefault("solar", {})
-    _setdefault_from(solar, "energy_total_kwh", pv, default="")
-    _setdefault_from(solar, "solcast_today", pv, default="")
-    _setdefault_from(solar, "solcast_tomorrow", pv, default="")
-    _setdefault_from(solar, "solcast_day_3", pv, "solcast_day3", "")
-
-    grid = hf.get("grid") if isinstance(hf.get("grid"), dict) else {}
-    meter = hf.setdefault("meter", {})
-    _setdefault_from(meter, "import_energy_total_kwh", grid, default="")
-    _setdefault_from(meter, "export_energy_total_kwh", grid, default="")
-
-    tariff = hf.setdefault("tariff", {})
-    _setdefault_from(tariff, "import_energy_total_kwh", grid, "inverter_import_energy_total_kwh", "")
-    _setdefault_from(tariff, "export_energy_total_kwh", grid, "inverter_export_energy_total_kwh", "")
-    _setdefault_from(tariff, "import_current_rate", tariff, "import_rate", "")
-    _setdefault_from(tariff, "export_current_rate", tariff, "export_rate", "")
-    tariff.setdefault("import_current_day_rates", "")
-    tariff.setdefault("import_next_day_rates", "")
-    tariff.setdefault("export_current_day_rates", "")
-    tariff.setdefault("export_next_day_rates", "")
-
-    ashp = hf.setdefault("ashp", {})
-    _setdefault_from(ashp, "forecast_48h", ashp, "forecast_entity", "sensor.ashp_forecast_next_48h")
-    ashp.setdefault("ch_energy_total_kwh", "sensor.ashp_electrical_energy_ch")
-    ashp.setdefault("dhw_energy_total_kwh", "sensor.ashp_electrical_energy_dhw")
-
-    ev = hf.setdefault("ev", {})
-    old_load = hf.get("load") if isinstance(hf.get("load"), dict) else {}
-    old_tariff = hf.get("tariff") if isinstance(hf.get("tariff"), dict) else {}
-    ev.setdefault("smart_charging_active_entity", old_load.get("ev_charging_entity", ""))
-    ev.setdefault("smart_charging_dispatch_entity", old_tariff.get("intelligent_dispatching", ""))
-    ev.setdefault("energy_total_kwh", "")
-
-
 def load_and_split_options():
-    raw = json.loads(OPTIONS.read_text())
-    hf = raw.get("home_forecaster") if isinstance(raw.get("home_forecaster"), dict) else {}
-    if hf:
-        _normalise_home_forecaster(hf)
+    saved = json.loads(OPTIONS.read_text())
+    raw, canonical, diagnostics = migrate_runtime_options(saved)
 
-    ctl = raw.get("controller") if isinstance(raw.get("controller"), dict) else {}
-    if ctl:
-        if "ev_smart_charging_enabled" not in ctl and "intelligent_go_enabled" in ctl:
-            ctl["ev_smart_charging_enabled"] = ctl.get("intelligent_go_enabled")
-        if "ev_smart_charging_dispatch_entity" not in ctl:
-            ctl["ev_smart_charging_dispatch_entity"] = ctl.get("intelligent_dispatch_entity", "")
-        if "ev_smart_charging_active_entity" not in ctl:
-            ctl["ev_smart_charging_active_entity"] = ctl.get("intelligent_car_charging_entity", "")
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
+    canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
+    if isinstance(canonical_mqtt, dict):
+        mqtt = canonical_mqtt
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
     os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.37"
+
+    print(
+        "[manager] config migration: "
+        f"layout={diagnostics.source_layout} canonical=v{diagnostics.canonical_version} "
+        f"moves={len(diagnostics.moves)} duplicates={len(diagnostics.duplicates)} "
+        f"conflicts={len(diagnostics.conflicts)}",
+        flush=True,
+    )
+    for message in diagnostics.conflicts:
+        print(f"[manager] config conflict: {message}", flush=True)
+
     for name, path in COMPONENT_OPTIONS.items():
         section = raw.get(name)
         if not isinstance(section, dict):
-            raise RuntimeError(f"Missing or invalid configuration section: {name}")
+            raise RuntimeError(f"Missing or invalid configuration section after migration: {name}")
         path.write_text(json.dumps(section, separators=(",", ":")))
     return raw
 
