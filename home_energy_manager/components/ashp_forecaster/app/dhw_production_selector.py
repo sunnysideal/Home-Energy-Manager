@@ -1,10 +1,10 @@
 """Guarded selection of legacy vs enhanced thermal DHW forecast.
 
 This module belongs entirely to the ASHP forecaster. It does not alter controller or
-whole-home behaviour. Production may consume the thermal forecast only after the
-persisted validation gate says promotion is ready and the published thermal forecast
-is fresh and covers every requested production slot. Safety failures fall back to
-legacy immediately; quality-gate promotion/demotion uses persisted hysteresis.
+whole-home behaviour. Once the learned physical/demand model is structurally ready,
+production uses the thermal forecast immediately while legacy continues in parallel as
+comparator and fallback. Safety failures fall back immediately; proven poor performance
+falls back with hysteresis and requires sustained good evidence before retrying thermal.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ THERMAL_FORECAST_ENTITY = "sensor.ashp_dhw_thermal_forecast_next_48h"
 SOURCE_KEY = "dhw_production_source"
 PROMOTION_STREAK_KEY = "dhw_production_promotion_streak"
 DEMOTION_STREAK_KEY = "dhw_production_demotion_streak"
+FALLBACK_LATCH_KEY = "dhw_production_quality_fallback_latched"
 EXPECTED_PRODUCTION_SLOTS = 96
 
 
@@ -58,11 +59,20 @@ def _set_metadata(db: sqlite3.Connection, key: str, value: str | int) -> None:
     )
 
 
-def _persist_state(db: sqlite3.Connection, source: str, promotion_streak: int, demotion_streak: int) -> None:
+def _persist_state(
+    db: sqlite3.Connection,
+    source: str,
+    promotion_streak: int,
+    demotion_streak: int,
+    *,
+    fallback_latched: int | None = None,
+) -> None:
     with db:
         _set_metadata(db, SOURCE_KEY, source)
         _set_metadata(db, PROMOTION_STREAK_KEY, max(0, promotion_streak))
         _set_metadata(db, DEMOTION_STREAK_KEY, max(0, demotion_streak))
+        if fallback_latched is not None:
+            _set_metadata(db, FALLBACK_LATCH_KEY, 1 if fallback_latched else 0)
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -135,20 +145,23 @@ def select_dhw_forecast(
     get_state: Callable[[str], dict[str, Any]],
     *,
     max_age_minutes: float = 25.0,
-    promotion_successes: int = 3,
+    retry_successes: int = 3,
     demotion_failures: int = 2,
 ) -> SelectionResult:
-    """Select the production DHW source with fail-safe fallback and hysteresis.
+    """Select production DHW source using optimistic trial plus guarded fallback.
 
-    Promotion requires ``promotion_successes`` consecutive production runs where the
-    independent validation gate is ready and the thermal forecast is fresh and complete.
-    Once thermal is active, a stale/missing/incomplete forecast or loss of thermal model
-    readiness falls back immediately. A transient quality-gate failure requires
-    ``demotion_failures`` consecutive runs before returning to legacy, preventing flapping.
-
-    The enhanced model currently owns the fixed public 48-hour/30-minute DHW contract.
-    If production is configured to a different slot count it remains on legacy rather than
-    silently accepting a partial thermal horizon.
+    Normal path:
+    * legacy is used only until ``dhw_trial_ready`` says the learned model has enough
+      physical/demand evidence and a fresh, complete 96-slot thermal forecast exists;
+    * thermal then becomes authoritative immediately, before forward validation exists;
+    * legacy continues to be forecast and scored in parallel;
+    * stale/missing/incomplete thermal data or loss of structural readiness falls back
+      immediately;
+    * ``dhw_performance_bad`` must persist for ``demotion_failures`` production runs before
+      latching a quality fallback to legacy;
+    * once quality fallback is latched, thermal is retried only after ``dhw_promotion_ready``
+      is true for ``retry_successes`` consecutive runs. This prevents a known-poor model from
+      bouncing straight back into production merely because its structure remains valid.
     """
     legacy = list(legacy_values)
     if len(starts) != len(legacy):
@@ -163,11 +176,12 @@ def select_dhw_forecast(
         current_source = "legacy"
     promotion_streak = _metadata_int(db, PROMOTION_STREAK_KEY, 0)
     demotion_streak = _metadata_int(db, DEMOTION_STREAK_KEY, 0)
+    fallback_latched = _metadata_int(db, FALLBACK_LATCH_KEY, 0) != 0
 
-    thermal_ready = _parameter_value(db, "dhw_thermal_ready")
-    if thermal_ready is None or thermal_ready < 0.5:
+    trial_ready = _parameter_value(db, "dhw_trial_ready")
+    if trial_ready is None or trial_ready < 0.5:
         _persist_state(db, "legacy", 0, 0)
-        return SelectionResult(legacy, "legacy", "thermal_not_ready")
+        return SelectionResult(legacy, "legacy", "trial_not_ready")
 
     try:
         state = get_state(THERMAL_FORECAST_ENTITY)
@@ -177,39 +191,49 @@ def select_dhw_forecast(
 
     thermal, thermal_reason = _thermal_values(state, starts, max_age_minutes=max_age_minutes)
     if thermal is None:
+        # Integrity failures are immediate safety fallbacks. Do not latch them as quality
+        # failures: a later fresh/complete thermal forecast may resume normally.
         _persist_state(db, "legacy", 0, 0)
         return SelectionResult(legacy, "legacy", thermal_reason)
 
-    promotion = _parameter_value(db, "dhw_promotion_ready")
-    promotion_ready = bool(promotion is not None and promotion >= 0.5)
+    performance_bad_value = _parameter_value(db, "dhw_performance_bad")
+    performance_bad = bool(performance_bad_value is not None and performance_bad_value >= 0.5)
+    promotion_value = _parameter_value(db, "dhw_promotion_ready")
+    proven_good = bool(promotion_value is not None and promotion_value >= 0.5)
 
     if current_source == "thermal":
-        if promotion_ready:
+        if not performance_bad:
             _persist_state(db, "thermal", 0, 0)
-            return SelectionResult(thermal, "thermal", "thermal_active")
+            return SelectionResult(thermal, "thermal", "thermal_trial_active")
         demotion_streak += 1
-        if demotion_streak >= max(1, demotion_failures):
-            _persist_state(db, "legacy", 0, 0)
-            return SelectionResult(legacy, "legacy", "quality_gate_failed")
+        required_failures = max(1, demotion_failures)
+        if demotion_streak >= required_failures:
+            _persist_state(db, "legacy", 0, 0, fallback_latched=1)
+            return SelectionResult(legacy, "legacy", "performance_fallback_latched")
         _persist_state(db, "thermal", 0, demotion_streak)
         return SelectionResult(
             thermal,
             "thermal",
-            f"quality_gate_warning_{demotion_streak}_of_{max(1, demotion_failures)}",
+            f"performance_warning_{demotion_streak}_of_{required_failures}",
         )
 
-    if not promotion_ready:
-        _persist_state(db, "legacy", 0, 0)
-        return SelectionResult(legacy, "legacy", "promotion_not_ready")
+    if fallback_latched:
+        if not proven_good:
+            _persist_state(db, "legacy", 0, 0, fallback_latched=1)
+            return SelectionResult(legacy, "legacy", "quality_fallback_waiting_for_recovery")
+        promotion_streak += 1
+        required = max(1, retry_successes)
+        if promotion_streak >= required:
+            _persist_state(db, "thermal", 0, 0, fallback_latched=0)
+            return SelectionResult(thermal, "thermal", "recovered_after_sustained_validation")
+        _persist_state(db, "legacy", promotion_streak, 0, fallback_latched=1)
+        return SelectionResult(
+            legacy,
+            "legacy",
+            f"recovery_streak_{promotion_streak}_of_{required}",
+        )
 
-    promotion_streak += 1
-    required = max(1, promotion_successes)
-    if promotion_streak >= required:
-        _persist_state(db, "thermal", 0, 0)
-        return SelectionResult(thermal, "thermal", "promoted_after_sustained_validation")
-    _persist_state(db, "legacy", promotion_streak, 0)
-    return SelectionResult(
-        legacy,
-        "legacy",
-        f"promotion_streak_{promotion_streak}_of_{required}",
-    )
+    # First use of the enhanced model is intentionally optimistic: structural readiness
+    # plus a valid horizon is sufficient. Real validation now determines whether it stays.
+    _persist_state(db, "thermal", 0, 0, fallback_latched=0)
+    return SelectionResult(thermal, "thermal", "trial_ready_using_thermal")
