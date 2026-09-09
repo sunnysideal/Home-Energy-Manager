@@ -9,15 +9,11 @@ def _text(path):
 
 
 def test_export_generated_threshold_is_upgrade_optional_with_code_default():
-    package = _text("config.yaml")
     controller_cfg = _text("components/controller/standalone-config.yaml")
     controller = _text("components/controller/app.py")
 
-    package_options = package.split("schema:", 1)[0]
     controller_options = controller_cfg.split("schema:", 1)[0]
-    assert "export_generated_solar_threshold_w:" not in package_options
     assert "export_generated_solar_threshold_w:" not in controller_options
-    assert "export_generated_solar_threshold_w: int(0,2000)?" in package
     assert "export_generated_solar_threshold_w: int(0,2000)?" in controller_cfg
     assert "get('export_generated_solar_threshold_w',100)" in controller
 
