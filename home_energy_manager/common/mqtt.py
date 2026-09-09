@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -7,11 +6,24 @@ import os
 import ssl
 import threading
 from typing import Any
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 LOG = logging.getLogger("home_energy_manager.mqtt")
+
+# These are package API entities, not implementation-detail entities.  Their MQTT
+# identity must therefore survive component renames/reorganisation.  Earlier builds
+# included the publishing component in unique_id, which allowed Home Assistant to
+# retain long generated entity IDs such as
+# sensor.home_energy_manager_home_forecaster_home_energy_forecast even after
+# default_entity_id was introduced.
+PERMANENT_SENSOR_UNIQUE_IDS = {
+    "sensor.home_energy_forecast": "home_energy_manager_home_energy_forecast",
+    "sensor.home_energy_forecast_health": "home_energy_manager_home_energy_forecast_health",
+    "sensor.home_energy_controller": "home_energy_manager_home_energy_controller",
+    "sensor.ashp_forecast_next_48h": "home_energy_manager_ashp_forecast_next_48h",
+}
 
 
 class MQTTPublisher:
@@ -40,6 +52,7 @@ class MQTTPublisher:
         self._client = None
         self._discovered: set[str] = set()
         self._legacy_removed: set[str] = set()
+        self._legacy_discovery_removed: set[str] = set()
         self.discovery_prefix = str(self.cfg.get("discovery_prefix") or "homeassistant").strip("/")
         self.topic_prefix = str(self.cfg.get("topic_prefix") or "home_energy_manager").strip("/")
         self.availability_topic = f"{self.topic_prefix}/{self.component}/availability"
@@ -177,6 +190,29 @@ class MQTTPublisher:
         except Exception as exc:
             LOG.debug("%s: legacy state cleanup for %s skipped: %s", self.component, entity_id, exc)
 
+    def _discovery_identity(self, entity_id: str, object_id: str) -> tuple[str, str, str | None]:
+        """Return unique_id, discovery topic, and obsolete discovery topic if any."""
+        permanent = PERMANENT_SENSOR_UNIQUE_IDS.get(entity_id)
+        legacy_topic = f"{self.discovery_prefix}/sensor/home_energy_manager_{self.component}/{object_id}/config"
+        if permanent:
+            # Home Assistant recommends object_id=unique_id with no node_id.  More
+            # importantly, this identity no longer changes when code moves between
+            # Home Energy Manager components.
+            topic = f"{self.discovery_prefix}/sensor/{permanent}/config"
+            return permanent, topic, legacy_topic
+        return f"home_energy_manager_{self.component}_{object_id}", legacy_topic, None
+
+    def _remove_legacy_discovery(self, entity_id: str, legacy_topic: str | None, new_topic: str) -> None:
+        if not legacy_topic or legacy_topic == new_topic or entity_id in self._legacy_discovery_removed:
+            return
+        self._legacy_discovery_removed.add(entity_id)
+        if not bool(self.cfg.get("migrate_legacy_states", True)):
+            return
+        # An empty retained discovery payload removes the old MQTT component. This
+        # lets the new permanent unique_id claim the requested default_entity_id.
+        self._publish_raw(legacy_topic, "", retain=True)
+        LOG.info("%s: removed obsolete MQTT discovery identity for %s", self.component, entity_id)
+
     def publish_sensor(self, entity_id: str, state: Any, attributes: dict[str, Any]) -> bool:
         """Publish a sensor through HA MQTT Discovery.
 
@@ -189,17 +225,17 @@ class MQTTPublisher:
             return False
 
         object_id = entity_id.split(".", 1)[1]
-        node_id = f"home_energy_manager_{self.component}"
         state_topic = f"{self.topic_prefix}/{self.component}/{object_id}/state"
         attrs_topic = f"{self.topic_prefix}/{self.component}/{object_id}/attributes"
-        discovery_topic = f"{self.discovery_prefix}/sensor/{node_id}/{object_id}/config"
+        unique_id, discovery_topic, legacy_discovery_topic = self._discovery_identity(entity_id, object_id)
 
         if entity_id not in self._discovered:
             self._delete_legacy_rest_state(entity_id)
+            self._remove_legacy_discovery(entity_id, legacy_discovery_topic, discovery_topic)
             name = str(attributes.get("friendly_name") or object_id.replace("_", " ").title())
             payload: dict[str, Any] = {
                 "name": name,
-                "unique_id": f"home_energy_manager_{self.component}_{object_id}",
+                "unique_id": unique_id,
                 "default_entity_id": entity_id,
                 "state_topic": state_topic,
                 "json_attributes_topic": attrs_topic,
