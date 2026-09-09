@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 
-DHW_MODEL_SCHEMA_VERSION = 6
+DHW_MODEL_SCHEMA_VERSION = 7
 
 
 def _ensure_column(db: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -29,7 +29,6 @@ def _ensure_column(db: sqlite3.Connection, table: str, column: str, definition: 
     except sqlite3.OperationalError as exc:
         if "duplicate column name" not in str(exc).lower():
             raise
-        # Another process completed the migration between our PRAGMA and ALTER.
         columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             raise
@@ -37,8 +36,6 @@ def _ensure_column(db: sqlite3.Connection, table: str, column: str, definition: 
 
 def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
     """Create/migrate DHW thermal-model tables without modifying legacy forecast data."""
-    # All passive helpers call this independently at startup. Create the shared metadata
-    # table here rather than relying on the legacy forecaster or collector to win the race.
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS metadata (
@@ -135,6 +132,8 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
             predicted_upper_c REAL,
             predicted_lower_c REAL,
             predicted_dhw_kwh REAL,
+            legacy_dhw_kwh REAL,
+            actual_dhw_kwh REAL,
             actual_upper_c REAL,
             actual_lower_c REAL,
             model_source TEXT NOT NULL,
@@ -143,6 +142,8 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
         """
     )
     _ensure_column(db, "dhw_forecast_validation", "predicted_dhw_kwh", "REAL")
+    _ensure_column(db, "dhw_forecast_validation", "legacy_dhw_kwh", "REAL")
+    _ensure_column(db, "dhw_forecast_validation", "actual_dhw_kwh", "REAL")
 
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_dhw_thermal_samples_valid_time "
