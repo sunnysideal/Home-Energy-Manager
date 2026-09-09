@@ -77,11 +77,14 @@ class HorizonHAClient(legacy.HAClient):
             return raw
 
         extended = list(raw)
-        cursor = last_dt + timedelta(hours=1)
+        cursor = last_dt
         appended = 0
-        while cursor <= required_end:
-            extended.append({"datetime": cursor.isoformat(), "temperature": last_temp})
+        # Append whole hourly points until the final point is at or beyond the
+        # required horizon.  Using ``cursor <= required_end`` before appending can
+        # stop up to 59 minutes short when ``required_end`` is not hour-aligned.
+        while cursor < required_end:
             cursor += timedelta(hours=1)
+            extended.append({"datetime": cursor.isoformat(), "temperature": last_temp})
             appended += 1
         LOG.info(
             "Weather horizon extended by %d hourly points using last temperature %.1f C "
