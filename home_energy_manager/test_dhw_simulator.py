@@ -57,6 +57,34 @@ def test_heating_raises_both_effective_zones():
     assert result.lower_temp_c > 30.0
 
 
+def test_inverted_tank_is_mixed_without_losing_sensible_heat():
+    params = sim.TankParameters(upper_fraction=0.45)
+    state = sim.TankState(45.0, 60.0)
+    before = (
+        state.upper_temp_c * params.upper_volume_l
+        + state.lower_temp_c * params.lower_volume_l
+    )
+    result = sim.stabilise_stratification(state, params)
+    after = (
+        result.upper_temp_c * params.upper_volume_l
+        + result.lower_temp_c * params.lower_volume_l
+    )
+    assert result.upper_temp_c == result.lower_temp_c
+    assert abs(after - before) < 1e-9
+
+
+def test_step_never_leaves_lower_zone_hotter_than_upper():
+    params = sim.TankParameters(
+        upper_loss_w_per_k=0.0,
+        lower_loss_w_per_k=0.0,
+        coupling_w_per_k=0.0,
+        heating_upper_fraction=0.10,
+    )
+    state = sim.TankState(50.0, 49.0)
+    result = sim.step_tank(state, params, sim.StepInputs(heating_kwh=2.0), minutes=5)
+    assert result.lower_temp_c <= result.upper_temp_c
+
+
 def test_usable_energy_counts_only_energy_above_minimum_temperature():
     params = sim.TankParameters(minimum_useful_temperature_c=40.0)
     state = sim.TankState(50.0, 35.0)
