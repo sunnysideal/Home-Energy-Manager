@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 
 from dhw_cycle_learner import learn_cycle_energy, persist_cycle_energy_fit
 from dhw_cycle_tracker import CycleSample, build_cycle
+from dhw_demand_learner import learn_demand_profile, persist_demand_profile
 from dhw_draw_detector import ThermalSample, detect_draw
 from dhw_model import ensure_dhw_model_schema
 from dhw_passive_learner import learn_passive_parameters, persist_passive_fit
@@ -31,20 +32,37 @@ DB_PATH = Path(os.environ.get("ASHP_FORECASTER_DB_PATH", "/data/ashp_forecast.db
 OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 
 
-def _finite_state(token: str, entity_id: str) -> float | None:
-    if not entity_id:
-        return None
+def _ha_json(token: str, path: str) -> dict | None:
     req = Request(
-        f"{HA_API}/states/{quote(entity_id, safe='.')}",
+        f"{HA_API}{path}",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="GET",
     )
     try:
         with urlopen(req, timeout=15) as response:
-            value = float(json.loads(response.read())["state"])
-    except (HTTPError, URLError, TimeoutError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            data = json.loads(response.read())
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _finite_state(token: str, entity_id: str) -> float | None:
+    if not entity_id:
+        return None
+    data = _ha_json(token, f"/states/{quote(entity_id, safe='.')}")
+    if not data:
+        return None
+    try:
+        value = float(data["state"])
+    except (ValueError, TypeError, KeyError):
         return None
     return value if math.isfinite(value) else None
+
+
+def _ha_timezone_name(token: str) -> str:
+    data = _ha_json(token, "/config") or {}
+    value = str(data.get("time_zone") or "UTC").strip()
+    return value or "UTC"
 
 
 def _valid_tank_temp(value: float | None) -> bool:
@@ -268,6 +286,7 @@ def main() -> None:
     _ensure_metadata(db)
     ensure_dhw_model_schema(db)
     db.commit()
+    timezone_name = _ha_timezone_name(token)
 
     upper = str(cfg.get("dhw_tank_upper_temperature_entity") or cfg.get("dhw_tank_temperature_entity") or "")
     lower = str(cfg.get("dhw_tank_lower_temperature_entity") or "")
@@ -278,8 +297,9 @@ def main() -> None:
         )
     else:
         LOG.info(
-            "DHW thermal sampling active: upper=%s lower=%s; legacy DHW forecast remains authoritative",
-            upper, lower,
+            "DHW thermal sampling active: upper=%s lower=%s timezone=%s; "
+            "legacy DHW forecast remains authoritative",
+            upper, lower, timezone_name,
         )
 
     sample_minutes = max(1, int(cfg.get("dhw_thermal_sample_minutes", 5)))
@@ -300,6 +320,11 @@ def main() -> None:
                         volume_l=float(cfg.get("dhw_tank_volume_l", 250)),
                     )
                     cycle_fit = learn_cycle_energy(db)
+                    demand_slots = learn_demand_profile(
+                        db,
+                        timezone_name=timezone_name,
+                        history_days=int(cfg.get("dhw_history_days", 28)),
+                    )
                     last_fit_monotonic = time.monotonic()
                     if passive_fit is not None:
                         persist_passive_fit(db, passive_fit)
@@ -327,6 +352,16 @@ def main() -> None:
                         )
                     else:
                         LOG.info("DHW cycle energy model not ready: need more valid normal cycles")
+                    if demand_slots:
+                        persist_demand_profile(db, demand_slots)
+                        weekday_days = max((s.sample_days for s in demand_slots if s.day_type == "weekday"), default=0)
+                        weekend_days = max((s.sample_days for s in demand_slots if s.day_type == "weekend"), default=0)
+                        LOG.info(
+                            "DHW demand profile learned: slots=%d weekday_days=%d weekend_days=%d",
+                            len(demand_slots), weekday_days, weekend_days,
+                        )
+                    else:
+                        LOG.info("DHW demand profile not ready: need more fully observed days")
         except Exception:
             LOG.exception("DHW thermal sample/learning failed")
         time.sleep(0.25)
