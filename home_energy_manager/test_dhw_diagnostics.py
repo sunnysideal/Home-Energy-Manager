@@ -27,23 +27,40 @@ def db_with_params():
     return db
 
 
+def status(**overrides):
+    values = dict(
+        promotion_ready=False,
+        thermal_ready=False,
+        cycle_count=0,
+        demand_days=0,
+        draw_count=0,
+        validation_count=0,
+        energy_validation_days=0,
+    )
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 def test_status_progresses_through_training_stages():
-    assert mod._status(SimpleNamespace(
-        promotion_ready=False, thermal_ready=False, cycle_count=0,
-        demand_days=0, draw_count=0, validation_count=0,
-    )) == "learning_heating_cycles"
-    assert mod._status(SimpleNamespace(
-        promotion_ready=False, thermal_ready=False, cycle_count=5,
-        demand_days=2, draw_count=3, validation_count=0,
+    assert mod._status(status()) == "learning_heating_cycles"
+    assert mod._status(status(
+        cycle_count=5, demand_days=2, draw_count=3,
     )) == "learning_hot_water_demand"
-    assert mod._status(SimpleNamespace(
-        promotion_ready=False, thermal_ready=False, cycle_count=5,
-        demand_days=7, draw_count=10, validation_count=5,
+    assert mod._status(status(
+        cycle_count=5, demand_days=7, draw_count=10, validation_count=5,
     )) == "validating_shadow_forecast"
-    assert mod._status(SimpleNamespace(
-        promotion_ready=False, thermal_ready=True, cycle_count=5,
-        demand_days=7, draw_count=10, validation_count=20,
+    assert mod._status(status(
+        thermal_ready=True, cycle_count=5, demand_days=7, draw_count=10,
+        validation_count=20, energy_validation_days=3,
+    )) == "validating_against_legacy"
+    assert mod._status(status(
+        thermal_ready=True, cycle_count=5, demand_days=7, draw_count=10,
+        validation_count=20, energy_validation_days=7,
     )) == "thermal_model_ready"
+    assert mod._status(status(
+        promotion_ready=True, thermal_ready=True, cycle_count=5, demand_days=7,
+        draw_count=10, validation_count=20, energy_validation_days=7,
+    )) == "ready_for_promotion"
 
 
 def test_available_energy_respects_configured_tank_volume_and_minimum_temperature():
