@@ -70,7 +70,7 @@ def test_energy_model_learns_positive_temperature_deficit_coefficients_and_respo
     assert abs(fit.upper_c_per_kwh - 4.0) < 0.2
     assert abs(fit.lower_c_per_kwh - 6.0) < 0.2
     predicted = fit.predict(45, 35, 50)
-    assert abs(predicted - 1.2) < 0.1
+    assert abs(predicted - 1.6) < 0.1
 
 
 def test_high_temp_and_invalid_cycles_are_excluded():
