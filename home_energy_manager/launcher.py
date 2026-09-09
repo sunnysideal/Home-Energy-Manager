@@ -105,7 +105,7 @@ def load_and_split_options():
             ctl["ev_smart_charging_active_entity"] = ctl.get("intelligent_car_charging_entity", "")
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.36"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.37"
     for name, path in COMPONENT_OPTIONS.items():
         section = raw.get(name)
         if not isinstance(section, dict):
