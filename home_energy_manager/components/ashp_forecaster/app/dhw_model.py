@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 
-DHW_MODEL_SCHEMA_VERSION = 5
+DHW_MODEL_SCHEMA_VERSION = 6
 
 
 def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
@@ -106,6 +106,7 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
             target_ts TEXT NOT NULL,
             predicted_upper_c REAL,
             predicted_lower_c REAL,
+            predicted_dhw_kwh REAL,
             actual_upper_c REAL,
             actual_lower_c REAL,
             model_source TEXT NOT NULL,
@@ -113,6 +114,10 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
         )
         """
     )
+    validation_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_forecast_validation)")}
+    if "predicted_dhw_kwh" not in validation_columns:
+        db.execute("ALTER TABLE dhw_forecast_validation ADD COLUMN predicted_dhw_kwh REAL")
+
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_dhw_thermal_samples_valid_time "
         "ON dhw_thermal_samples(valid, timestamp)"
