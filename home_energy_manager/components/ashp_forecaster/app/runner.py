@@ -2,9 +2,9 @@
 """ASHP component process supervisor.
 
 Runs the existing forecaster unchanged together with passive DHW sampling/learning,
-shadow forecasting and validation processes. The legacy forecaster receives only the
-configuration fields its dataclass understands; passive helpers receive the full ASHP
-configuration.
+shadow forecasting, validation and diagnostics processes. The legacy forecaster receives
+only the configuration fields its dataclass understands; passive helpers receive the
+full ASHP configuration.
 """
 from __future__ import annotations
 
@@ -81,6 +81,9 @@ def main() -> None:
     ))
     children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "dhw_validation_runner.py")], env=passive_env
+    ))
+    children.append(subprocess.Popen(
+        [sys.executable, "-u", str(ROOT / "dhw_diagnostics_runner.py")], env=passive_env
     ))
 
     while True:
