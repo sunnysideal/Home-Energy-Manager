@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """ASHP component process supervisor.
 
-Runs the existing forecaster unchanged together with the passive DHW sampler.  The
-legacy forecaster receives only the configuration fields its dataclass understands,
-while the sampler receives the full ASHP configuration including new thermal fields.
+Runs the existing forecaster unchanged together with passive DHW sampling/learning and
+shadow validation processes. The legacy forecaster receives only the configuration
+fields its dataclass understands; passive helpers receive the full ASHP configuration.
 """
 from __future__ import annotations
 
@@ -66,14 +66,17 @@ def main() -> None:
 
     forecast_env = os.environ.copy()
     forecast_env["OPTIONS_PATH"] = str(legacy_options_path)
-    collector_env = os.environ.copy()
-    collector_env["OPTIONS_PATH"] = str(full_options_path)
+    passive_env = os.environ.copy()
+    passive_env["OPTIONS_PATH"] = str(full_options_path)
 
     children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "main.py")], env=forecast_env
     ))
     children.append(subprocess.Popen(
-        [sys.executable, "-u", str(ROOT / "dhw_collector.py")], env=collector_env
+        [sys.executable, "-u", str(ROOT / "dhw_collector.py")], env=passive_env
+    ))
+    children.append(subprocess.Popen(
+        [sys.executable, "-u", str(ROOT / "dhw_shadow_runner.py")], env=passive_env
     ))
 
     while True:
