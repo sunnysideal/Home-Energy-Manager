@@ -26,6 +26,7 @@ class HeatingCycle:
     start_lower_c: float
     end_upper_c: float
     end_lower_c: float
+    target_temp_c: float | None
     electrical_kwh: float
     outdoor_temp_c: float | None
     cycle_type: str = "normal_dhw"
@@ -36,19 +37,22 @@ class HeatingCycle:
         return (self.end_ts - self.start_ts).total_seconds() / 60.0
 
 
-def _classify(samples: list[CycleSample], start_idx: int, end_idx: int) -> tuple[str, bool]:
+def _classify(samples: list[CycleSample], start_idx: int, end_idx: int) -> tuple[str, bool, float | None]:
     active = samples[start_idx:end_idx + 1]
     if any(s.immersion_heating for s in active):
-        return "immersion", False
+        targets = [s.target_temp_c for s in active if s.target_temp_c is not None]
+        target = sum(targets) / len(targets) if targets else None
+        return "immersion", False, target
 
     targets = [s.target_temp_c for s in active if s.target_temp_c is not None]
     target_stable = not targets or max(targets) - min(targets) <= 1.0
+    target = sum(targets) / len(targets) if targets else None
     if not target_stable:
-        return "normal_dhw", False
+        return "normal_dhw", False, target
 
     high_target = bool(targets and max(targets) >= 58.0)
     high_observed = max(s.upper_temp_c for s in active) >= 58.0
-    return ("high_temp_dhw" if high_target or high_observed else "normal_dhw"), True
+    return ("high_temp_dhw" if high_target or high_observed else "normal_dhw"), True, target
 
 
 def build_cycle(samples: list[CycleSample], *, max_gap_minutes: float = 12.0) -> HeatingCycle | None:
@@ -93,7 +97,7 @@ def build_cycle(samples: list[CycleSample], *, max_gap_minutes: float = 12.0) ->
         if s.outdoor_temp_c is not None
     ]
     outdoor = sum(outdoor_values) / len(outdoor_values) if outdoor_values else None
-    cycle_type, valid = _classify(ordered, start_idx, end_idx)
+    cycle_type, valid, target = _classify(ordered, start_idx, end_idx)
 
     return HeatingCycle(
         start_ts=ordered[start_idx].timestamp,
@@ -102,6 +106,7 @@ def build_cycle(samples: list[CycleSample], *, max_gap_minutes: float = 12.0) ->
         start_lower_c=pre.lower_temp_c,
         end_upper_c=post.upper_temp_c,
         end_lower_c=post.lower_temp_c,
+        target_temp_c=target,
         electrical_kwh=electrical,
         outdoor_temp_c=outdoor,
         cycle_type=cycle_type,
