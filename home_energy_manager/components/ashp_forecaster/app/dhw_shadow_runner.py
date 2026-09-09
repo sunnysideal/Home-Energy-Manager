@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish and validate the two-sensor DHW thermal forecast alongside legacy DHW."""
+"""Publish and validate the two-sensor DHW thermal forecast alongside production DHW."""
 from __future__ import annotations
 
 import json
@@ -29,6 +29,10 @@ LEGACY_FORECAST_ENTITY = "sensor.ashp_forecast_next_48h"
 THERMAL_FORECAST_ENTITY = "sensor.ashp_dhw_thermal_forecast_next_48h"
 COMPARISON_ENTITY = "sensor.ashp_dhw_forecast_comparison"
 PRODUCTION_SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
+PRODUCTION_INTERVAL_MINUTES = 30
+PRODUCTION_HOURS = 48
+PRODUCTION_SLOTS = PRODUCTION_HOURS * 60 // PRODUCTION_INTERVAL_MINUTES
+THERMAL_STEP_MINUTES = 5
 
 
 class Publisher:
@@ -136,30 +140,49 @@ def _latest_tank_state(db: sqlite3.Connection) -> tuple[float, float, float | No
     return float(row[0]), float(row[1]), (float(row[2]) if row[2] is not None else None)
 
 
-def _ceil_local(dt: datetime, minutes: int = 5) -> datetime:
+def _ceil_local(dt: datetime, minutes: int) -> datetime:
     base = dt.replace(second=0, microsecond=0)
     remainder = base.minute % minutes
-    if remainder == 0:
+    if remainder == 0 and dt.second == 0 and dt.microsecond == 0:
         return base
+    if remainder == 0:
+        return base + timedelta(minutes=minutes)
     return base + timedelta(minutes=minutes - remainder)
 
 
-def _published_half_hours(slots: list, *, step_minutes: int = 5) -> list[dict[str, Any]]:
-    """Aggregate complete clock-aligned half hours from the 5-minute thermal simulation."""
-    if not slots:
-        return []
-    by_start = {slot.start: slot for slot in slots}
-    first = slots[0].start
-    cursor = first.replace(minute=30 if first.minute >= 30 else 0, second=0, microsecond=0)
-    if cursor < first:
-        cursor += timedelta(minutes=30)
-    end = slots[-1].start + timedelta(minutes=step_minutes)
+def _production_starts(now: datetime) -> list[datetime]:
+    start = _ceil_local(now, PRODUCTION_INTERVAL_MINUTES)
+    return [start + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES * i) for i in range(PRODUCTION_SLOTS)]
+
+
+def _required_simulation_hours(simulation_start: datetime, production_starts: list[datetime]) -> float:
+    if not production_starts:
+        return float(PRODUCTION_HOURS)
+    required_end = production_starts[-1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES)
+    seconds = max(0.0, (required_end - simulation_start).total_seconds())
+    # build_shadow_forecast truncates to integer step count, so round upward explicitly.
+    steps = math.ceil(seconds / (THERMAL_STEP_MINUTES * 60.0))
+    return steps * THERMAL_STEP_MINUTES / 60.0
+
+
+def _published_half_hours(
+    slots: list,
+    production_starts: list[datetime],
+    *,
+    step_minutes: int = THERMAL_STEP_MINUTES,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Aggregate exactly the production clock grid from 5-minute thermal slots."""
+    if not slots or not production_starts:
+        return [], False
+    by_start = {slot.start.astimezone(timezone.utc): slot for slot in slots}
     rows: list[dict[str, Any]] = []
-    while cursor + timedelta(minutes=30) <= end:
-        chunk = [by_start.get(cursor + timedelta(minutes=i)) for i in range(0, 30, step_minutes)]
+    for cursor in production_starts:
+        chunk = [
+            by_start.get((cursor + timedelta(minutes=i)).astimezone(timezone.utc))
+            for i in range(0, PRODUCTION_INTERVAL_MINUTES, step_minutes)
+        ]
         if any(slot is None for slot in chunk):
-            cursor += timedelta(minutes=30)
-            continue
+            return rows, False
         complete = [slot for slot in chunk if slot is not None]
         endpoint = complete[-1]
         dhw_kwh = sum(float(slot.dhw_kwh) for slot in complete)
@@ -172,8 +195,7 @@ def _published_half_hours(slots: list, *, step_minutes: int = 5) -> list[dict[st
             "upper_temperature_c": round(float(endpoint.upper_temp_c), 2),
             "lower_temperature_c": round(float(endpoint.lower_temp_c), 2),
         })
-        cursor += timedelta(minutes=30)
-    return rows
+    return rows, len(rows) == len(production_starts) == PRODUCTION_SLOTS
 
 
 def _publish_not_ready(publisher: Publisher, reason: str) -> None:
@@ -187,6 +209,8 @@ def _publish_not_ready(publisher: Publisher, reason: str) -> None:
             "status": "learning",
             "reason": reason,
             "forecast": [],
+            "forecast_slots": 0,
+            "horizon_complete": False,
             "last_updated": now,
         },
     )
@@ -238,9 +262,13 @@ def run_shadow_once(
     prefix = str(cfg.get("dhw_schedule_prefix") or "")
     schedule = _schedule_bits(token, prefix) if prefix else {}
     tz = ZoneInfo(timezone_name)
-    start = _ceil_local(datetime.now(tz), 5)
+    now_local = datetime.now(tz)
+    simulation_start = _ceil_local(now_local, THERMAL_STEP_MINUTES)
+    production_starts = _production_starts(now_local)
+    simulation_hours = _required_simulation_hours(simulation_start, production_starts)
+
     slots = build_shadow_forecast(
-        start=start,
+        start=simulation_start,
         initial_upper_c=upper,
         initial_lower_c=lower,
         target_temp_c=target,
@@ -251,23 +279,34 @@ def run_shadow_once(
         tank_volume_l=float(cfg.get("dhw_tank_volume_l", 250)),
         ambient_temp_c=ambient if ambient is not None else 20.0,
         minimum_useful_temperature_c=float(cfg.get("dhw_min_usable_temperature_c", 40.0)),
-        horizon_hours=48,
-        step_minutes=5,
+        horizon_hours=simulation_hours,
+        step_minutes=THERMAL_STEP_MINUTES,
     )
     forecast_ts = datetime.now(timezone.utc)
     legacy, legacy_total = _legacy_forecast(token)
+    legacy_available = bool(legacy)
+    legacy_for_validation = legacy if legacy_available else {}
+    if not legacy_available:
+        LOG.info("DHW legacy comparison deferred: production forecast not yet published")
+
     checkpoints = persist_shadow_validation(
         db,
         slots,
         forecast_ts=forecast_ts,
-        legacy_dhw_by_start=legacy,
+        legacy_dhw_by_start=legacy_for_validation,
     )
-    total_dhw = sum(slot.dhw_kwh for slot in slots)
-    published = _published_half_hours(slots)
+    published, horizon_complete = _published_half_hours(slots, production_starts)
+    # Production horizon total deliberately excludes the pre-grid simulation lead-in.
+    total_dhw = sum(float(row["dhw_kwh"]) for row in published)
     production_source = (_state_text(token, PRODUCTION_SOURCE_ENTITY) or "legacy").strip().lower()
     if production_source not in {"legacy", "thermal"}:
         production_source = "legacy"
     thermal_authoritative = production_source == "thermal"
+    production_start = production_starts[0].isoformat() if production_starts else None
+    production_end = (
+        production_starts[-1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES)
+        if production_starts else None
+    )
 
     if publisher is not None:
         now = forecast_ts.isoformat()
@@ -283,6 +322,11 @@ def run_shadow_once(
                 "authoritative": thermal_authoritative,
                 "forecast": published,
                 "forecast_slots": len(published),
+                "expected_forecast_slots": PRODUCTION_SLOTS,
+                "horizon_complete": horizon_complete,
+                "production_start": production_start,
+                "production_end": production_end.isoformat() if production_end else None,
+                "simulation_start": simulation_start.isoformat(),
                 "simulation_slots": len(slots),
                 "start_upper_temperature_c": round(upper, 2),
                 "start_lower_temperature_c": round(lower, 2),
@@ -291,30 +335,37 @@ def run_shadow_once(
                 "last_updated": now,
             },
         )
-        publisher.sensor(
-            COMPARISON_ENTITY,
-            round(total_dhw - legacy_total, 3),
-            {
-                "friendly_name": "ASHP DHW Forecast Comparison",
-                "unit_of_measurement": "kWh",
-                "thermal_dhw_kwh": round(total_dhw, 3),
+        comparison_attrs = {
+            "friendly_name": "ASHP DHW Forecast Comparison",
+            "unit_of_measurement": "kWh",
+            "thermal_dhw_kwh": round(total_dhw, 3),
+            "thermal_forecast_entity": THERMAL_FORECAST_ENTITY,
+            "legacy_forecast_entity": LEGACY_FORECAST_ENTITY,
+            "production_source_entity": PRODUCTION_SOURCE_ENTITY,
+            "authoritative_forecast": production_source,
+            "thermal_forecast_published": True,
+            "horizon_complete": horizon_complete,
+            "legacy_comparison_available": legacy_available,
+            "last_updated": now,
+        }
+        if legacy_available:
+            comparison_attrs.update({
                 "legacy_dhw_kwh": round(legacy_total, 3),
                 "difference_kwh": round(total_dhw - legacy_total, 3),
-                "thermal_forecast_entity": THERMAL_FORECAST_ENTITY,
-                "legacy_forecast_entity": LEGACY_FORECAST_ENTITY,
-                "production_source_entity": PRODUCTION_SOURCE_ENTITY,
-                "authoritative_forecast": production_source,
-                "thermal_forecast_published": True,
-                "last_updated": now,
-            },
-        )
+            })
+            comparison_state: Any = round(total_dhw - legacy_total, 3)
+        else:
+            comparison_attrs["reason"] = "legacy_forecast_not_yet_published"
+            comparison_state = "waiting"
+        publisher.sensor(COMPARISON_ENTITY, comparison_state, comparison_attrs)
 
     LOG.info(
-        "DHW shadow forecast published: simulation_slots=%d published_slots=%d checkpoints=%d "
-        "thermal_next_48h=%.2fkWh legacy_snapshot=%.2fkWh legacy_slots=%d "
-        "production_source=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC mode=%s",
-        len(slots), len(published), checkpoints, total_dhw, legacy_total, len(legacy),
-        production_source, upper, lower, target, mode,
+        "DHW shadow forecast published: simulation_slots=%d published_slots=%d horizon_complete=%s "
+        "checkpoints=%d thermal_next_48h=%.2fkWh legacy_snapshot=%s legacy_slots=%d "
+        "production_source=%s production_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC mode=%s",
+        len(slots), len(published), horizon_complete, checkpoints, total_dhw,
+        f"{legacy_total:.2f}kWh" if legacy_available else "deferred", len(legacy),
+        production_source, production_start, upper, lower, target, mode,
     )
     return checkpoints
 
