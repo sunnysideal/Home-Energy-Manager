@@ -68,8 +68,6 @@ def test_fresh_database_does_not_require_metadata_to_exist_first():
 
 def test_concurrent_schema_initialisation_is_safe(tmp_path):
     path = tmp_path / "ashp_forecast.db"
-    # Reproduce an upgrade database where new columns are genuinely absent before
-    # several ASHP helper processes all initialize the schema together.
     seed = sqlite3.connect(path)
     seed.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     seed.execute(
@@ -111,7 +109,7 @@ def test_concurrent_schema_initialisation_is_safe(tmp_path):
     thermal_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_thermal_samples)")}
     validation_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_forecast_validation)")}
     assert {"dhw_energy_total_kwh", "target_temp_c"}.issubset(thermal_columns)
-    assert "predicted_dhw_kwh" in validation_columns
+    assert {"predicted_dhw_kwh", "legacy_dhw_kwh", "actual_dhw_kwh"}.issubset(validation_columns)
 
 
 def test_dhw_model_schema_supports_two_temperature_samples():
