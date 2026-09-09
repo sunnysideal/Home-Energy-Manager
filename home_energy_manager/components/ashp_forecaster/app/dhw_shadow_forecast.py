@@ -119,7 +119,6 @@ def build_shadow_forecast(
     horizon_hours: int = 48,
     step_minutes: int = 5,
 ) -> list[ShadowSlot]:
-    """Simulate DHW tank state and electrical demand for the full requested horizon."""
     if start.tzinfo is None:
         raise ValueError("start must be timezone-aware")
     if horizon_hours <= 0 or step_minutes <= 0:
@@ -186,35 +185,41 @@ def persist_shadow_validation(
     source: str = "thermal_shadow",
     keep_days: int = 7,
     step_minutes: int = 5,
+    legacy_dhw_by_start: dict[str, float] | None = None,
 ) -> int:
-    """Store 30-minute validation checkpoints while keeping 5-minute simulation internal."""
+    """Store 30-minute checkpoints and optional legacy DHW for like-for-like scoring."""
     if not slots:
         return 0
     forecast_ts = forecast_ts or datetime.now(timezone.utc)
     if forecast_ts.tzinfo is None:
         forecast_ts = forecast_ts.replace(tzinfo=timezone.utc)
     forecast_iso = forecast_ts.astimezone(timezone.utc).isoformat()
+    legacy_dhw_by_start = legacy_dhw_by_start or {}
     written = 0
+    steps_per_checkpoint = max(1, int(round(30 / step_minutes)))
     with db:
-        for offset in range(0, len(slots), 6):
-            chunk = slots[offset:offset + 6]
+        for offset in range(0, len(slots), steps_per_checkpoint):
+            chunk = slots[offset:offset + steps_per_checkpoint]
             if not chunk:
                 continue
             endpoint = chunk[-1]
             target_time = endpoint.start + timedelta(minutes=step_minutes)
             target_iso = target_time.astimezone(timezone.utc).isoformat()
+            slot_start_iso = chunk[0].start.astimezone(timezone.utc).isoformat()
             predicted_dhw = sum(slot.dhw_kwh for slot in chunk)
+            legacy_dhw = legacy_dhw_by_start.get(slot_start_iso)
             db.execute(
                 "INSERT INTO dhw_forecast_validation("
                 "forecast_ts,target_ts,predicted_upper_c,predicted_lower_c,predicted_dhw_kwh,"
-                "actual_upper_c,actual_lower_c,model_source"
-                ") VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(forecast_ts,target_ts) DO UPDATE SET "
+                "legacy_dhw_kwh,actual_dhw_kwh,actual_upper_c,actual_lower_c,model_source"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(forecast_ts,target_ts) DO UPDATE SET "
                 "predicted_upper_c=excluded.predicted_upper_c,"
                 "predicted_lower_c=excluded.predicted_lower_c,"
-                "predicted_dhw_kwh=excluded.predicted_dhw_kwh,model_source=excluded.model_source",
+                "predicted_dhw_kwh=excluded.predicted_dhw_kwh,"
+                "legacy_dhw_kwh=excluded.legacy_dhw_kwh,model_source=excluded.model_source",
                 (
                     forecast_iso, target_iso, endpoint.upper_temp_c, endpoint.lower_temp_c,
-                    predicted_dhw, None, None, source,
+                    predicted_dhw, legacy_dhw, None, None, None, source,
                 ),
             )
             written += 1
