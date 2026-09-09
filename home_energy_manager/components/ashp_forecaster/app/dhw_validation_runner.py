@@ -42,13 +42,15 @@ def run_once(db: sqlite3.Connection) -> None:
     )
     LOG.info(
         "DHW validation: temp_matched=%d energy_matched=%d confidence=%.0f%% "
-        "thermal_ready=%s promotion_ready=%s passive=%d cycles=%d demand_days=%d "
-        "draws=%d near_validation=%d %s [%s]",
+        "trial_ready=%s thermal_ready=%s promotion_ready=%s performance_bad=%s "
+        "passive=%d cycles=%d demand_days=%d draws=%d near_validation=%d %s [%s]",
         matched,
         energy_matched,
         result.confidence * 100.0,
+        result.trial_ready,
         result.thermal_ready,
         result.promotion_ready,
+        result.performance_bad,
         result.passive_samples,
         result.cycle_count,
         result.demand_days,
