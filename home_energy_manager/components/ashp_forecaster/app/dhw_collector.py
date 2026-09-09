@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from dhw_draw_detector import ThermalSample, detect_draw
 from dhw_model import ensure_dhw_model_schema
 
 LOG = logging.getLogger("ashp_dhw_collector")
@@ -79,6 +80,27 @@ def _set_metadata(db: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def _previous_sample(db: sqlite3.Connection, before_ts: str) -> ThermalSample | None:
+    row = db.execute(
+        "SELECT timestamp,upper_temp_c,lower_temp_c,dhw_heating,valid "
+        "FROM dhw_thermal_samples WHERE timestamp<? AND upper_temp_c IS NOT NULL "
+        "AND lower_temp_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1",
+        (before_ts,),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return ThermalSample(
+            timestamp=datetime.fromisoformat(str(row[0])),
+            upper_temp_c=float(row[1]),
+            lower_temp_c=float(row[2]),
+            heating=bool(row[3]),
+            valid=bool(row[4]),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
     upper_entity = str(cfg.get("dhw_tank_upper_temperature_entity") or cfg.get("dhw_tank_temperature_entity") or "")
     lower_entity = str(cfg.get("dhw_tank_lower_temperature_entity") or "")
@@ -104,7 +126,17 @@ def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
     outdoor = _finite_state(token, str(cfg.get("outdoor_temperature_entity") or ""))
     activity_threshold = max(0.0, float(cfg.get("dhw_activity_threshold_kwh", 0.2)))
     heating = int(energy_delta is not None and energy_delta >= min(activity_threshold, 0.05))
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    previous_sample = _previous_sample(db, now)
+
+    draw_event = None
+    if valid and upper is not None and lower is not None and previous_sample is not None:
+        draw_event = detect_draw(
+            previous_sample,
+            ThermalSample(now_dt, upper, lower, bool(heating), True),
+            volume_l=float(cfg.get("dhw_tank_volume_l", 250)),
+        )
 
     with db:
         db.execute(
@@ -121,16 +153,32 @@ def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
             "valid=excluded.valid",
             (now, upper, lower, heating, 0, energy_delta, energy_total, ambient, outdoor, int(valid)),
         )
+        if draw_event is not None:
+            db.execute(
+                "INSERT INTO dhw_draw_events("
+                "timestamp,estimated_thermal_kwh,confidence,upper_before_c,lower_before_c,"
+                "upper_after_c,lower_after_c) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(timestamp) DO UPDATE SET "
+                "estimated_thermal_kwh=excluded.estimated_thermal_kwh,confidence=excluded.confidence,"
+                "upper_before_c=excluded.upper_before_c,lower_before_c=excluded.lower_before_c,"
+                "upper_after_c=excluded.upper_after_c,lower_after_c=excluded.lower_after_c",
+                (
+                    draw_event.timestamp.isoformat(), draw_event.estimated_thermal_kwh,
+                    draw_event.confidence, draw_event.upper_before_c, draw_event.lower_before_c,
+                    draw_event.upper_after_c, draw_event.lower_after_c,
+                ),
+            )
         if energy_total is not None:
             _set_metadata(db, "dhw_collector_last_energy_total_kwh", str(energy_total))
             _set_metadata(db, "dhw_collector_last_energy_timestamp", now)
 
     LOG.info(
-        "DHW thermal sample: upper=%s lower=%s delta_kwh=%s heating=%s ambient=%s valid=%s",
+        "DHW thermal sample: upper=%s lower=%s delta_kwh=%s heating=%s draw=%s ambient=%s valid=%s",
         f"{upper:.2f}" if upper is not None else "unavailable",
         f"{lower:.2f}" if lower is not None else "unavailable",
         f"{energy_delta:.4f}" if energy_delta is not None else "n/a",
         bool(heating),
+        f"{draw_event.estimated_thermal_kwh:.3f}kWh" if draw_event is not None else "none",
         f"{ambient:.2f}" if ambient is not None else "default-later",
         valid,
     )
