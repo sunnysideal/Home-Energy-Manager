@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from dhw_cycle_learner import learn_cycle_energy, persist_cycle_energy_fit
 from dhw_cycle_tracker import CycleSample, build_cycle
 from dhw_draw_detector import ThermalSample, detect_draw
 from dhw_model import ensure_dhw_model_schema
@@ -294,24 +295,38 @@ def main() -> None:
                 record_sample(db, token, cfg)
                 _persist_latest_cycle(db)
                 if time.monotonic() - last_fit_monotonic >= 3600.0:
-                    fit = learn_passive_parameters(
+                    passive_fit = learn_passive_parameters(
                         db,
                         volume_l=float(cfg.get("dhw_tank_volume_l", 250)),
                     )
+                    cycle_fit = learn_cycle_energy(db)
                     last_fit_monotonic = time.monotonic()
-                    if fit is not None:
-                        persist_passive_fit(db, fit)
+                    if passive_fit is not None:
+                        persist_passive_fit(db, passive_fit)
                         LOG.info(
                             "DHW passive model learned: upper_loss=%.3fW/K lower_loss=%.3fW/K "
                             "coupling=%.3fW/K intervals=%d rmse=%.3fC",
-                            fit.upper_loss_w_per_k,
-                            fit.lower_loss_w_per_k,
-                            fit.coupling_w_per_k,
-                            fit.sample_count,
-                            fit.rmse_c,
+                            passive_fit.upper_loss_w_per_k,
+                            passive_fit.lower_loss_w_per_k,
+                            passive_fit.coupling_w_per_k,
+                            passive_fit.sample_count,
+                            passive_fit.rmse_c,
                         )
                     else:
                         LOG.info("DHW passive model not ready: insufficient/unsuitable quiet samples")
+                    if cycle_fit is not None:
+                        persist_cycle_energy_fit(db, cycle_fit)
+                        LOG.info(
+                            "DHW cycle energy model learned: intercept=%.3fkWh upper=%.4fkWh/C "
+                            "lower=%.4fkWh/C cycles=%d rmse=%.3fkWh",
+                            cycle_fit.intercept_kwh,
+                            cycle_fit.upper_kwh_per_c,
+                            cycle_fit.lower_kwh_per_c,
+                            cycle_fit.sample_count,
+                            cycle_fit.rmse_kwh,
+                        )
+                    else:
+                        LOG.info("DHW cycle energy model not ready: need more valid normal cycles")
         except Exception:
             LOG.exception("DHW thermal sample/learning failed")
         time.sleep(0.25)
