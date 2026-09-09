@@ -147,22 +147,23 @@ def _persist_latest_cycle(db: sqlite3.Connection) -> bool:
         db.execute(
             "INSERT INTO dhw_heating_cycles("
             "start_ts,end_ts,start_upper_c,start_lower_c,end_upper_c,end_lower_c,"
-            "electrical_kwh,outdoor_temp_c,cycle_type,valid"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "target_temp_c,electrical_kwh,outdoor_temp_c,cycle_type,valid"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 cycle.start_ts.isoformat(), cycle.end_ts.isoformat(),
                 cycle.start_upper_c, cycle.start_lower_c,
-                cycle.end_upper_c, cycle.end_lower_c,
+                cycle.end_upper_c, cycle.end_lower_c, cycle.target_temp_c,
                 cycle.electrical_kwh, cycle.outdoor_temp_c,
                 cycle.cycle_type, int(cycle.valid),
             ),
         )
     LOG.info(
         "DHW heating cycle stored: start=%s end=%s duration=%.0fmin energy=%.3fkWh "
-        "upper=%.1f->%.1fC lower=%.1f->%.1fC outdoor=%s type=%s valid=%s",
+        "upper=%.1f->%.1fC lower=%.1f->%.1fC target=%s outdoor=%s type=%s valid=%s",
         cycle.start_ts.isoformat(), cycle.end_ts.isoformat(), cycle.duration_minutes,
         cycle.electrical_kwh, cycle.start_upper_c, cycle.end_upper_c,
         cycle.start_lower_c, cycle.end_lower_c,
+        f"{cycle.target_temp_c:.1f}C" if cycle.target_temp_c is not None else "n/a",
         f"{cycle.outdoor_temp_c:.1f}C" if cycle.outdoor_temp_c is not None else "n/a",
         cycle.cycle_type, cycle.valid,
     )
