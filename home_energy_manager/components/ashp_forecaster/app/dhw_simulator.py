@@ -57,6 +57,24 @@ def _capacity_kwh_per_c(volume_l: float) -> float:
     return volume_l * WATER_KWH_PER_LITRE_C
 
 
+def stabilise_stratification(state: TankState, params: TankParameters) -> TankState:
+    """Remove an unstable lower-hotter-than-upper inversion without losing energy.
+
+    A vertical DHW cylinder cannot sustain a meaningful thermal inversion: buoyancy
+    rapidly mixes hotter lower water upward.  The two-zone model therefore collapses an
+    inverted state to the volume-weighted mixed temperature.  Weighting by zone volume
+    preserves the represented sensible heat (same water specific heat in both zones).
+    """
+    if state.lower_temp_c <= state.upper_temp_c:
+        return state
+    total_v = params.upper_volume_l + params.lower_volume_l
+    mixed = (
+        state.upper_temp_c * params.upper_volume_l
+        + state.lower_temp_c * params.lower_volume_l
+    ) / total_v
+    return TankState(mixed, mixed)
+
+
 def usable_energy_kwh(state: TankState, params: TankParameters) -> float:
     """Approximate stored thermal energy above the configured useful temperature."""
     upper = _capacity_kwh_per_c(params.upper_volume_l) * max(
@@ -99,7 +117,7 @@ def step_tank(
         raise ValueError("minutes must be positive")
     hours = minutes / 60.0
 
-    state = _apply_draw(state, max(inputs.draw_kwh, 0.0), params)
+    state = stabilise_stratification(_apply_draw(state, max(inputs.draw_kwh, 0.0), params), params)
     upper = state.upper_temp_c
     lower = state.lower_temp_c
     upper_cap = _capacity_kwh_per_c(params.upper_volume_l)
@@ -110,7 +128,7 @@ def step_tank(
     upper -= upper_loss_kwh / upper_cap
     lower -= lower_loss_kwh / lower_cap
 
-    # Positive coupling transfers heat from the hotter upper zone to the lower zone.
+    # In normal stratification, slow conductive/circulatory coupling moves heat downward.
     coupling_kwh = max(upper - lower, 0.0) * params.coupling_w_per_k * hours / 1000.0
     upper -= coupling_kwh / upper_cap
     lower += coupling_kwh / lower_cap
@@ -119,7 +137,7 @@ def step_tank(
     upper += (heat * params.heating_upper_fraction) / upper_cap
     lower += (heat * (1.0 - params.heating_upper_fraction)) / lower_cap
 
-    return TankState(upper, lower)
+    return stabilise_stratification(TankState(upper, lower), params)
 
 
 def simulate(
@@ -130,7 +148,7 @@ def simulate(
     minutes: float = 5.0,
 ) -> list[TankState]:
     """Return one tank state per input step, suitable for a 48-hour horizon."""
-    state = initial
+    state = stabilise_stratification(initial, params)
     out: list[TankState] = []
     for item in inputs:
         state = step_tank(state, params, item, minutes=minutes)
