@@ -1,8 +1,8 @@
 """Persistence primitives for the ASHP forecaster DHW thermal model.
 
-This module deliberately contains storage/schema concerns only.  The thermal model,
+This module deliberately contains storage/schema concerns only. The thermal model,
 learning and forecast selection remain owned by the ASHP forecaster and are wired in
-separate commits.  Keeping schema creation idempotent allows existing installations
+separate commits. Keeping schema creation idempotent allows existing installations
 to upgrade without rebuilding or deleting the legacy DHW training data.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 
-DHW_MODEL_SCHEMA_VERSION = 2
+DHW_MODEL_SCHEMA_VERSION = 3
 
 
 def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
@@ -25,6 +25,7 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
             immersion_heating INTEGER NOT NULL DEFAULT 0,
             dhw_energy_delta_kwh REAL,
             dhw_energy_total_kwh REAL,
+            target_temp_c REAL,
             ambient_temp_c REAL,
             outdoor_temp_c REAL,
             valid INTEGER NOT NULL DEFAULT 1
@@ -34,6 +35,8 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
     sample_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_thermal_samples)")}
     if "dhw_energy_total_kwh" not in sample_columns:
         db.execute("ALTER TABLE dhw_thermal_samples ADD COLUMN dhw_energy_total_kwh REAL")
+    if "target_temp_c" not in sample_columns:
+        db.execute("ALTER TABLE dhw_thermal_samples ADD COLUMN target_temp_c REAL")
 
     db.execute(
         """
