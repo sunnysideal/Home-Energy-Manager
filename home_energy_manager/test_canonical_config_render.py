@@ -16,6 +16,7 @@ def test_canonical_only_config_renders_private_component_contracts():
             "export_energy_total_kwh": "sensor.true_export",
         },
         "inverter": {
+            "house_load_energy_total_kwh": "sensor.house_energy",
             "import_energy_total_kwh": "sensor.inverter_import",
             "export_energy_total_kwh": "sensor.inverter_export",
             "max_rate_w": "sensor.max_rate",
@@ -88,7 +89,6 @@ def test_canonical_only_config_renders_private_component_contracts():
             "home_forecaster": {
                 "history_days": 28,
                 "forecast_interval_minutes": 5,
-                "controller_refresh_request_entity": "sensor.home_energy_forecast_refresh_request",
             },
             "ashp_forecaster": {
                 "base_temperature_c": 15.5,
@@ -98,6 +98,11 @@ def test_canonical_only_config_renders_private_component_contracts():
             },
             "battery_learning": {
                 "battery_idle_threshold_w": 75,
+            },
+            "internal": {
+                "forecast_refresh_request_entity": "sensor.home_energy_forecast_refresh_request",
+                "home_energy_forecast_entity": "sensor.home_energy_forecast",
+                "controller_status_entity": "sensor.home_energy_controller",
             },
             "mqtt": {
                 "enabled": True,
@@ -110,12 +115,17 @@ def test_canonical_only_config_renders_private_component_contracts():
 
     assert diagnostics.source_layout == "canonical"
     assert canonical["grid"]["import_energy_total_kwh"] == "sensor.true_import"
+    assert canonical["inverter"]["house_load_energy_total_kwh"] == "sensor.house_energy"
+    assert runtime["home_forecaster"]["load"]["energy_total_kwh"] == "sensor.house_energy"
     assert runtime["home_forecaster"]["meter"]["import_energy_total_kwh"] == "sensor.true_import"
     assert runtime["home_forecaster"]["tariff"]["import_energy_total_kwh"] == "sensor.inverter_import"
     assert runtime["home_forecaster"]["battery"]["soc"] == "sensor.soc"
     assert runtime["home_forecaster"]["solar"]["energy_total_kwh"] == "sensor.pv_total"
     assert runtime["home_forecaster"]["ev"]["energy_total_kwh"] == "sensor.ev_total"
+    assert runtime["home_forecaster"]["settings"]["controller_refresh_request_entity"] == "sensor.home_energy_forecast_refresh_request"
     assert runtime["ashp_forecaster"]["ch_energy_entity"] == "sensor.ch_total"
     assert runtime["ashp_forecaster"]["dhw_tank_upper_temperature_entity"] == "sensor.dhw_top"
     assert runtime["controller"]["operation_mode"] == "forecast_only"
+    assert runtime["controller"]["home_energy_forecast_entity"] == "sensor.home_energy_forecast"
+    assert runtime["controller"]["status_entity_id"] == "sensor.home_energy_controller"
     assert runtime["controller"]["ev_smart_charging_active_entity"] == "binary_sensor.ev_active"
