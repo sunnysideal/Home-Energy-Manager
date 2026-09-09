@@ -11,7 +11,7 @@ spec.loader.exec_module(sim)
 
 
 def test_passive_tank_cools():
-    params = sim.TankParameters()
+    params = sim.TankParameters(coupling_w_per_k=0.0)
     state = sim.TankState(52.0, 45.0)
     result = sim.step_tank(state, params, sim.StepInputs(ambient_temp_c=20.0), minutes=60)
     assert result.upper_temp_c < state.upper_temp_c
