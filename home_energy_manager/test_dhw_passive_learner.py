@@ -77,12 +77,15 @@ def test_insufficient_samples_do_not_create_model():
     assert mod.learn_passive_parameters(db, minimum_intervals=24) is None
 
 
-def test_persisted_fit_writes_three_model_parameters():
+def test_persisted_fit_writes_canonical_parameters_and_legacy_aliases():
     db = make_db()
     fit = mod.PassiveFit(1.2, 0.8, 3.0, 30, 0.12)
     mod.persist_passive_fit(db, fit)
     rows = dict(db.execute("SELECT name,value FROM dhw_model_parameters"))
     assert rows == {
+        "dhw_upper_loss_w_per_k": 1.2,
+        "dhw_lower_loss_w_per_k": 0.8,
+        "dhw_coupling_w_per_k": 3.0,
         "upper_loss_w_per_k": 1.2,
         "lower_loss_w_per_k": 0.8,
         "coupling_w_per_k": 3.0,
