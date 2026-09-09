@@ -203,6 +203,7 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
         # True utility meter boundary is deliberately separate from inverter/battery metering.
         ("grid.import_energy_total_kwh", ("home_forecaster.meter.import_energy_total_kwh",), ""),
         ("grid.export_energy_total_kwh", ("home_forecaster.meter.export_energy_total_kwh",), ""),
+        ("inverter.house_load_energy_total_kwh", ("home_forecaster.load.energy_total_kwh",), ""),
         ("inverter.import_energy_total_kwh", ("home_forecaster.tariff.import_energy_total_kwh",), ""),
         ("inverter.export_energy_total_kwh", ("home_forecaster.tariff.export_energy_total_kwh",), ""),
         ("inverter.max_rate_w", ("home_forecaster.battery.inverter_max_rate_w",), ""),
@@ -290,7 +291,10 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
     # Advanced contains tuning/learning settings rather than user-domain entity identity.
     hf_settings = _get(raw, "home_forecaster.settings", {})
     if isinstance(hf_settings, dict):
-        canonical["advanced"]["home_forecaster"] = {k: v for k, v in hf_settings.items() if k != "timezone"}
+        canonical["advanced"]["home_forecaster"] = {
+            k: v for k, v in hf_settings.items()
+            if k not in {"timezone", "controller_refresh_request_entity"}
+        }
     ashp = raw.get("ashp_forecaster") if isinstance(raw.get("ashp_forecaster"), dict) else {}
     canonical["advanced"]["ashp_forecaster"] = {
         k: v for k, v in ashp.items()
@@ -309,6 +313,20 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
             if k.startswith("battery_efficiency_") or k.startswith("battery_idle_")
         }
     canonical["advanced"]["mqtt"] = deepcopy(raw.get("mqtt", {})) if isinstance(raw.get("mqtt"), dict) else {}
+    canonical["advanced"]["internal"] = {
+        "forecast_refresh_request_entity": str(
+            _get(raw, "home_forecaster.settings.controller_refresh_request_entity", "sensor.home_energy_forecast_refresh_request")
+            or "sensor.home_energy_forecast_refresh_request"
+        ),
+        "home_energy_forecast_entity": str(
+            _get(raw, "controller.home_energy_forecast_entity", "sensor.home_energy_forecast")
+            or "sensor.home_energy_forecast"
+        ),
+        "controller_status_entity": str(
+            _get(raw, "controller.status_entity_id", "sensor.home_energy_controller")
+            or "sensor.home_energy_controller"
+        ),
+    }
 
     user_advanced = raw.get("advanced") if isinstance(raw.get("advanced"), dict) else {}
     for key, value in user_advanced.items():
@@ -351,6 +369,9 @@ def apply_canonical(runtime: dict[str, Any], canonical: dict[str, Any]) -> None:
     ):
         dst = "inverter_max_rate_w" if key == "max_rate_w" else key
         hb[dst] = inv.get(key, "")
+
+    load = hf.setdefault("load", {})
+    load["energy_total_kwh"] = inv.get("house_load_energy_total_kwh", "")
 
     hm = hf.setdefault("meter", {})
     hm["import_energy_total_kwh"] = grid.get("import_energy_total_kwh", "")
@@ -401,6 +422,10 @@ def apply_canonical(runtime: dict[str, Any], canonical: dict[str, Any]) -> None:
     for key, value in advanced.get("home_forecaster", {}).items():
         if key != "timezone":
             hfs[key] = value
+    internal = advanced.get("internal", {}) if isinstance(advanced.get("internal"), dict) else {}
+    hfs["controller_refresh_request_entity"] = str(
+        internal.get("forecast_refresh_request_entity") or "sensor.home_energy_forecast_refresh_request"
+    )
     for key, value in advanced.get("ashp_forecaster", {}).items():
         af[key] = value
     for key, value in advanced.get("battery_learning", {}).items():
@@ -408,6 +433,10 @@ def apply_canonical(runtime: dict[str, Any], canonical: dict[str, Any]) -> None:
 
     for key, value in canonical["energy_strategy"].items():
         ctl[key] = value
+    ctl["status_entity_id"] = str(internal.get("controller_status_entity") or "sensor.home_energy_controller")
+    ctl["home_energy_forecast_entity"] = str(
+        internal.get("home_energy_forecast_entity") or "sensor.home_energy_forecast"
+    )
     ctl["ev_smart_charging_enabled"] = bool(ev.get("smart_charging_enabled", True))
     ctl["ev_smart_charging_dispatch_entity"] = ev.get("smart_charging_dispatch", "")
     ctl["ev_smart_charging_active_entity"] = ev.get("smart_charging_active", "")
