@@ -24,6 +24,7 @@ from dhw_cycle_learner import learn_cycle_energy, persist_cycle_energy_fit
 from dhw_cycle_tracker import CycleSample, build_cycle
 from dhw_demand_learner import learn_demand_profile, persist_demand_profile
 from dhw_draw_detector import ThermalSample, detect_draw
+from dhw_history_bootstrap import bootstrap_history
 from dhw_model import ensure_dhw_model_schema
 from dhw_passive_learner import learn_passive_parameters, persist_passive_fit
 
@@ -311,6 +312,22 @@ def main() -> None:
             "legacy DHW forecast remains authoritative",
             upper, lower, timezone_name,
         )
+        try:
+            bootstrap = bootstrap_history(db, token, cfg, timezone_name=timezone_name)
+            if bootstrap is not None:
+                LOG.info(
+                    "DHW historical bootstrap complete: requested_days=%d imported_days=%d "
+                    "samples=%d draws=%d cycles=%d",
+                    bootstrap.days_requested,
+                    bootstrap.days_imported,
+                    bootstrap.samples_inserted,
+                    bootstrap.draws_inserted,
+                    bootstrap.cycles_inserted,
+                )
+        except Exception:
+            # Do not mark bootstrap complete on failure. The next process start retries,
+            # while live sampling remains available in the meantime.
+            LOG.exception("DHW historical bootstrap failed; live sampling will continue and bootstrap will retry next start")
 
     sample_minutes = max(1, int(cfg.get("dhw_thermal_sample_minutes", 5)))
     last_fit_monotonic = -3600.0
@@ -334,6 +351,7 @@ def main() -> None:
                         db,
                         timezone_name=timezone_name,
                         history_days=int(cfg.get("dhw_history_days", 28)),
+                        sample_minutes=sample_minutes,
                     )
                     last_fit_monotonic = time.monotonic()
                     if passive_fit is not None:
