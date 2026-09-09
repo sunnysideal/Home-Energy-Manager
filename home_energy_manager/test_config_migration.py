@@ -76,7 +76,7 @@ def legacy_options():
                 "export_next_day_rates": "event.export_tomorrow",
             },
             "ashp": {
-                "forecast_48h": "sensor.ashp_forecast_next_48h",
+                "forecast_48h": "sensor.custom_ashp_forecast",
                 "ch_energy_total_kwh": "sensor.hp_ch",
                 "dhw_energy_total_kwh": "sensor.hp_dhw",
             },
@@ -117,6 +117,7 @@ def test_legacy_layout_is_preserved_for_component_runtime():
     assert canonical["inverter"]["import_energy_total_kwh"] == "sensor.inverter_import"
     assert canonical["solar"]["energy_total_kwh"] == "sensor.pv_energy"
     assert canonical["heat_pump"]["ch_energy_total_kwh"] == "sensor.hp_ch"
+    assert "forecast_48h" not in canonical["heat_pump"]
     assert canonical["dhw"]["tank_upper_temperature"] == "sensor.dhw_top"
     assert canonical["ev"]["energy_total_kwh"] == "sensor.ev_energy"
     assert canonical["energy_strategy"]["operation_mode"] == "forecast_only"
@@ -126,13 +127,14 @@ def test_legacy_layout_is_preserved_for_component_runtime():
         "forecast_refresh_request_entity": "sensor.custom_refresh_request",
         "home_energy_forecast_entity": "sensor.custom_home_forecast",
         "controller_status_entity": "sensor.custom_controller_status",
+        "ashp_forecast_entity": "sensor.custom_ashp_forecast",
     }
 
-    # Component contracts remain unchanged after the migration layer renders them.
     assert runtime["home_forecaster"]["battery"]["soc"] == "sensor.battery_soc"
     assert runtime["home_forecaster"]["load"]["energy_total_kwh"] == "sensor.house_energy"
     assert runtime["home_forecaster"]["meter"]["import_energy_total_kwh"] == "sensor.smart_meter_import"
     assert runtime["home_forecaster"]["settings"]["controller_refresh_request_entity"] == "sensor.custom_refresh_request"
+    assert runtime["home_forecaster"]["ashp"]["forecast_48h"] == "sensor.custom_ashp_forecast"
     assert runtime["ashp_forecaster"]["dhw_tank_upper_temperature_entity"] == "sensor.dhw_top"
     assert runtime["controller"]["operation_mode"] == "forecast_only"
     assert runtime["controller"]["home_energy_forecast_entity"] == "sensor.custom_home_forecast"
@@ -150,6 +152,7 @@ def test_canonical_domain_value_overrides_legacy_duplicate_without_rewriting_sav
             "home_energy_forecast_entity": "sensor.home_energy_forecast",
             "controller_status_entity": "sensor.home_energy_controller",
             "forecast_refresh_request_entity": "sensor.home_energy_forecast_refresh_request",
+            "ashp_forecast_entity": "sensor.ashp_forecast_next_48h",
         }
     }
     before = deepcopy(saved)
@@ -165,6 +168,7 @@ def test_canonical_domain_value_overrides_legacy_duplicate_without_rewriting_sav
     assert runtime["home_forecaster"]["battery"]["soc"] == "sensor.new_soc"
     assert runtime["home_forecaster"]["load"]["energy_total_kwh"] == "sensor.new_house_energy"
     assert runtime["home_forecaster"]["meter"]["import_energy_total_kwh"] == "sensor.new_grid_import"
+    assert runtime["home_forecaster"]["ashp"]["forecast_48h"] == "sensor.ashp_forecast_next_48h"
     assert runtime["controller"]["ev_smart_charging_active_entity"] == "binary_sensor.new_ev_active"
     assert runtime["controller"]["home_energy_forecast_entity"] == "sensor.home_energy_forecast"
     assert diagnostics.conflicts
@@ -173,6 +177,7 @@ def test_canonical_domain_value_overrides_legacy_duplicate_without_rewriting_sav
 def test_internal_entities_default_to_package_owned_ids_when_legacy_values_absent():
     saved = legacy_options()
     saved["home_forecaster"]["settings"].pop("controller_refresh_request_entity")
+    saved["home_forecaster"]["ashp"].pop("forecast_48h")
     saved["controller"].pop("home_energy_forecast_entity")
     saved["controller"].pop("status_entity_id")
 
@@ -182,8 +187,10 @@ def test_internal_entities_default_to_package_owned_ids_when_legacy_values_absen
         "forecast_refresh_request_entity": "sensor.home_energy_forecast_refresh_request",
         "home_energy_forecast_entity": "sensor.home_energy_forecast",
         "controller_status_entity": "sensor.home_energy_controller",
+        "ashp_forecast_entity": "sensor.ashp_forecast_next_48h",
     }
     assert runtime["home_forecaster"]["settings"]["controller_refresh_request_entity"] == "sensor.home_energy_forecast_refresh_request"
+    assert runtime["home_forecaster"]["ashp"]["forecast_48h"] == "sensor.ashp_forecast_next_48h"
     assert runtime["controller"]["home_energy_forecast_entity"] == "sensor.home_energy_forecast"
     assert runtime["controller"]["status_entity_id"] == "sensor.home_energy_controller"
 
