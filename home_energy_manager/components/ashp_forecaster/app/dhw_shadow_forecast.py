@@ -6,7 +6,7 @@ legacy ASHP forecast until confidence and compatibility promotion criteria are m
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sqlite3
 
 from dhw_simulator import StepInputs, TankParameters, TankState, step_tank
@@ -176,3 +176,46 @@ def build_shadow_forecast(
             )
         )
     return out
+
+
+def persist_shadow_validation(
+    db: sqlite3.Connection,
+    slots: list[ShadowSlot],
+    *,
+    forecast_ts: datetime | None = None,
+    source: str = "thermal_shadow",
+    keep_days: int = 7,
+) -> int:
+    """Store 30-minute validation checkpoints while keeping 5-minute simulation internal."""
+    if not slots:
+        return 0
+    forecast_ts = forecast_ts or datetime.now(timezone.utc)
+    if forecast_ts.tzinfo is None:
+        forecast_ts = forecast_ts.replace(tzinfo=timezone.utc)
+    forecast_iso = forecast_ts.astimezone(timezone.utc).isoformat()
+    written = 0
+    with db:
+        for offset in range(0, len(slots), 6):
+            chunk = slots[offset:offset + 6]
+            if not chunk:
+                continue
+            endpoint = chunk[-1]
+            target_iso = endpoint.start.astimezone(timezone.utc).isoformat()
+            predicted_dhw = sum(slot.dhw_kwh for slot in chunk)
+            db.execute(
+                "INSERT INTO dhw_forecast_validation("
+                "forecast_ts,target_ts,predicted_upper_c,predicted_lower_c,predicted_dhw_kwh,"
+                "actual_upper_c,actual_lower_c,model_source"
+                ") VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(forecast_ts,target_ts) DO UPDATE SET "
+                "predicted_upper_c=excluded.predicted_upper_c,"
+                "predicted_lower_c=excluded.predicted_lower_c,"
+                "predicted_dhw_kwh=excluded.predicted_dhw_kwh,model_source=excluded.model_source",
+                (
+                    forecast_iso, target_iso, endpoint.upper_temp_c, endpoint.lower_temp_c,
+                    predicted_dhw, None, None, source,
+                ),
+            )
+            written += 1
+        cutoff = (forecast_ts.astimezone(timezone.utc) - timedelta(days=max(1, keep_days))).isoformat()
+        db.execute("DELETE FROM dhw_forecast_validation WHERE forecast_ts<?", (cutoff,))
+    return written
