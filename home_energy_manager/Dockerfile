@@ -17,6 +17,7 @@ RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runt
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/controller/app.py /app/runtime/controller/app.py
+COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
 COPY common /app/common
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh /app/launcher.py
