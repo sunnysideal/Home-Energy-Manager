@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import math
 import sqlite3
 from zoneinfo import ZoneInfo
 
@@ -41,11 +42,14 @@ def learn_demand_profile(
     timezone_name: str,
     history_days: int = 28,
     minimum_observed_days: int = 3,
+    sample_minutes: int = 5,
 ) -> list[DemandSlot]:
     tz = ZoneInfo(timezone_name)
     now_utc = datetime.now(timezone.utc)
     now_local = now_utc.astimezone(tz)
     cutoff = (now_utc - timedelta(days=history_days)).isoformat()
+    sample_minutes = max(1, int(sample_minutes))
+    minimum_samples_per_day = max(1, math.ceil((8 * 60) / sample_minutes))
 
     # Count valid samples by LOCAL date. A day only counts toward zero-use probability
     # when the collector observed at least eight hours on that local calendar day.
@@ -59,7 +63,10 @@ def learn_demand_profile(
         except ValueError:
             continue
         sample_counts[local_day] += 1
-    observed_days = {day for day, count in sample_counts.items() if count >= 96}
+    observed_days = {
+        day for day, count in sample_counts.items()
+        if count >= minimum_samples_per_day
+    }
     if not observed_days:
         return []
 
