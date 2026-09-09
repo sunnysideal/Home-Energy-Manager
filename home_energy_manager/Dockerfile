@@ -17,11 +17,13 @@ RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runt
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
 COPY components/ashp_forecaster/app/runner.py /app/runtime/ashp_forecaster/runner.py
 COPY components/ashp_forecaster/app/dhw_model.py /app/runtime/ashp_forecaster/dhw_model.py
+COPY components/ashp_forecaster/app/dhw_simulator.py /app/runtime/ashp_forecaster/dhw_simulator.py
 COPY components/ashp_forecaster/app/dhw_draw_detector.py /app/runtime/ashp_forecaster/dhw_draw_detector.py
 COPY components/ashp_forecaster/app/dhw_passive_learner.py /app/runtime/ashp_forecaster/dhw_passive_learner.py
 COPY components/ashp_forecaster/app/dhw_cycle_tracker.py /app/runtime/ashp_forecaster/dhw_cycle_tracker.py
 COPY components/ashp_forecaster/app/dhw_cycle_learner.py /app/runtime/ashp_forecaster/dhw_cycle_learner.py
 COPY components/ashp_forecaster/app/dhw_demand_learner.py /app/runtime/ashp_forecaster/dhw_demand_learner.py
+COPY components/ashp_forecaster/app/dhw_shadow_forecast.py /app/runtime/ashp_forecaster/dhw_shadow_forecast.py
 COPY components/ashp_forecaster/app/dhw_collector.py /app/runtime/ashp_forecaster/dhw_collector.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/controller/app.py /app/runtime/controller/app.py
