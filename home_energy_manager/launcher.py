@@ -47,7 +47,6 @@ def _normalise_home_forecaster(hf: dict) -> None:
         _setdefault_from(settings, key, hf, default=default)
 
     battery = hf.setdefault("battery", {})
-    # Standalone schema used *_target_soc_* while merged v0.2.14 uses *_target_*.
     for key in ("charge_target_1", "charge_target_2", "discharge_target_1", "discharge_target_2"):
         standalone_key = key.replace("_target_", "_target_soc_")
         _setdefault_from(battery, key, battery, standalone_key, "")
@@ -106,7 +105,7 @@ def load_and_split_options():
             ctl["ev_smart_charging_active_entity"] = ctl.get("intelligent_car_charging_entity", "")
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.35"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.36"
     for name, path in COMPONENT_OPTIONS.items():
         section = raw.get(name)
         if not isinstance(section, dict):
@@ -164,8 +163,6 @@ def main():
     signal.signal(signal.SIGTERM, stop_all)
     signal.signal(signal.SIGINT, stop_all)
 
-    # Ordered startup preserves the existing pipeline without coupling the code:
-    # ASHP forecast -> home forecast -> controller/passive controller.
     for name, cmd in process_list(raw):
         env = os.environ.copy()
         env["OPTIONS_PATH"] = str(COMPONENT_OPTIONS[name])
