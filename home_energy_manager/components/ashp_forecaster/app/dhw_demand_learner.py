@@ -1,10 +1,11 @@
-"""Learn expected DHW draw demand by weekday/weekend and 30-minute slot."""
+"""Learn expected DHW draw demand by weekday/weekend and local 30-minute slot."""
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import sqlite3
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -37,34 +38,40 @@ def _day_type(day: date) -> str:
 def learn_demand_profile(
     db: sqlite3.Connection,
     *,
+    timezone_name: str,
     history_days: int = 28,
     minimum_observed_days: int = 3,
 ) -> list[DemandSlot]:
-    now = datetime.now(timezone.utc)
-    cutoff = (now - timedelta(days=history_days)).isoformat()
+    tz = ZoneInfo(timezone_name)
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(tz)
+    cutoff = (now_utc - timedelta(days=history_days)).isoformat()
 
-    # A day only counts toward zero-use probability if the thermal collector actually
-    # observed enough valid samples on that day. 96 five-minute samples is eight hours;
-    # this keeps startup/partial days from being treated as genuine zero-demand days.
-    observed_rows = db.execute(
-        "SELECT substr(timestamp,1,10) AS day, COUNT(*) FROM dhw_thermal_samples "
-        "WHERE timestamp>=? AND valid=1 GROUP BY day HAVING COUNT(*)>=96",
+    # Count valid samples by LOCAL date. A day only counts toward zero-use probability
+    # when the collector observed at least eight hours on that local calendar day.
+    sample_counts: Counter[date] = Counter()
+    for (ts_raw,) in db.execute(
+        "SELECT timestamp FROM dhw_thermal_samples WHERE timestamp>=? AND valid=1",
         (cutoff,),
-    ).fetchall()
-    observed_days = {date.fromisoformat(str(row[0])) for row in observed_rows}
+    ):
+        try:
+            local_day = datetime.fromisoformat(str(ts_raw)).astimezone(tz).date()
+        except ValueError:
+            continue
+        sample_counts[local_day] += 1
+    observed_days = {day for day, count in sample_counts.items() if count >= 96}
     if not observed_days:
         return []
 
+    daily_slot_energy: dict[tuple[date, int], float] = defaultdict(float)
     draw_rows = db.execute(
         "SELECT timestamp,estimated_thermal_kwh,confidence FROM dhw_draw_events "
         "WHERE timestamp>=? ORDER BY timestamp",
         (cutoff,),
     ).fetchall()
-
-    daily_slot_energy: dict[tuple[date, int], float] = defaultdict(float)
     for ts_raw, energy_raw, confidence_raw in draw_rows:
         try:
-            ts = datetime.fromisoformat(str(ts_raw)).astimezone(timezone.utc)
+            ts = datetime.fromisoformat(str(ts_raw)).astimezone(tz)
             energy = max(0.0, float(energy_raw))
             confidence = max(0.0, min(1.0, float(confidence_raw)))
         except (TypeError, ValueError):
@@ -89,7 +96,7 @@ def learn_demand_profile(
                 value = daily_slot_energy.get((day, slot), 0.0)
                 if value > 0.0:
                     nonzero_days += 1
-                    age_days = max(0, (now.date() - day).days)
+                    age_days = max(0, (now_local.date() - day).days)
                     weight = 0.5 ** (age_days / 14.0)
                     positive.append((value, weight))
             probability = nonzero_days / len(days)
