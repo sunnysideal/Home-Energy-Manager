@@ -160,7 +160,7 @@ def test_promotion_stays_false_until_seven_days_of_energy_comparison():
     now = datetime.now(timezone.utc)
     seed_ready_model(db, now)
     for idx in range(20):
-        forecast = now - timedelta(hours=idx % 5)
+        forecast = now - timedelta(hours=8 + (idx % 5), minutes=idx)
         target = forecast + timedelta(hours=2)
         insert_validation(db, forecast, target, thermal=0.2, legacy=0.4, actual=0.0)
     result = mod.confidence_result(db)
@@ -192,7 +192,7 @@ def test_promotion_is_blocked_when_thermal_energy_error_is_worse():
     seed_ready_model(db, now)
     for day in range(7):
         for slot in range(3):
-            forecast = now - timedelta(days=day, hours=3 + slot)
+            forecast = now - timedelta(days=day, hours=7 + slot)
             target = forecast + timedelta(hours=2)
             insert_validation(db, forecast, target, thermal=0.5, legacy=0.1, actual=0.0)
     result = mod.confidence_result(db)
