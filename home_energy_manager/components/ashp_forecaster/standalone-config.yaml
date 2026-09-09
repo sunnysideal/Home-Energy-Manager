@@ -1,5 +1,5 @@
 name: "ASHP Energy Forecaster"
-version: "0.2.0"
+version: "0.2.1"
 slug: "ashp_energy_forecaster"
 description: "Forecast ASHP CH and DHW electricity with DHW priority."
 url: "https://github.com/your-user/ashp-forecast-addon"
@@ -30,6 +30,12 @@ options:
   dhw_energy_entity: "sensor.ashp_electrical_energy_dhw"
   dhw_mode_entity: "select.dhw_mode"
   dhw_tank_temperature_entity: "sensor.dhw_temperature"
+  dhw_tank_upper_temperature_entity: ""
+  dhw_tank_lower_temperature_entity: ""
+  dhw_tank_volume_l: 250
+  dhw_ambient_temperature_entity: ""
+  dhw_min_usable_temperature_c: 40.0
+  dhw_thermal_sample_minutes: 5
   dhw_target_temperature_entity: "number.dhw_target_temperature"
   dhw_hysteresis_entity: "number.dhw_hysteresis"
   dhw_schedule_prefix: "number.dhw_dhw_schedule_"
@@ -54,6 +60,12 @@ schema:
   dhw_energy_entity: str
   dhw_mode_entity: str
   dhw_tank_temperature_entity: str
+  dhw_tank_upper_temperature_entity: str?
+  dhw_tank_lower_temperature_entity: str?
+  dhw_tank_volume_l: int(50,1000)
+  dhw_ambient_temperature_entity: str?
+  dhw_min_usable_temperature_c: float(20,60)
+  dhw_thermal_sample_minutes: int(1,30)
   dhw_target_temperature_entity: str
   dhw_hysteresis_entity: str
   dhw_schedule_prefix: str
