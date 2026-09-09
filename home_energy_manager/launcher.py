@@ -6,6 +6,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from config_migration import migrate_runtime_options
 
@@ -15,14 +17,51 @@ COMPONENT_OPTIONS = {
     "home_forecaster": Path("/data/options_home_forecaster.json"),
     "controller": Path("/data/options_controller.json"),
 }
+HA_CONFIG_URL = "http://supervisor/core/api/config"
 
 children = []
 stopping = False
 
 
+def _resolve_home_assistant_timezone(raw):
+    """Use Home Assistant's configured timezone for runtime component configs.
+
+    The legacy Home Forecaster timezone remains a fallback only so an API outage at
+    add-on startup cannot prevent otherwise valid 0.1.x configuration from running.
+    Saved /data/options.json is never rewritten.
+    """
+    hf = raw.get("home_forecaster") if isinstance(raw.get("home_forecaster"), dict) else {}
+    settings = hf.setdefault("settings", {}) if isinstance(hf, dict) else {}
+    fallback = str(settings.get("timezone") or "Europe/London")
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        print(f"[manager] Home Assistant timezone unavailable (no SUPERVISOR_TOKEN); using fallback {fallback}", flush=True)
+        return fallback
+
+    req = Request(
+        HA_CONFIG_URL,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="GET",
+    )
+    try:
+        with urlopen(req, timeout=15) as response:
+            payload = json.loads(response.read().decode())
+        timezone = str(payload.get("time_zone") or "").strip()
+        if not timezone:
+            raise ValueError("Home Assistant /config did not return time_zone")
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        print(f"[manager] Home Assistant timezone lookup failed; using fallback {fallback}: {exc}", flush=True)
+        timezone = fallback
+
+    settings["timezone"] = timezone
+    print(f"[manager] runtime timezone={timezone} (Home Assistant)", flush=True)
+    return timezone
+
+
 def load_and_split_options():
     saved = json.loads(OPTIONS.read_text())
     raw, canonical, diagnostics = migrate_runtime_options(saved)
+    _resolve_home_assistant_timezone(raw)
 
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
