@@ -31,11 +31,13 @@ def test_publication_uses_only_complete_clock_aligned_half_hours():
         slot(start + timedelta(minutes=5 * i), 0.1, 0.02, 50.0 + i * 0.1, 45.0 + i * 0.1)
         for i in range(12)
     ]
+    production = [datetime(2026, 9, 9, 14, 0, tzinfo=tz)]
 
-    rows = module._published_half_hours(slots)
+    rows, complete = module._published_half_hours(slots, production)
 
+    assert complete is False  # one valid row, not the complete 96-slot production horizon
     assert len(rows) == 1
-    assert rows[0]["start"] == datetime(2026, 9, 9, 14, 0, tzinfo=tz).isoformat()
+    assert rows[0]["start"] == production[0].isoformat()
     assert rows[0]["dhw_kwh"] == 0.6
     assert rows[0]["predicted_draw_kwh"] == 0.12
     assert rows[0]["dhw_active"] is True
@@ -49,7 +51,8 @@ def test_publication_preserves_temperature_and_energy_fields():
         for i in range(6)
     ]
 
-    row = module._published_half_hours(slots)[0]
+    rows, _ = module._published_half_hours(slots, [start])
+    row = rows[0]
 
     assert set(row) == {
         "start",
