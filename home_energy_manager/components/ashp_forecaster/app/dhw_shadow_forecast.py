@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import sqlite3
 
-from dhw_simulator import StepInputs, TankParameters, TankState, step_tank
+from dhw_simulator import StepInputs, TankParameters, TankState, stabilise_stratification, step_tank
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
@@ -77,8 +77,6 @@ def load_shadow_model(db: sqlite3.Connection) -> ShadowModel | None:
         typical_power_kw=params["dhw_cycle_power_kw"],
         upper_c_per_kwh=params["dhw_cycle_upper_c_per_kwh"],
         lower_c_per_kwh=params["dhw_cycle_lower_c_per_kwh"],
-        # Canonical names are dhw_*; retain the old aliases so an upgraded database
-        # uses its learned fit immediately before the next hourly retraining pass.
         upper_loss_w_per_k=params.get("dhw_upper_loss_w_per_k", params.get("upper_loss_w_per_k", 1.2)),
         lower_loss_w_per_k=params.get("dhw_lower_loss_w_per_k", params.get("lower_loss_w_per_k", 0.8)),
         coupling_w_per_k=params.get("dhw_coupling_w_per_k", params.get("coupling_w_per_k", 3.0)),
@@ -134,7 +132,7 @@ def build_shadow_forecast(
         coupling_w_per_k=model.coupling_w_per_k,
         minimum_useful_temperature_c=minimum_useful_temperature_c,
     )
-    state = TankState(initial_upper_c, initial_lower_c)
+    state = stabilise_stratification(TankState(initial_upper_c, initial_lower_c), params)
     remaining_cycle_kwh = 0.0
     out: list[ShadowSlot] = []
     steps = int(horizon_hours * 60 / step_minutes)
@@ -164,6 +162,10 @@ def build_shadow_forecast(
                 upper_temp_c=min(target_temp_c + 5.0, state.upper_temp_c + electrical_step * model.upper_c_per_kwh),
                 lower_temp_c=min(target_temp_c + 5.0, state.lower_temp_c + electrical_step * model.lower_c_per_kwh),
             )
+            # Learned sensor response can put the lower effective zone above the upper.
+            # Such an inversion is buoyantly unstable in a vertical cylinder, so collapse
+            # it immediately to an energy-preserving mixed state before the next step.
+            state = stabilise_stratification(state, params)
             if state.upper_temp_c >= target_temp_c:
                 remaining_cycle_kwh = 0.0
 
@@ -194,11 +196,7 @@ def persist_shadow_validation(
     step_minutes: int = 5,
     legacy_dhw_by_start: dict[str, float] | None = None,
 ) -> int:
-    """Store complete clock-aligned 30-minute intervals for like-for-like scoring.
-
-    Keep 21 days by default: the promotion comparison uses a 14-day window and requires
-    at least seven distinct days, so retention must comfortably exceed both thresholds.
-    """
+    """Store complete clock-aligned 30-minute intervals for like-for-like scoring."""
     if not slots:
         return 0
     forecast_ts = forecast_ts or datetime.now(timezone.utc)
