@@ -14,12 +14,6 @@ COMPONENT_OPTIONS = {
     "controller": Path("/data/options_controller.json"),
 }
 
-PROCESSES = [
-    ("ashp_forecaster", [sys.executable, "-u", "/app/runtime/ashp_forecaster/main.py"]),
-    ("home_forecaster", [sys.executable, "-u", "/app/runtime/home_forecaster/main.py"]),
-    ("controller", [sys.executable, "-u", "/app/runtime/controller/app.py"]),
-]
-
 children = []
 stopping = False
 
@@ -45,12 +39,34 @@ def load_and_split_options():
             ctl["ev_smart_charging_active_entity"] = ctl.get("intelligent_car_charging_entity", "")
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.22"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.23"
     for name, path in COMPONENT_OPTIONS.items():
         section = raw.get(name)
         if not isinstance(section, dict):
             raise RuntimeError(f"Missing or invalid configuration section: {name}")
         path.write_text(json.dumps(section, separators=(",", ":")))
+    return raw
+
+
+def process_list(raw):
+    controller = raw.get("controller") if isinstance(raw.get("controller"), dict) else {}
+    mode = str(controller.get("operation_mode", "maximise_export"))
+    controller_script = (
+        "/app/runtime/controller/forecast_only.py"
+        if mode == "forecast_only"
+        else "/app/runtime/controller/app.py"
+    )
+    if mode == "forecast_only":
+        print(
+            "[manager] Forecast Only selected: active controller will not be started; "
+            "passive controller has no inverter-write implementation",
+            flush=True,
+        )
+    return [
+        ("ashp_forecaster", [sys.executable, "-u", "/app/runtime/ashp_forecaster/main.py"]),
+        ("home_forecaster", [sys.executable, "-u", "/app/runtime/home_forecaster/main.py"]),
+        ("controller", [sys.executable, "-u", controller_script]),
+    ]
 
 
 def stop_all(signum=None, frame=None):
@@ -77,16 +93,16 @@ def stop_all(signum=None, frame=None):
 
 
 def main():
-    load_and_split_options()
+    raw = load_and_split_options()
     signal.signal(signal.SIGTERM, stop_all)
     signal.signal(signal.SIGINT, stop_all)
 
     # Ordered startup preserves the existing pipeline without coupling the code:
-    # ASHP forecast -> home forecast -> controller.
-    for name, cmd in PROCESSES:
+    # ASHP forecast -> home forecast -> controller/passive controller.
+    for name, cmd in process_list(raw):
         env = os.environ.copy()
         env["OPTIONS_PATH"] = str(COMPONENT_OPTIONS[name])
-        env["PYTHONPATH"] = "/app" + ((":" + env["PYTHONPATH"]) if env.get("PYTHONPATH") else "")
+        env["PYTHONPATH"] = "/app" + ((os.pathsep + env["PYTHONPATH"]) if env.get("PYTHONPATH") else "")
         print(f"[manager] starting {name}", flush=True)
         proc = subprocess.Popen(cmd, env=env)
         children.append((name, proc))
