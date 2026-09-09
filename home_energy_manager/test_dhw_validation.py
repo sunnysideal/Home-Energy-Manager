@@ -203,12 +203,27 @@ def test_promotion_is_blocked_when_thermal_energy_error_is_worse():
 def test_confidence_persistence_writes_readiness_and_energy_mae():
     db = db_with_schema()
     result = mod.ConfidenceResult(
-        0.6, True, True, 30, 6, 8, 12, 25, 1.2, 2.5,
-        40, 7, 0.15, 0.30,
+        confidence=0.6,
+        trial_ready=True,
+        thermal_ready=True,
+        promotion_ready=True,
+        performance_bad=False,
+        passive_samples=30,
+        cycle_count=6,
+        demand_days=8,
+        draw_count=12,
+        validation_count=25,
+        upper_mae_c=1.2,
+        lower_mae_c=2.5,
+        energy_validation_count=40,
+        energy_validation_days=7,
+        thermal_energy_mae_kwh=0.15,
+        legacy_energy_mae_kwh=0.30,
     )
     mod.persist_confidence(db, result)
     values = dict(db.execute("SELECT name,value FROM dhw_model_parameters"))
     assert values["dhw_model_confidence"] == 0.6
+    assert values["dhw_trial_ready"] == 1.0
     assert values["dhw_thermal_ready"] == 1.0
     assert values["dhw_promotion_ready"] == 1.0
     assert values["dhw_thermal_energy_mae_kwh"] == 0.15
