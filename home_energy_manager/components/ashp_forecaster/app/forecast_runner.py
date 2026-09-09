@@ -20,6 +20,17 @@ from dhw_production_selector import SelectionResult, select_dhw_forecast
 
 LOG = logging.getLogger("ashp_forecast")
 SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
+THERMAL_REFRESH_WAIT_SECONDS = 8.0
+THERMAL_REFRESH_POLL_SECONDS = 0.25
+TRANSIENT_THERMAL_REASONS = {
+    "thermal_entity_unavailable",
+    "thermal_entity_read_failed",
+    "thermal_forecast_not_published",
+    "thermal_horizon_incomplete",
+    "thermal_forecast_missing_timestamp",
+    "thermal_forecast_stale",
+    "thermal_forecast_incomplete",
+}
 
 
 def _fallback_timezone_name() -> str:
@@ -96,6 +107,61 @@ class HorizonHAClient(legacy.HAClient):
         return extended
 
 
+def _select_dhw_with_refresh_wait(
+    client: legacy.HAClient,
+    store: legacy.Store,
+    cfg,
+    starts,
+    legacy_values: list[float],
+) -> SelectionResult:
+    """Select DHW, briefly waiting out the shadow-publisher race when appropriate.
+
+    The thermal publisher is a sibling process within the ASHP component. Both wake on
+    the same configured cadence, but process scheduling can let production read HA a few
+    seconds before the freshly aligned 96-slot thermal horizon is published. Only
+    transient publication/alignment failures are retried here. Structural readiness,
+    quality fallback and all other selector decisions remain immediate and unchanged.
+    """
+    max_age_minutes = max(25.0, float(cfg.update_minutes) * 2.0)
+
+    def select() -> SelectionResult:
+        return select_dhw_forecast(
+            store.db,
+            starts,
+            legacy_values,
+            client.get_state,
+            max_age_minutes=max_age_minutes,
+        )
+
+    result = select()
+    if result.source == "thermal" or result.reason not in TRANSIENT_THERMAL_REASONS:
+        return result
+
+    first_reason = result.reason
+    deadline = time.monotonic() + THERMAL_REFRESH_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(THERMAL_REFRESH_POLL_SECONDS, remaining))
+        result = select()
+        if result.source == "thermal" or result.reason not in TRANSIENT_THERMAL_REASONS:
+            break
+
+    if result.source == "thermal":
+        LOG.info(
+            "DHW thermal forecast arrived after transient %s; using fresh aligned thermal horizon",
+            first_reason,
+        )
+    elif result.reason in TRANSIENT_THERMAL_REASONS:
+        LOG.info(
+            "DHW thermal forecast still unavailable after %.1fs (%s); using legacy fallback",
+            THERMAL_REFRESH_WAIT_SECONDS,
+            result.reason,
+        )
+    return result
+
+
 def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
     """Wrap the legacy DHW builder with a fail-safe production selector.
 
@@ -108,13 +174,7 @@ def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
     def selected_builder(client_arg, store_arg, cfg_arg, starts):
         nonlocal last_logged
         legacy_values = legacy_builder(client_arg, store_arg, cfg_arg, starts)
-        result: SelectionResult = select_dhw_forecast(
-            store.db,
-            starts,
-            legacy_values,
-            client.get_state,
-            max_age_minutes=max(25.0, float(cfg_arg.update_minutes) * 2.0),
-        )
+        result = _select_dhw_with_refresh_wait(client, store, cfg_arg, starts, legacy_values)
         marker = (result.source, result.reason)
         if marker != last_logged:
             LOG.info("DHW production forecast source=%s reason=%s", result.source, result.reason)
