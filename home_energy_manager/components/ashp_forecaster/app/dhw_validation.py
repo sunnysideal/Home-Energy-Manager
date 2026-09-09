@@ -1,4 +1,4 @@
-"""Validate shadow DHW forecasts against observed tank temperatures."""
+"""Validate shadow DHW forecasts against observed tank temperatures and DHW energy."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,6 +24,22 @@ class HorizonMetric:
 
 
 @dataclass(frozen=True)
+class EnergyComparison:
+    count: int
+    days: int
+    thermal_mae_kwh: float | None
+    legacy_mae_kwh: float | None
+
+    @property
+    def thermal_not_worse(self) -> bool:
+        return bool(
+            self.thermal_mae_kwh is not None
+            and self.legacy_mae_kwh is not None
+            and self.thermal_mae_kwh <= self.legacy_mae_kwh
+        )
+
+
+@dataclass(frozen=True)
 class ConfidenceResult:
     confidence: float
     thermal_ready: bool
@@ -35,6 +51,35 @@ class ConfidenceResult:
     validation_count: int
     upper_mae_c: float | None
     lower_mae_c: float | None
+    energy_validation_count: int = 0
+    energy_validation_days: int = 0
+    thermal_energy_mae_kwh: float | None = None
+    legacy_energy_mae_kwh: float | None = None
+
+
+def _nearest_sample(
+    db: sqlite3.Connection,
+    target: datetime,
+    *,
+    tolerance_minutes: float,
+    require_energy: bool = False,
+):
+    tolerance = timedelta(minutes=tolerance_minutes)
+    fields = "timestamp,upper_temp_c,lower_temp_c,dhw_energy_total_kwh"
+    energy_clause = " AND dhw_energy_total_kwh IS NOT NULL" if require_energy else ""
+    rows = db.execute(
+        f"SELECT {fields} FROM dhw_thermal_samples WHERE valid=1 "
+        "AND timestamp>=? AND timestamp<=?" + energy_clause,
+        ((target - tolerance).isoformat(), (target + tolerance).isoformat()),
+    ).fetchall()
+    if not rows:
+        return None
+    return min(
+        rows,
+        key=lambda row: abs(
+            (datetime.fromisoformat(str(row[0])).astimezone(timezone.utc) - target).total_seconds()
+        ),
+    )
 
 
 def apply_actuals(db: sqlite3.Connection, *, tolerance_minutes: float = 4.0) -> int:
@@ -46,31 +91,52 @@ def apply_actuals(db: sqlite3.Connection, *, tolerance_minutes: float = 4.0) -> 
         (now.isoformat(),),
     ).fetchall()
     updated = 0
-    tolerance = timedelta(minutes=tolerance_minutes)
     with db:
         for forecast_ts, target_ts_raw in rows:
             try:
                 target = datetime.fromisoformat(str(target_ts_raw)).astimezone(timezone.utc)
             except ValueError:
                 continue
-            start = (target - tolerance).isoformat()
-            end = (target + tolerance).isoformat()
-            candidates = db.execute(
-                "SELECT timestamp,upper_temp_c,lower_temp_c FROM dhw_thermal_samples "
-                "WHERE valid=1 AND timestamp>=? AND timestamp<=? "
-                "AND upper_temp_c IS NOT NULL AND lower_temp_c IS NOT NULL",
-                (start, end),
-            ).fetchall()
-            if not candidates:
+            nearest = _nearest_sample(db, target, tolerance_minutes=tolerance_minutes)
+            if nearest is None or nearest[1] is None or nearest[2] is None:
                 continue
-            nearest = min(
-                candidates,
-                key=lambda row: abs((datetime.fromisoformat(str(row[0])).astimezone(timezone.utc) - target).total_seconds()),
-            )
             db.execute(
                 "UPDATE dhw_forecast_validation SET actual_upper_c=?,actual_lower_c=? "
                 "WHERE forecast_ts=? AND target_ts=?",
                 (float(nearest[1]), float(nearest[2]), forecast_ts, target_ts_raw),
+            )
+            updated += 1
+    return updated
+
+
+def apply_actual_energy(db: sqlite3.Connection, *, tolerance_minutes: float = 4.0) -> int:
+    """Back-fill observed electrical kWh for each 30-minute validation interval."""
+    now = datetime.now(timezone.utc)
+    rows = db.execute(
+        "SELECT forecast_ts,target_ts FROM dhw_forecast_validation "
+        "WHERE actual_dhw_kwh IS NULL AND target_ts<=? ORDER BY target_ts",
+        (now.isoformat(),),
+    ).fetchall()
+    updated = 0
+    with db:
+        for forecast_ts, target_ts_raw in rows:
+            try:
+                end = datetime.fromisoformat(str(target_ts_raw)).astimezone(timezone.utc)
+            except ValueError:
+                continue
+            start = end - timedelta(minutes=30)
+            before = _nearest_sample(db, start, tolerance_minutes=tolerance_minutes, require_energy=True)
+            after = _nearest_sample(db, end, tolerance_minutes=tolerance_minutes, require_energy=True)
+            if before is None or after is None or before[3] is None or after[3] is None:
+                continue
+            delta = float(after[3]) - float(before[3])
+            # Reject meter reset/discontinuity or physically implausible half-hour use.
+            if delta < -1e-6 or delta > 10.0:
+                continue
+            db.execute(
+                "UPDATE dhw_forecast_validation SET actual_dhw_kwh=? "
+                "WHERE forecast_ts=? AND target_ts=?",
+                (max(0.0, delta), forecast_ts, target_ts_raw),
             )
             updated += 1
     return updated
@@ -113,6 +179,48 @@ def horizon_metrics(db: sqlite3.Connection, *, lookback_days: int = 7) -> list[H
     return out
 
 
+def energy_comparison(
+    db: sqlite3.Connection,
+    *,
+    lookback_days: int = 14,
+    max_horizon_hours: float = 6.0,
+) -> EnergyComparison:
+    """Compare thermal and legacy 30-minute DHW kWh against the same actual intervals."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    rows = db.execute(
+        "SELECT forecast_ts,target_ts,predicted_dhw_kwh,legacy_dhw_kwh,actual_dhw_kwh "
+        "FROM dhw_forecast_validation WHERE forecast_ts>=? AND predicted_dhw_kwh IS NOT NULL "
+        "AND legacy_dhw_kwh IS NOT NULL AND actual_dhw_kwh IS NOT NULL",
+        (cutoff,),
+    ).fetchall()
+    thermal_errors: list[float] = []
+    legacy_errors: list[float] = []
+    days: set[str] = set()
+    for forecast_raw, target_raw, thermal_raw, legacy_raw, actual_raw in rows:
+        try:
+            forecast = datetime.fromisoformat(str(forecast_raw)).astimezone(timezone.utc)
+            target = datetime.fromisoformat(str(target_raw)).astimezone(timezone.utc)
+            horizon_h = (target - forecast).total_seconds() / 3600.0
+            if not 0.0 <= horizon_h <= max_horizon_hours:
+                continue
+            thermal = max(0.0, float(thermal_raw))
+            legacy = max(0.0, float(legacy_raw))
+            actual = max(0.0, float(actual_raw))
+        except (TypeError, ValueError):
+            continue
+        thermal_errors.append(abs(thermal - actual))
+        legacy_errors.append(abs(legacy - actual))
+        days.add(target.date().isoformat())
+    if not thermal_errors:
+        return EnergyComparison(0, 0, None, None)
+    return EnergyComparison(
+        count=len(thermal_errors),
+        days=len(days),
+        thermal_mae_kwh=sum(thermal_errors) / len(thermal_errors),
+        legacy_mae_kwh=sum(legacy_errors) / len(legacy_errors),
+    )
+
+
 def _parameter_sample_count(db: sqlite3.Connection, names: list[str]) -> int:
     if not names:
         return 0
@@ -143,6 +251,7 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
     validation_count = near.count
     upper_mae = near.upper_mae_c
     lower_mae = near.lower_mae_c
+    energy = energy_comparison(db)
 
     row = db.execute(
         "SELECT timestamp,valid FROM dhw_thermal_samples ORDER BY timestamp DESC LIMIT 1"
@@ -181,9 +290,15 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
         and upper_mae is not None and upper_mae <= 2.0
         and lower_mae is not None and lower_mae <= 4.0
     )
-    # Promotion remains deliberately blocked until thermal-vs-legacy DHW energy error
-    # is measured and the public output compatibility test passes.
-    promotion_ready = False
+    # A readiness flag only: production remains on the legacy forecast until a separate
+    # promotion commit explicitly switches the source. Require a full week of energy
+    # comparison and the thermal forecast to be no worse than legacy on the same intervals.
+    promotion_ready = bool(
+        thermal_ready
+        and energy.count >= 20
+        and energy.days >= 7
+        and energy.thermal_not_worse
+    )
     return ConfidenceResult(
         confidence=min(max(confidence, 0.0), 1.0),
         thermal_ready=thermal_ready,
@@ -195,6 +310,10 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
         validation_count=validation_count,
         upper_mae_c=upper_mae,
         lower_mae_c=lower_mae,
+        energy_validation_count=energy.count,
+        energy_validation_days=energy.days,
+        thermal_energy_mae_kwh=energy.thermal_mae_kwh,
+        legacy_energy_mae_kwh=energy.legacy_mae_kwh,
     )
 
 
@@ -203,8 +322,12 @@ def persist_confidence(db: sqlite3.Connection, result: ConfidenceResult) -> None
     values = [
         ("dhw_model_confidence", result.confidence, result.validation_count, result.upper_mae_c),
         ("dhw_thermal_ready", 1.0 if result.thermal_ready else 0.0, result.validation_count, result.lower_mae_c),
-        ("dhw_promotion_ready", 1.0 if result.promotion_ready else 0.0, result.validation_count, None),
+        ("dhw_promotion_ready", 1.0 if result.promotion_ready else 0.0, result.energy_validation_count, result.thermal_energy_mae_kwh),
     ]
+    if result.thermal_energy_mae_kwh is not None:
+        values.append(("dhw_thermal_energy_mae_kwh", result.thermal_energy_mae_kwh, result.energy_validation_count, None))
+    if result.legacy_energy_mae_kwh is not None:
+        values.append(("dhw_legacy_energy_mae_kwh", result.legacy_energy_mae_kwh, result.energy_validation_count, None))
     with db:
         for name, value, count, error in values:
             db.execute(
