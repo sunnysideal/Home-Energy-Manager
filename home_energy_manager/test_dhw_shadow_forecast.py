@@ -1,7 +1,7 @@
 import importlib.util
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -31,6 +31,18 @@ def base_model(demand=None):
         coupling_w_per_k=3.0,
         demand=demand or {},
     )
+
+
+def validation_db():
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "CREATE TABLE dhw_forecast_validation("
+        "forecast_ts TEXT,target_ts TEXT,predicted_upper_c REAL,predicted_lower_c REAL,"
+        "predicted_dhw_kwh REAL,legacy_dhw_kwh REAL,actual_dhw_kwh REAL,"
+        "actual_upper_c REAL,actual_lower_c REAL,model_source TEXT,"
+        "PRIMARY KEY(forecast_ts,target_ts))"
+    )
+    return db
 
 
 def test_shadow_forecast_always_covers_full_48_hours():
@@ -80,7 +92,6 @@ def test_cold_tank_triggers_cycle_when_mode_on():
 
 
 def test_schedule_mode_only_heats_in_enabled_half_hour():
-    # Wednesday 12:00 local is PM bit 0 (absolute half-hour 24 -> PM bit 0).
     schedule = {"wednesday_pm": 1}
     result = mod.build_shadow_forecast(
         start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
@@ -133,3 +144,48 @@ def test_shadow_model_load_requires_cycle_learning_but_can_use_default_passive_v
     assert loaded is not None
     assert loaded.upper_loss_w_per_k == 1.2
     assert loaded.lower_loss_w_per_k == 0.8
+
+
+def test_validation_persists_matching_legacy_half_hour_value():
+    db = validation_db()
+    start = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    slots = [
+        mod.ShadowSlot(start + timedelta(minutes=5 * idx), 50.0, 42.0, 0.0, 0.1, True)
+        for idx in range(6)
+    ]
+    legacy = {start.isoformat(): 0.8}
+    written = mod.persist_shadow_validation(
+        db,
+        slots,
+        forecast_ts=start - timedelta(minutes=1),
+        legacy_dhw_by_start=legacy,
+    )
+    assert written == 1
+    row = db.execute(
+        "SELECT target_ts,predicted_dhw_kwh,legacy_dhw_kwh FROM dhw_forecast_validation"
+    ).fetchone()
+    assert row[0] == (start + timedelta(minutes=30)).isoformat()
+    assert abs(row[1] - 0.6) < 1e-9
+    assert row[2] == 0.8
+
+
+def test_validation_skips_partial_start_and_uses_next_complete_clock_half_hour():
+    db = validation_db()
+    start = datetime(2026, 9, 9, 13, 35, tzinfo=timezone.utc)
+    slots = [
+        mod.ShadowSlot(start + timedelta(minutes=5 * idx), 50.0, 42.0, 0.0, 0.1, True)
+        for idx in range(11)
+    ]
+    complete_start = datetime(2026, 9, 9, 14, 0, tzinfo=timezone.utc)
+    legacy = {complete_start.isoformat(): 0.7}
+    written = mod.persist_shadow_validation(
+        db,
+        slots,
+        forecast_ts=start - timedelta(minutes=1),
+        legacy_dhw_by_start=legacy,
+    )
+    assert written == 1
+    row = db.execute(
+        "SELECT target_ts,legacy_dhw_kwh FROM dhw_forecast_validation"
+    ).fetchone()
+    assert row == ((complete_start + timedelta(minutes=30)).isoformat(), 0.7)
