@@ -28,6 +28,7 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 LEGACY_FORECAST_ENTITY = "sensor.ashp_forecast_next_48h"
 THERMAL_FORECAST_ENTITY = "sensor.ashp_dhw_thermal_forecast_next_48h"
 COMPARISON_ENTITY = "sensor.ashp_dhw_forecast_comparison"
+PRODUCTION_SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
 
 
 class Publisher:
@@ -263,6 +264,10 @@ def run_shadow_once(
     )
     total_dhw = sum(slot.dhw_kwh for slot in slots)
     published = _published_half_hours(slots)
+    production_source = (_state_text(token, PRODUCTION_SOURCE_ENTITY) or "legacy").strip().lower()
+    if production_source not in {"legacy", "thermal"}:
+        production_source = "legacy"
+    thermal_authoritative = production_source == "thermal"
 
     if publisher is not None:
         now = forecast_ts.isoformat()
@@ -275,7 +280,7 @@ def run_shadow_once(
                 "device_class": "energy",
                 "model": "two_zone_thermal_shadow",
                 "status": "published_shadow",
-                "authoritative": False,
+                "authoritative": thermal_authoritative,
                 "forecast": published,
                 "forecast_slots": len(published),
                 "simulation_slots": len(slots),
@@ -297,7 +302,8 @@ def run_shadow_once(
                 "difference_kwh": round(total_dhw - legacy_total, 3),
                 "thermal_forecast_entity": THERMAL_FORECAST_ENTITY,
                 "legacy_forecast_entity": LEGACY_FORECAST_ENTITY,
-                "authoritative_forecast": "legacy",
+                "production_source_entity": PRODUCTION_SOURCE_ENTITY,
+                "authoritative_forecast": production_source,
                 "thermal_forecast_published": True,
                 "last_updated": now,
             },
@@ -306,9 +312,9 @@ def run_shadow_once(
     LOG.info(
         "DHW shadow forecast published: simulation_slots=%d published_slots=%d checkpoints=%d "
         "thermal_next_48h=%.2fkWh legacy_snapshot=%.2fkWh legacy_slots=%d "
-        "start_upper=%.1fC start_lower=%.1fC target=%.1fC mode=%s",
+        "production_source=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC mode=%s",
         len(slots), len(published), checkpoints, total_dhw, legacy_total, len(legacy),
-        upper, lower, target, mode,
+        production_source, upper, lower, target, mode,
     )
     return checkpoints
 
