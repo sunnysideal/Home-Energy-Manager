@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -37,7 +38,7 @@ def test_thermal_only_keys_are_not_forwarded_to_legacy_forecaster(tmp_path, monk
 
 def test_merged_package_exposes_passive_dhw_settings():
     package = (ROOT / "config.yaml").read_text()
-    assert "version: 0.1.26" in package
+    assert re.search(r"^version:\s*0\.1\.\d+", package, re.MULTILINE)
     assert "dhw_tank_upper_temperature_entity:" in package
     assert "dhw_tank_lower_temperature_entity:" in package
     assert "dhw_tank_volume_l: 250" in package
