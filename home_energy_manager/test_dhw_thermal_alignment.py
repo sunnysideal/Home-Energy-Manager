@@ -51,7 +51,9 @@ def _assert_complete(now: datetime) -> None:
     assert complete is True
     assert len(production) == PRODUCTION_SLOTS == 96
     assert len(published) == 96
-    assert [datetime.fromisoformat(row["start"]) for row in published] == production
+    # ISO strings preserve the exact offset selected for each local production slot,
+    # including the repeated hour at the Europe/London autumn DST transition.
+    assert [row["start"] for row in published] == [item.isoformat() for item in production]
     assert published[-1]["start"] == production[-1].isoformat()
 
 
@@ -80,8 +82,6 @@ def test_alignment_crosses_midnight() -> None:
 
 
 def test_alignment_across_europe_london_dst_change() -> None:
-    # The public ASHP forecast also advances on the local production clock. The thermal
-    # grid must use the same ZoneInfo-aware arithmetic so its timestamps remain identical.
     london = ZoneInfo("Europe/London")
     now = datetime(2026, 10, 24, 23, 20, tzinfo=london)
     _assert_complete(now)
