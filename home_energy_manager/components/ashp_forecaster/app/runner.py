@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """ASHP component process supervisor.
 
-Runs the existing forecaster unchanged together with the passive DHW sampler.  This
-keeps the merged add-on's top-level launcher unaware of ASHP-internal helper processes.
+Runs the existing forecaster unchanged together with the passive DHW sampler.  The
+legacy forecaster receives only the configuration fields its dataclass understands,
+while the sampler receives the full ASHP configuration including new thermal fields.
 """
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -14,6 +16,15 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+LEGACY_OPTIONS = Path("/data/options_ashp_forecaster_legacy.json")
+THERMAL_ONLY_KEYS = {
+    "dhw_tank_upper_temperature_entity",
+    "dhw_tank_lower_temperature_entity",
+    "dhw_tank_volume_l",
+    "dhw_ambient_temperature_entity",
+    "dhw_min_usable_temperature_c",
+    "dhw_thermal_sample_minutes",
+}
 children: list[subprocess.Popen] = []
 stopping = False
 
@@ -39,16 +50,31 @@ def stop_all(signum=None, frame=None) -> None:
     raise SystemExit(0 if signum is not None else 1)
 
 
+def _legacy_options_path(full_options_path: Path) -> Path:
+    raw = json.loads(full_options_path.read_text())
+    legacy = {key: value for key, value in raw.items() if key not in THERMAL_ONLY_KEYS}
+    LEGACY_OPTIONS.write_text(json.dumps(legacy, separators=(",", ":")))
+    return LEGACY_OPTIONS
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, stop_all)
     signal.signal(signal.SIGINT, stop_all)
-    env = os.environ.copy()
-    commands = [
-        [sys.executable, "-u", str(ROOT / "main.py")],
-        [sys.executable, "-u", str(ROOT / "dhw_collector.py")],
-    ]
-    for command in commands:
-        children.append(subprocess.Popen(command, env=env))
+
+    full_options_path = Path(os.environ.get("OPTIONS_PATH", "/data/options_ashp_forecaster.json"))
+    legacy_options_path = _legacy_options_path(full_options_path)
+
+    forecast_env = os.environ.copy()
+    forecast_env["OPTIONS_PATH"] = str(legacy_options_path)
+    collector_env = os.environ.copy()
+    collector_env["OPTIONS_PATH"] = str(full_options_path)
+
+    children.append(subprocess.Popen(
+        [sys.executable, "-u", str(ROOT / "main.py")], env=forecast_env
+    ))
+    children.append(subprocess.Popen(
+        [sys.executable, "-u", str(ROOT / "dhw_collector.py")], env=collector_env
+    ))
 
     while True:
         for proc in children:
