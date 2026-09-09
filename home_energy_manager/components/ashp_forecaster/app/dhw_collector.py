@@ -107,8 +107,9 @@ def _recent_cycle_samples(db: sqlite3.Connection, hours: float = 6.0) -> list[Cy
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     rows = db.execute(
         "SELECT timestamp,upper_temp_c,lower_temp_c,dhw_heating,dhw_energy_total_kwh,"
-        "outdoor_temp_c,valid FROM dhw_thermal_samples WHERE timestamp>=? "
-        "AND upper_temp_c IS NOT NULL AND lower_temp_c IS NOT NULL ORDER BY timestamp",
+        "outdoor_temp_c,target_temp_c,immersion_heating,valid FROM dhw_thermal_samples "
+        "WHERE timestamp>=? AND upper_temp_c IS NOT NULL AND lower_temp_c IS NOT NULL "
+        "ORDER BY timestamp",
         (cutoff,),
     ).fetchall()
     out: list[CycleSample] = []
@@ -122,7 +123,9 @@ def _recent_cycle_samples(db: sqlite3.Connection, hours: float = 6.0) -> list[Cy
                     dhw_heating=bool(row[3]),
                     dhw_energy_total_kwh=float(row[4]) if row[4] is not None else None,
                     outdoor_temp_c=float(row[5]) if row[5] is not None else None,
-                    valid=bool(row[6]),
+                    target_temp_c=float(row[6]) if row[6] is not None else None,
+                    immersion_heating=bool(row[7]),
+                    valid=bool(row[8]),
                 )
             )
         except (TypeError, ValueError):
@@ -156,12 +159,12 @@ def _persist_latest_cycle(db: sqlite3.Connection) -> bool:
         )
     LOG.info(
         "DHW heating cycle stored: start=%s end=%s duration=%.0fmin energy=%.3fkWh "
-        "upper=%.1f->%.1fC lower=%.1f->%.1fC outdoor=%s type=%s",
+        "upper=%.1f->%.1fC lower=%.1f->%.1fC outdoor=%s type=%s valid=%s",
         cycle.start_ts.isoformat(), cycle.end_ts.isoformat(), cycle.duration_minutes,
         cycle.electrical_kwh, cycle.start_upper_c, cycle.end_upper_c,
         cycle.start_lower_c, cycle.end_lower_c,
         f"{cycle.outdoor_temp_c:.1f}C" if cycle.outdoor_temp_c is not None else "n/a",
-        cycle.cycle_type,
+        cycle.cycle_type, cycle.valid,
     )
     return True
 
@@ -188,6 +191,7 @@ def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
     ambient_entity = str(cfg.get("dhw_ambient_temperature_entity") or "")
     ambient = _finite_state(token, ambient_entity) if ambient_entity else None
     outdoor = _finite_state(token, str(cfg.get("outdoor_temperature_entity") or ""))
+    target = _finite_state(token, str(cfg.get("dhw_target_temperature_entity") or ""))
     activity_threshold = max(0.0, float(cfg.get("dhw_activity_threshold_kwh", 0.2)))
     heating = int(energy_delta is not None and energy_delta >= min(activity_threshold, 0.05))
     now_dt = datetime.now(timezone.utc)
@@ -206,16 +210,17 @@ def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
         db.execute(
             "INSERT INTO dhw_thermal_samples("
             "timestamp,upper_temp_c,lower_temp_c,dhw_heating,immersion_heating,"
-            "dhw_energy_delta_kwh,dhw_energy_total_kwh,ambient_temp_c,outdoor_temp_c,valid"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?) "
+            "dhw_energy_delta_kwh,dhw_energy_total_kwh,target_temp_c,ambient_temp_c,"
+            "outdoor_temp_c,valid"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(timestamp) DO UPDATE SET "
             "upper_temp_c=excluded.upper_temp_c,lower_temp_c=excluded.lower_temp_c,"
             "dhw_heating=excluded.dhw_heating,immersion_heating=excluded.immersion_heating,"
             "dhw_energy_delta_kwh=excluded.dhw_energy_delta_kwh,"
-            "dhw_energy_total_kwh=excluded.dhw_energy_total_kwh,"
+            "dhw_energy_total_kwh=excluded.dhw_energy_total_kwh,target_temp_c=excluded.target_temp_c,"
             "ambient_temp_c=excluded.ambient_temp_c,outdoor_temp_c=excluded.outdoor_temp_c,"
             "valid=excluded.valid",
-            (now, upper, lower, heating, 0, energy_delta, energy_total, ambient, outdoor, int(valid)),
+            (now, upper, lower, heating, 0, energy_delta, energy_total, target, ambient, outdoor, int(valid)),
         )
         if draw_event is not None:
             db.execute(
@@ -237,12 +242,13 @@ def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
             _set_metadata(db, "dhw_collector_last_energy_timestamp", now)
 
     LOG.info(
-        "DHW thermal sample: upper=%s lower=%s delta_kwh=%s heating=%s draw=%s ambient=%s valid=%s",
+        "DHW thermal sample: upper=%s lower=%s delta_kwh=%s heating=%s draw=%s target=%s ambient=%s valid=%s",
         f"{upper:.2f}" if upper is not None else "unavailable",
         f"{lower:.2f}" if lower is not None else "unavailable",
         f"{energy_delta:.4f}" if energy_delta is not None else "n/a",
         bool(heating),
         f"{draw_event.estimated_thermal_kwh:.3f}kWh" if draw_event is not None else "none",
+        f"{target:.1f}C" if target is not None else "n/a",
         f"{ambient:.2f}" if ambient is not None else "default-later",
         valid,
     )
