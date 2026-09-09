@@ -3,7 +3,8 @@
 This module belongs entirely to the ASHP forecaster. It does not alter controller or
 whole-home behaviour. Production may consume the thermal forecast only after the
 persisted validation gate says promotion is ready and the published thermal forecast
-is fresh and covers every requested production slot. Otherwise legacy is returned.
+is fresh and covers every requested production slot. Safety failures fall back to
+legacy immediately; quality-gate promotion/demotion uses persisted hysteresis.
 """
 from __future__ import annotations
 
@@ -14,6 +15,9 @@ from typing import Any, Callable
 
 
 THERMAL_FORECAST_ENTITY = "sensor.ashp_dhw_thermal_forecast_next_48h"
+SOURCE_KEY = "dhw_production_source"
+PROMOTION_STREAK_KEY = "dhw_production_promotion_streak"
+DEMOTION_STREAK_KEY = "dhw_production_demotion_streak"
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,33 @@ def _parameter_value(db: sqlite3.Connection, name: str) -> float | None:
         return float(row[0])
     except (TypeError, ValueError):
         return None
+
+
+def _metadata_text(db: sqlite3.Connection, key: str, default: str) -> str:
+    row = db.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+    return str(row[0]) if row else default
+
+
+def _metadata_int(db: sqlite3.Connection, key: str, default: int = 0) -> int:
+    try:
+        return int(_metadata_text(db, key, str(default)))
+    except ValueError:
+        return default
+
+
+def _set_metadata(db: sqlite3.Connection, key: str, value: str | int) -> None:
+    db.execute(
+        "INSERT INTO metadata(key,value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, str(value)),
+    )
+
+
+def _persist_state(db: sqlite3.Connection, source: str, promotion_streak: int, demotion_streak: int) -> None:
+    with db:
+        _set_metadata(db, SOURCE_KEY, source)
+        _set_metadata(db, PROMOTION_STREAK_KEY, max(0, promotion_streak))
+        _set_metadata(db, DEMOTION_STREAK_KEY, max(0, demotion_streak))
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -88,30 +119,75 @@ def select_dhw_forecast(
     get_state: Callable[[str], dict[str, Any]],
     *,
     max_age_minutes: float = 25.0,
+    promotion_successes: int = 3,
+    demotion_failures: int = 2,
 ) -> SelectionResult:
-    """Return thermal values only when all production safety gates pass.
+    """Select the production DHW source with fail-safe fallback and hysteresis.
 
-    The selector is deliberately fail-safe: every missing/stale/partial/error condition
-    returns the already-built legacy forecast. ``dhw_promotion_ready`` is written by the
-    independent validation process after sufficient forward comparison against actuals.
+    Promotion requires ``promotion_successes`` consecutive production runs where the
+    independent validation gate is ready and the thermal forecast is fresh and complete.
+    Once thermal is active, a stale/missing/incomplete forecast or loss of thermal model
+    readiness falls back immediately. A transient quality-gate failure requires
+    ``demotion_failures`` consecutive runs before returning to legacy, preventing flapping.
     """
-    if len(starts) != len(legacy_values):
-        return SelectionResult(list(legacy_values), "legacy", "legacy_length_mismatch")
+    legacy = list(legacy_values)
+    if len(starts) != len(legacy):
+        _persist_state(db, "legacy", 0, 0)
+        return SelectionResult(legacy, "legacy", "legacy_length_mismatch")
 
-    promotion = _parameter_value(db, "dhw_promotion_ready")
-    if promotion is None or promotion < 0.5:
-        return SelectionResult(list(legacy_values), "legacy", "promotion_not_ready")
+    current_source = _metadata_text(db, SOURCE_KEY, "legacy")
+    if current_source not in {"legacy", "thermal"}:
+        current_source = "legacy"
+    promotion_streak = _metadata_int(db, PROMOTION_STREAK_KEY, 0)
+    demotion_streak = _metadata_int(db, DEMOTION_STREAK_KEY, 0)
 
     thermal_ready = _parameter_value(db, "dhw_thermal_ready")
     if thermal_ready is None or thermal_ready < 0.5:
-        return SelectionResult(list(legacy_values), "legacy", "thermal_not_ready")
+        _persist_state(db, "legacy", 0, 0)
+        return SelectionResult(legacy, "legacy", "thermal_not_ready")
 
     try:
         state = get_state(THERMAL_FORECAST_ENTITY)
     except Exception:
-        return SelectionResult(list(legacy_values), "legacy", "thermal_entity_read_failed")
+        _persist_state(db, "legacy", 0, 0)
+        return SelectionResult(legacy, "legacy", "thermal_entity_read_failed")
 
-    thermal, reason = _thermal_values(state, starts, max_age_minutes=max_age_minutes)
+    thermal, thermal_reason = _thermal_values(state, starts, max_age_minutes=max_age_minutes)
     if thermal is None:
-        return SelectionResult(list(legacy_values), "legacy", reason)
-    return SelectionResult(thermal, "thermal", "promotion_ready_and_forecast_valid")
+        # Forecast integrity is a safety condition, not a quality score: fall back now.
+        _persist_state(db, "legacy", 0, 0)
+        return SelectionResult(legacy, "legacy", thermal_reason)
+
+    promotion = _parameter_value(db, "dhw_promotion_ready")
+    promotion_ready = bool(promotion is not None and promotion >= 0.5)
+
+    if current_source == "thermal":
+        if promotion_ready:
+            _persist_state(db, "thermal", 0, 0)
+            return SelectionResult(thermal, "thermal", "thermal_active")
+        demotion_streak += 1
+        if demotion_streak >= max(1, demotion_failures):
+            _persist_state(db, "legacy", 0, 0)
+            return SelectionResult(legacy, "legacy", "quality_gate_failed")
+        _persist_state(db, "thermal", 0, demotion_streak)
+        return SelectionResult(
+            thermal,
+            "thermal",
+            f"quality_gate_warning_{demotion_streak}_of_{max(1, demotion_failures)}",
+        )
+
+    if not promotion_ready:
+        _persist_state(db, "legacy", 0, 0)
+        return SelectionResult(legacy, "legacy", "promotion_not_ready")
+
+    promotion_streak += 1
+    required = max(1, promotion_successes)
+    if promotion_streak >= required:
+        _persist_state(db, "thermal", 0, 0)
+        return SelectionResult(thermal, "thermal", "promoted_after_sustained_validation")
+    _persist_state(db, "legacy", promotion_streak, 0)
+    return SelectionResult(
+        legacy,
+        "legacy",
+        f"promotion_streak_{promotion_streak}_of_{required}",
+    )
