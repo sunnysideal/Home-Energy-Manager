@@ -1,5 +1,5 @@
 name: Home Energy Manager
-version: 0.1.32
+version: 0.1.33
 slug: home_energy_manager
 description: ASHP forecasting, whole-home energy forecasting and battery control in one add-on, with components kept strictly
   separate.
@@ -12,6 +12,11 @@ arch:
 startup: application
 boot: auto
 init: false
+homeassistant_api: true
+hassio_api: true
+hassio_role: default
+services:
+- mqtt:want
 map:
 - config:rw
 options:
@@ -33,12 +38,12 @@ options:
     base_temperature_c: 15.5
     summer_mode_off_entity: number.ecomax360i_summer_mode_off
     summer_mode_on_entity: number.ecomax360i_summer_mode_on
-    winter_mode_below_c: 11
-    summer_mode_above_c: 12
+    winter_mode_below_c: 11.0
+    summer_mode_above_c: 12.0
     initial_kwh_per_degree_day: 1.55
     training_days: 30
-    minimum_daily_degree_days: 2
-    minimum_daily_ch_kwh: 2
+    minimum_daily_degree_days: 2.0
+    minimum_daily_ch_kwh: 2.0
     forecast_hours: 48
     forecast_interval_minutes: 30
     update_minutes: 15
@@ -49,7 +54,7 @@ options:
     dhw_tank_lower_temperature_entity: ''
     dhw_tank_volume_l: 250
     dhw_ambient_temperature_entity: ''
-    dhw_min_usable_temperature_c: 40
+    dhw_min_usable_temperature_c: 40.0
     dhw_thermal_sample_minutes: 5
     dhw_target_temperature_entity: number.dhw_target_temperature
     dhw_hysteresis_entity: number.dhw_hysteresis
@@ -57,16 +62,17 @@ options:
     dhw_history_days: 28
     dhw_activity_threshold_kwh: 0.2
   home_forecaster:
-    timezone: Europe/London
-    history_days: 28
-    day_of_week_weighting: true
-    same_weekday_weight: 1.5
-    forecast_interval_minutes: 5
-    controller_refresh_request_entity: sensor.home_energy_forecast_refresh_request
-    charge_efficiency: 0.95
-    discharge_efficiency: 0.95
-    minimum_baseline_w: 200
-    log_level: INFO
+    settings:
+      timezone: Europe/London
+      history_days: 28
+      day_of_week_weighting: true
+      same_weekday_weight: 1.5
+      forecast_interval_minutes: 5
+      controller_refresh_request_entity: sensor.home_energy_forecast_refresh_request
+      charge_efficiency: 0.95
+      discharge_efficiency: 0.95
+      minimum_baseline_w: 200
+      log_level: INFO
     battery:
       soc: ''
       capacity_kwh: ''
@@ -77,24 +83,21 @@ options:
       eco_mode: ''
       charge_schedule_enabled: ''
       discharge_schedule_enabled: ''
-      charge_start_1: ''
-      charge_end_1: ''
-      charge_target_soc_1: ''
-      charge_start_2: ''
-      charge_end_2: ''
-      charge_target_soc_2: ''
-      discharge_start_1: ''
-      discharge_end_1: ''
-      discharge_target_soc_1: ''
-      discharge_start_2: ''
-      discharge_end_2: ''
-      discharge_target_soc_2: ''
       pause_mode: ''
       pause_start: ''
       pause_end: ''
-      pause_discharge: ''
-      charge_power_limit_w: ''
-      discharge_power_limit_w: ''
+      charge_start_1: ''
+      charge_end_1: ''
+      charge_target_1: ''
+      charge_start_2: ''
+      charge_end_2: ''
+      charge_target_2: ''
+      discharge_start_1: ''
+      discharge_end_1: ''
+      discharge_target_1: ''
+      discharge_start_2: ''
+      discharge_end_2: ''
+      discharge_target_2: ''
       battery_power_w: ''
       battery_charge_energy_total_kwh: ''
       battery_discharge_energy_total_kwh: ''
@@ -106,78 +109,87 @@ options:
       battery_idle_min_samples: 12
       battery_idle_soc_delta_pct: 0.15
       battery_efficiency_publish_entity: sensor.home_energy_manager_battery_efficiency
-    grid:
-      power_w: ''
+    load:
+      energy_total_kwh: ''
+    solar:
+      energy_total_kwh: ''
+      solcast_today: sensor.solcast_pv_forecast_forecast_today
+      solcast_tomorrow: sensor.solcast_pv_forecast_forecast_tomorrow
+      solcast_day_3: sensor.solcast_pv_forecast_forecast_day_3
+    tariff:
       import_energy_total_kwh: ''
       export_energy_total_kwh: ''
-      inverter_import_energy_total_kwh: ''
-      inverter_export_energy_total_kwh: ''
-    load:
-      power_w: ''
-      energy_total_kwh: ''
-      minimum_baseline_w: 200
+      import_current_rate: ''
+      export_current_rate: ''
+      import_current_day_rates: ''
+      import_next_day_rates: ''
+      export_current_day_rates: ''
+      export_next_day_rates: ''
+    ashp:
+      forecast_48h: sensor.ashp_forecast_next_48h
+      ch_energy_total_kwh: sensor.ashp_electrical_energy_ch
+      dhw_energy_total_kwh: sensor.ashp_electrical_energy_dhw
+    meter:
+      import_energy_total_kwh: ''
+      export_energy_total_kwh: ''
     ev:
       energy_total_kwh: ''
-      smart_charging_active_entity: ''
       smart_charging_dispatch_entity: ''
-    pv:
-      power_w: ''
-      energy_total_kwh: ''
-      solcast_today: ''
-      solcast_tomorrow: ''
-      solcast_day3: ''
-    tariff:
-      import_rate: ''
-      export_rate: ''
-    ashp:
-      forecast_entity: sensor.ashp_forecast_next_48h
-    output:
-      forecast_entity: sensor.home_energy_manager_home_forecaster_home_energy_forecast
-      forecast_alias_entity: sensor.home_energy_forecast
-      summary_entity: sensor.home_energy_forecast_summary
-      refresh_ack_entity: sensor.home_energy_forecast_refresh_ack
+      smart_charging_active_entity: ''
   controller:
+    status_entity_id: sensor.home_energy_controller
+    home_energy_forecast_entity: sensor.home_energy_forecast
+    safety_buffer_soc: 20
     operation_mode: forecast_only
-    forecast_entity: sensor.home_energy_forecast
-    ev_smart_charging_enabled: false
+    power_down_enabled: true
+    power_down_events_entity: ''
+    power_down_import_baseline_entity: ''
+    power_down_export_baseline_entity: ''
+    minimise_export_min_soc: 25
+    calibration_enabled: true
+    top_full_every_days: 14
+    deep_cycle_every_days: 60
+    deep_cycle_floor_soc: 4
+    reserve_dwell_minutes: 30
+    export_start: '20:00'
+    preferred_charge_c_rate: 0.25
+    max_charge_c_rate: 0.4
+    discharge_rate_w: 0
+    charge_safety_margin_minutes: 10
+    generic_dwell_minutes: 15
+    forecast_stale_minutes: 15
+    future_tolerance_minutes: 2
+    time_deadband_minutes: 3
+    rate_deadband_w: 100
+    energy_deadband_kwh: 0.1
+    charge_variance_threshold_kwh: 0.5
+    export_variance_threshold_kwh: 0.2
+    write_retry_attempts: 4
+    write_retry_delay_seconds: 10
+    sample_interval_seconds: 30
+    rate_match_tolerance_pct: 5
+    rate_match_tolerance_w: 100
+    controller_refresh_timeout_seconds: 90
+    ev_smart_charging_enabled: true
     ev_smart_charging_dispatch_entity: ''
     ev_smart_charging_active_entity: ''
-    import_rate_entity: ''
-    export_rate_entity: ''
-    soc_entity: ''
-    reserve_soc_entity: ''
-    charge_rate_entity: ''
-    discharge_rate_entity: ''
-    eco_mode_entity: ''
-    charge_enable_entity: ''
-    discharge_enable_entity: ''
-    charge_start_1_entity: ''
-    charge_end_1_entity: ''
-    charge_target_soc_1_entity: ''
-    charge_start_2_entity: ''
-    charge_end_2_entity: ''
-    charge_target_soc_2_entity: ''
-    discharge_start_1_entity: ''
-    discharge_end_1_entity: ''
-    discharge_target_soc_1_entity: ''
-    discharge_start_2_entity: ''
-    discharge_end_2_entity: ''
-    discharge_target_soc_2_entity: ''
-    pause_mode_entity: ''
-    pause_start_entity: ''
-    pause_end_entity: ''
-    pause_discharge_entity: ''
-    refresh_request_entity: sensor.home_energy_forecast_refresh_request
-    refresh_ack_entity: sensor.home_energy_forecast_refresh_ack
-    forecast_only: false
-    planning_guardrail_soc: 20
-    export_generated_solar_threshold_w: 100
+  mqtt:
+    enabled: bool
+    auto_discover_broker: bool
+    host: str?
+    port: int(1,65535)
+    username: str?
+    password: password?
+    ssl: bool
+    discovery_prefix: str
+    topic_prefix: str
+    migrate_legacy_states: bool
 schema:
   mqtt:
     enabled: bool
     auto_discover_broker: bool
     host: str?
-    port: port
+    port: int(1,65535)
     username: str?
     password: password?
     ssl: bool
@@ -215,16 +227,17 @@ schema:
     dhw_history_days: int(7,90)
     dhw_activity_threshold_kwh: float(0,10)
   home_forecaster:
-    timezone: str
-    history_days: int(7,90)
-    day_of_week_weighting: bool
-    same_weekday_weight: float(1.0,10.0)
-    forecast_interval_minutes: int(1,60)
-    controller_refresh_request_entity: str
-    charge_efficiency: float(0.5,1.0)
-    discharge_efficiency: float(0.5,1.0)
-    minimum_baseline_w: int(0,5000)
-    log_level: list(INFO|DEBUG)
+    settings:
+      timezone: str
+      history_days: int(7,90)
+      day_of_week_weighting: bool
+      same_weekday_weight: float(1.0,10.0)
+      forecast_interval_minutes: int(1,60)
+      controller_refresh_request_entity: str
+      charge_efficiency: float(0.5,1.0)
+      discharge_efficiency: float(0.5,1.0)
+      minimum_baseline_w: int(0,5000)
+      log_level: list(INFO|DEBUG)
     battery:
       soc: str?
       capacity_kwh: str?
@@ -235,24 +248,21 @@ schema:
       eco_mode: str?
       charge_schedule_enabled: str?
       discharge_schedule_enabled: str?
-      charge_start_1: str?
-      charge_end_1: str?
-      charge_target_soc_1: str?
-      charge_start_2: str?
-      charge_end_2: str?
-      charge_target_soc_2: str?
-      discharge_start_1: str?
-      discharge_end_1: str?
-      discharge_target_soc_1: str?
-      discharge_start_2: str?
-      discharge_end_2: str?
-      discharge_target_soc_2: str?
       pause_mode: str?
       pause_start: str?
       pause_end: str?
-      pause_discharge: str?
-      charge_power_limit_w: str?
-      discharge_power_limit_w: str?
+      charge_start_1: str?
+      charge_end_1: str?
+      charge_target_1: str?
+      charge_start_2: str?
+      charge_end_2: str?
+      charge_target_2: str?
+      discharge_start_1: str?
+      discharge_end_1: str?
+      discharge_target_1: str?
+      discharge_start_2: str?
+      discharge_end_2: str?
+      discharge_target_2: str?
       battery_power_w: str?
       battery_charge_energy_total_kwh: str?
       battery_discharge_energy_total_kwh: str?
@@ -264,69 +274,67 @@ schema:
       battery_idle_min_samples: int(1,500)
       battery_idle_soc_delta_pct: float(0.0,5.0)
       battery_efficiency_publish_entity: str
-    grid:
-      power_w: str?
-      import_energy_total_kwh: str?
-      export_energy_total_kwh: str?
-      inverter_import_energy_total_kwh: str?
-      inverter_export_energy_total_kwh: str?
     load:
-      power_w: str?
       energy_total_kwh: str?
-      minimum_baseline_w: int(0,5000)
-    ev:
-      energy_total_kwh: str?
-      smart_charging_active_entity: str?
-      smart_charging_dispatch_entity: str?
-    pv:
-      power_w: str?
+    solar:
       energy_total_kwh: str?
       solcast_today: str?
       solcast_tomorrow: str?
-      solcast_day3: str?
+      solcast_day_3: str?
     tariff:
-      import_rate: str?
-      export_rate: str?
+      import_energy_total_kwh: str?
+      export_energy_total_kwh: str?
+      import_current_rate: str?
+      export_current_rate: str?
+      import_current_day_rates: str?
+      import_next_day_rates: str?
+      export_current_day_rates: str?
+      export_next_day_rates: str?
     ashp:
-      forecast_entity: str
-    output:
-      forecast_entity: str
-      forecast_alias_entity: str
-      summary_entity: str
-      refresh_ack_entity: str
+      forecast_48h: str
+      ch_energy_total_kwh: str
+      dhw_energy_total_kwh: str
+    meter:
+      import_energy_total_kwh: str?
+      export_energy_total_kwh: str?
+    ev:
+      energy_total_kwh: str?
+      smart_charging_dispatch_entity: str?
+      smart_charging_active_entity: str?
   controller:
-    operation_mode: list(forecast_only|maximise_export|minimise_export|export_generated)
-    forecast_entity: str
+    status_entity_id: str
+    home_energy_forecast_entity: str
+    safety_buffer_soc: int(1,99)
+    operation_mode: list(maximise_export|minimise_export|export_generated|forecast_only)
+    power_down_enabled: bool
+    power_down_events_entity: str?
+    power_down_import_baseline_entity: str?
+    power_down_export_baseline_entity: str?
+    minimise_export_min_soc: int(1,99)
+    calibration_enabled: bool
+    top_full_every_days: int(1,365)
+    deep_cycle_every_days: int(1,730)
+    deep_cycle_floor_soc: int(1,20)
+    reserve_dwell_minutes: int(0,180)
+    export_start: str
+    preferred_charge_c_rate: float
+    max_charge_c_rate: float
+    discharge_rate_w: int(0,20000)
+    charge_safety_margin_minutes: int(0,120)
+    generic_dwell_minutes: int(0,120)
+    forecast_stale_minutes: int(1,120)
+    future_tolerance_minutes: int(0,30)
+    time_deadband_minutes: int(0,30)
+    rate_deadband_w: int(0,2000)
+    energy_deadband_kwh: float
+    charge_variance_threshold_kwh: float
+    export_variance_threshold_kwh: float
+    write_retry_attempts: int(1,10)
+    write_retry_delay_seconds: int(1,600)
+    sample_interval_seconds: int(5,300)
+    rate_match_tolerance_pct: float
+    rate_match_tolerance_w: int
+    controller_refresh_timeout_seconds: int(30,600)
     ev_smart_charging_enabled: bool
     ev_smart_charging_dispatch_entity: str?
     ev_smart_charging_active_entity: str?
-    import_rate_entity: str?
-    export_rate_entity: str?
-    soc_entity: str?
-    reserve_soc_entity: str?
-    charge_rate_entity: str?
-    discharge_rate_entity: str?
-    eco_mode_entity: str?
-    charge_enable_entity: str?
-    discharge_enable_entity: str?
-    charge_start_1_entity: str?
-    charge_end_1_entity: str?
-    charge_target_soc_1_entity: str?
-    charge_start_2_entity: str?
-    charge_end_2_entity: str?
-    charge_target_soc_2_entity: str?
-    discharge_start_1_entity: str?
-    discharge_end_1_entity: str?
-    discharge_target_soc_1_entity: str?
-    discharge_start_2_entity: str?
-    discharge_end_2_entity: str?
-    discharge_target_soc_2_entity: str?
-    pause_mode_entity: str?
-    pause_start_entity: str?
-    pause_end_entity: str?
-    pause_discharge_entity: str?
-    refresh_request_entity: str
-    refresh_ack_entity: str
-    forecast_only: bool
-    planning_guardrail_soc: int(0,100)
-    export_generated_solar_threshold_w: int(0,5000)
