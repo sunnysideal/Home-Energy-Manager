@@ -13,8 +13,41 @@ import sqlite3
 DHW_MODEL_SCHEMA_VERSION = 6
 
 
+def _ensure_column(db: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """Add a column idempotently, including when several helper processes migrate at once.
+
+    SQLite has no ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``. A PRAGMA pre-check alone
+    is racy: two processes can both observe a missing column and then both attempt the
+    ALTER. The second ALTER is harmless, so explicitly tolerate only that duplicate-column
+    outcome and re-raise every other database error.
+    """
+    columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+    if column in columns:
+        return
+    try:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" not in str(exc).lower():
+            raise
+        # Another process completed the migration between our PRAGMA and ALTER.
+        columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            raise
+
+
 def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
     """Create/migrate DHW thermal-model tables without modifying legacy forecast data."""
+    # All passive helpers call this independently at startup. Create the shared metadata
+    # table here rather than relying on the legacy forecaster or collector to win the race.
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS dhw_thermal_samples (
@@ -32,11 +65,8 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
         )
         """
     )
-    sample_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_thermal_samples)")}
-    if "dhw_energy_total_kwh" not in sample_columns:
-        db.execute("ALTER TABLE dhw_thermal_samples ADD COLUMN dhw_energy_total_kwh REAL")
-    if "target_temp_c" not in sample_columns:
-        db.execute("ALTER TABLE dhw_thermal_samples ADD COLUMN target_temp_c REAL")
+    _ensure_column(db, "dhw_thermal_samples", "dhw_energy_total_kwh", "REAL")
+    _ensure_column(db, "dhw_thermal_samples", "target_temp_c", "REAL")
 
     db.execute(
         """
@@ -69,9 +99,7 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
         )
         """
     )
-    cycle_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_heating_cycles)")}
-    if "target_temp_c" not in cycle_columns:
-        db.execute("ALTER TABLE dhw_heating_cycles ADD COLUMN target_temp_c REAL")
+    _ensure_column(db, "dhw_heating_cycles", "target_temp_c", "REAL")
 
     db.execute(
         """
@@ -114,9 +142,7 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
         )
         """
     )
-    validation_columns = {row[1] for row in db.execute("PRAGMA table_info(dhw_forecast_validation)")}
-    if "predicted_dhw_kwh" not in validation_columns:
-        db.execute("ALTER TABLE dhw_forecast_validation ADD COLUMN predicted_dhw_kwh REAL")
+    _ensure_column(db, "dhw_forecast_validation", "predicted_dhw_kwh", "REAL")
 
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_dhw_thermal_samples_valid_time "
@@ -135,3 +161,4 @@ def ensure_dhw_model_schema(db: sqlite3.Connection) -> None:
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (str(DHW_MODEL_SCHEMA_VERSION),),
     )
+    db.commit()
