@@ -1,7 +1,8 @@
-"""Shadow-only 48-hour DHW thermal forecast.
+"""48-hour DHW thermal forecast used for validation and guarded production promotion.
 
-The output from this module is for validation/diagnostics only. It must not replace the
-legacy ASHP forecast until confidence and compatibility promotion criteria are met.
+The thermal forecast remains independently validated. Production selection is handled by
+``dhw_production_selector`` and falls back to legacy unless all promotion and freshness
+criteria pass.
 """
 from __future__ import annotations
 
@@ -76,9 +77,11 @@ def load_shadow_model(db: sqlite3.Connection) -> ShadowModel | None:
         typical_power_kw=params["dhw_cycle_power_kw"],
         upper_c_per_kwh=params["dhw_cycle_upper_c_per_kwh"],
         lower_c_per_kwh=params["dhw_cycle_lower_c_per_kwh"],
-        upper_loss_w_per_k=params.get("dhw_upper_loss_w_per_k", 1.2),
-        lower_loss_w_per_k=params.get("dhw_lower_loss_w_per_k", 0.8),
-        coupling_w_per_k=params.get("dhw_coupling_w_per_k", 3.0),
+        # Canonical names are dhw_*; retain the old aliases so an upgraded database
+        # uses its learned fit immediately before the next hourly retraining pass.
+        upper_loss_w_per_k=params.get("dhw_upper_loss_w_per_k", params.get("upper_loss_w_per_k", 1.2)),
+        lower_loss_w_per_k=params.get("dhw_lower_loss_w_per_k", params.get("lower_loss_w_per_k", 0.8)),
+        coupling_w_per_k=params.get("dhw_coupling_w_per_k", params.get("coupling_w_per_k", 3.0)),
         demand=demand,
     )
 
@@ -187,11 +190,15 @@ def persist_shadow_validation(
     *,
     forecast_ts: datetime | None = None,
     source: str = "thermal_shadow",
-    keep_days: int = 7,
+    keep_days: int = 21,
     step_minutes: int = 5,
     legacy_dhw_by_start: dict[str, float] | None = None,
 ) -> int:
-    """Store only complete clock-aligned 30-minute intervals for like-for-like scoring."""
+    """Store complete clock-aligned 30-minute intervals for like-for-like scoring.
+
+    Keep 21 days by default: the promotion comparison uses a 14-day window and requires
+    at least seven distinct days, so retention must comfortably exceed both thresholds.
+    """
     if not slots:
         return 0
     forecast_ts = forecast_ts or datetime.now(timezone.utc)
@@ -209,8 +216,6 @@ def persist_shadow_validation(
     with db:
         for interval_start in sorted(groups):
             chunk = sorted(groups[interval_start], key=lambda s: s.start)
-            # Skip the partial interval at the start/end of a forecast. A valid comparison
-            # must cover exactly the same clock half-hour as the production legacy slot.
             expected_starts = [interval_start + timedelta(minutes=i * step_minutes) for i in range(steps_per_checkpoint)]
             if len(chunk) != steps_per_checkpoint or [slot.start for slot in chunk] != expected_starts:
                 continue
