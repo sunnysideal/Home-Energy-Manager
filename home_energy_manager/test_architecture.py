@@ -34,6 +34,8 @@ for forbidden in ("battery_soc", "export_generated", "charge_rate_w", "degree_da
     assert forbidden not in launcher, f"Energy/control logic leaked into launcher: {forbidden}"
 
 cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+# Until the user-domain schema is switched on, the public 0.1.x options remain the
+# three private component sections plus MQTT. The migration layer may accept more.
 assert set(cfg["options"]) == component_names | {"mqtt"}
 assert set(cfg["schema"]) == component_names | {"mqtt"}
 
@@ -63,7 +65,7 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
     dockerfile = (ROOT / "Dockerfile").read_text()
     launcher = (ROOT / "launcher.py").read_text()
     expected = {
-        "components/ashp_forecaster/app/main.py": "/app/runtime/ashp_forecaster/main.py",
+        "components/ashp_forecaster/app/runner.py": "/app/runtime/ashp_forecaster/runner.py",
         "components/home_forecaster/app/main.py": "/app/runtime/home_forecaster/main.py",
         "components/controller/app.py": "/app/runtime/controller/app.py",
     }
