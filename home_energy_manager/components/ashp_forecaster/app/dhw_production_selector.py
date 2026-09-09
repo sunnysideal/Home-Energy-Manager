@@ -18,6 +18,7 @@ THERMAL_FORECAST_ENTITY = "sensor.ashp_dhw_thermal_forecast_next_48h"
 SOURCE_KEY = "dhw_production_source"
 PROMOTION_STREAK_KEY = "dhw_production_promotion_streak"
 DEMOTION_STREAK_KEY = "dhw_production_demotion_streak"
+EXPECTED_PRODUCTION_SLOTS = 96
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,14 @@ def _thermal_values(
     attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
     if attrs.get("status") != "published_shadow":
         return None, "thermal_forecast_not_published"
+    if attrs.get("horizon_complete") is not True:
+        return None, "thermal_horizon_incomplete"
+    try:
+        published_slots = int(attrs.get("forecast_slots"))
+    except (TypeError, ValueError):
+        return None, "thermal_horizon_incomplete"
+    if published_slots != len(starts):
+        return None, "thermal_horizon_incomplete"
 
     updated = _parse_timestamp(attrs.get("last_updated"))
     if updated is None:
@@ -91,6 +100,9 @@ def _thermal_values(
         return None, "thermal_forecast_stale"
 
     rows = attrs.get("forecast") if isinstance(attrs.get("forecast"), list) else []
+    if len(rows) != len(starts):
+        return None, "thermal_horizon_incomplete"
+
     by_start: dict[str, float] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -100,8 +112,12 @@ def _thermal_values(
             value = max(0.0, float(row.get("dhw_kwh", 0.0)))
         except (TypeError, ValueError):
             continue
-        if ts is not None:
-            by_start[ts.isoformat()] = value
+        if ts is None:
+            continue
+        key = ts.isoformat()
+        if key in by_start:
+            return None, "thermal_forecast_duplicate_slot"
+        by_start[key] = value
 
     out: list[float] = []
     for start in starts:
@@ -129,11 +145,18 @@ def select_dhw_forecast(
     Once thermal is active, a stale/missing/incomplete forecast or loss of thermal model
     readiness falls back immediately. A transient quality-gate failure requires
     ``demotion_failures`` consecutive runs before returning to legacy, preventing flapping.
+
+    The enhanced model currently owns the fixed public 48-hour/30-minute DHW contract.
+    If production is configured to a different slot count it remains on legacy rather than
+    silently accepting a partial thermal horizon.
     """
     legacy = list(legacy_values)
     if len(starts) != len(legacy):
         _persist_state(db, "legacy", 0, 0)
         return SelectionResult(legacy, "legacy", "legacy_length_mismatch")
+    if len(starts) != EXPECTED_PRODUCTION_SLOTS:
+        _persist_state(db, "legacy", 0, 0)
+        return SelectionResult(legacy, "legacy", "unsupported_production_horizon")
 
     current_source = _metadata_text(db, SOURCE_KEY, "legacy")
     if current_source not in {"legacy", "thermal"}:
@@ -154,7 +177,6 @@ def select_dhw_forecast(
 
     thermal, thermal_reason = _thermal_values(state, starts, max_age_minutes=max_age_minutes)
     if thermal is None:
-        # Forecast integrity is a safety condition, not a quality score: fall back now.
         _persist_state(db, "legacy", 0, 0)
         return SelectionResult(legacy, "legacy", thermal_reason)
 
