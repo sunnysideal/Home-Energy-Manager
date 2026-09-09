@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Production ASHP forecaster entrypoint with guaranteed configured horizon.
 
-The legacy forecaster remains authoritative.  This adapter only extends an otherwise
+The legacy forecaster remains authoritative. This adapter only extends an otherwise
 valid hourly weather series when the provider stops before the configured forecast
-horizon.  Extension uses the provider's final temperature as a persistence fallback;
+horizon. Extension uses the provider's final temperature as a persistence fallback;
 all CH/DHW modelling and the published output contract remain in ``main.py``.
 """
 from __future__ import annotations
@@ -12,11 +12,43 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import main as legacy
 
 LOG = logging.getLogger("ashp_forecast")
+
+
+def _fallback_timezone_name() -> str:
+    """Return the add-on timezone without requiring the HA API to be available."""
+    candidate = str(os.environ.get("TZ") or "UTC").strip() or "UTC"
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError:
+        LOG.warning("Invalid TZ environment value %r; falling back to UTC", candidate)
+        return "UTC"
+    return candidate
+
+
+def _timezone_name(client: legacy.HAClient) -> str:
+    """Prefer HA's configured timezone, but never fail startup if /config is unavailable."""
+    fallback = _fallback_timezone_name()
+    try:
+        ha_cfg = client.get_config()
+    except Exception as exc:
+        LOG.warning(
+            "Could not read Home Assistant timezone during startup; using add-on timezone %s: %s",
+            fallback,
+            exc,
+        )
+        return fallback
+    candidate = str((ha_cfg or {}).get("time_zone") or fallback).strip() or fallback
+    try:
+        ZoneInfo(candidate)
+    except ZoneInfoNotFoundError:
+        LOG.warning("Home Assistant returned invalid timezone %r; using %s", candidate, fallback)
+        return fallback
+    return candidate
 
 
 class HorizonHAClient(legacy.HAClient):
@@ -63,23 +95,19 @@ class HorizonHAClient(legacy.HAClient):
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = legacy.Config.load()
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
 
-    # Read HA timezone with a normal client first, then use the horizon-preserving
-    # subclass for the production forecast loop.
-    bootstrap = legacy.HAClient(os.environ.get("SUPERVISOR_TOKEN", ""))
-    ha_cfg = bootstrap.get_config()
-    timezone_name = str(ha_cfg.get("time_zone") or "UTC")
-    try:
-        bootstrap.mqtt.close()
-    except Exception:
-        pass
-
-    tz = ZoneInfo(timezone_name)
+    # Use one authoritative HA client. A transient /config authorization/startup
+    # failure must not prevent forecasting; the Home Assistant add-on TZ environment
+    # is a safe local fallback and the normal forecast API calls can retry in-loop.
     client = HorizonHAClient(
-        os.environ.get("SUPERVISOR_TOKEN", ""),
+        token,
         forecast_hours=cfg.forecast_hours,
-        timezone_name=timezone_name,
+        timezone_name=_fallback_timezone_name(),
     )
+    timezone_name = _timezone_name(client)
+    client.tz = ZoneInfo(timezone_name)
+    tz = client.tz
     store = legacy.Store(legacy.DB_PATH)
 
     LOG.info("ASHP Energy Forecaster starting in timezone %s", tz.key)
