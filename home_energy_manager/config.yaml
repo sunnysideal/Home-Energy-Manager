@@ -1,5 +1,5 @@
 name: Home Energy Manager
-version: 0.1.31
+version: 0.1.32
 slug: home_energy_manager
 description: ASHP forecasting, whole-home energy forecasting and battery control in one add-on, with components kept strictly
   separate.
