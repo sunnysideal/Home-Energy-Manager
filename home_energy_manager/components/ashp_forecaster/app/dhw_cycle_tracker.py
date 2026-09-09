@@ -1,4 +1,4 @@
-"""Identify complete ASHP DHW heating cycles from passive thermal samples."""
+"""Identify and classify complete DHW heating cycles from passive thermal samples."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +13,8 @@ class CycleSample:
     dhw_heating: bool
     dhw_energy_total_kwh: float | None
     outdoor_temp_c: float | None
+    target_temp_c: float | None = None
+    immersion_heating: bool = False
     valid: bool = True
 
 
@@ -34,13 +36,23 @@ class HeatingCycle:
         return (self.end_ts - self.start_ts).total_seconds() / 60.0
 
 
-def build_cycle(samples: list[CycleSample], *, max_gap_minutes: float = 12.0) -> HeatingCycle | None:
-    """Build one complete cycle from a contiguous sample sequence.
+def _classify(samples: list[CycleSample], start_idx: int, end_idx: int) -> tuple[str, bool]:
+    active = samples[start_idx:end_idx + 1]
+    if any(s.immersion_heating for s in active):
+        return "immersion", False
 
-    The sequence must contain a clear false->true heating start and true->false end.
-    Cumulative DHW energy is used for cycle electrical energy so short sampling
-    intervals do not accumulate rounding error.
-    """
+    targets = [s.target_temp_c for s in active if s.target_temp_c is not None]
+    target_stable = not targets or max(targets) - min(targets) <= 1.0
+    if not target_stable:
+        return "normal_dhw", False
+
+    high_target = bool(targets and max(targets) >= 58.0)
+    high_observed = max(s.upper_temp_c for s in active) >= 58.0
+    return ("high_temp_dhw" if high_target or high_observed else "normal_dhw"), True
+
+
+def build_cycle(samples: list[CycleSample], *, max_gap_minutes: float = 12.0) -> HeatingCycle | None:
+    """Build one complete cycle from a contiguous sample sequence."""
     if len(samples) < 3:
         return None
     ordered = sorted(samples, key=lambda s: s.timestamp)
@@ -81,6 +93,7 @@ def build_cycle(samples: list[CycleSample], *, max_gap_minutes: float = 12.0) ->
         if s.outdoor_temp_c is not None
     ]
     outdoor = sum(outdoor_values) / len(outdoor_values) if outdoor_values else None
+    cycle_type, valid = _classify(ordered, start_idx, end_idx)
 
     return HeatingCycle(
         start_ts=ordered[start_idx].timestamp,
@@ -91,4 +104,6 @@ def build_cycle(samples: list[CycleSample], *, max_gap_minutes: float = 12.0) ->
         end_lower_c=post.lower_temp_c,
         electrical_kwh=electrical,
         outdoor_temp_c=outdoor,
+        cycle_type=cycle_type,
+        valid=valid,
     )
