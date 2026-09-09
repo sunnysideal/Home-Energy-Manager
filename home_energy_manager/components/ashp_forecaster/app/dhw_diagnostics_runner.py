@@ -14,12 +14,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from common.mqtt import MQTTPublisher
+from dhw_model import ensure_dhw_model_schema
 from dhw_simulator import TankParameters, TankState, usable_energy_kwh
 from dhw_validation import confidence_result, horizon_metrics
 
 LOG = logging.getLogger("ashp_dhw_diagnostics")
 HA_API = "http://supervisor/core/api"
 DB_PATH = Path(os.environ.get("ASHP_FORECASTER_DB_PATH", "/data/ashp_forecast.db"))
+OPTIONS_PATH = Path(os.environ.get("OPTIONS_PATH", "/data/options.json"))
 
 
 class Publisher:
@@ -91,16 +93,23 @@ def _next_heating_energy(db: sqlite3.Connection, upper: float, lower: float, tar
     )
 
 
-def _usable_energy(db: sqlite3.Connection, upper: float, lower: float) -> float:
+def _usable_energy(
+    db: sqlite3.Connection,
+    upper: float,
+    lower: float,
+    *,
+    tank_volume_l: float,
+    minimum_useful_temperature_c: float,
+) -> float:
     upper_loss = _param(db, "dhw_upper_loss_w_per_k") or 1.2
     lower_loss = _param(db, "dhw_lower_loss_w_per_k") or 0.8
     coupling = _param(db, "dhw_coupling_w_per_k") or 3.0
     params = TankParameters(
-        volume_l=250.0,
+        volume_l=tank_volume_l,
         upper_loss_w_per_k=upper_loss,
         lower_loss_w_per_k=lower_loss,
         coupling_w_per_k=coupling,
-        minimum_useful_temperature_c=40.0,
+        minimum_useful_temperature_c=minimum_useful_temperature_c,
     )
     return usable_energy_kwh(TankState(upper, lower), params)
 
@@ -119,7 +128,7 @@ def _status(result) -> str:
     return "learning"
 
 
-def publish_diagnostics(db: sqlite3.Connection, publisher: Publisher) -> None:
+def publish_diagnostics(db: sqlite3.Connection, publisher: Publisher, cfg: dict[str, Any]) -> None:
     result = confidence_result(db)
     metrics = {metric.name: metric for metric in horizon_metrics(db)}
     near = metrics["0_6h"]
@@ -176,15 +185,28 @@ def publish_diagnostics(db: sqlite3.Connection, publisher: Publisher) -> None:
 
     if latest is not None:
         upper, lower, target, ambient = latest
+        tank_volume_l = float(cfg.get("dhw_tank_volume_l", 250.0))
+        minimum_useful = float(cfg.get("dhw_min_usable_temperature_c", 40.0))
         publisher.sensor(
             "sensor.ashp_dhw_available_energy",
-            round(_usable_energy(db, upper, lower), 3),
+            round(
+                _usable_energy(
+                    db,
+                    upper,
+                    lower,
+                    tank_volume_l=tank_volume_l,
+                    minimum_useful_temperature_c=minimum_useful,
+                ),
+                3,
+            ),
             {
                 "friendly_name": "ASHP DHW Available Thermal Energy",
                 "unit_of_measurement": "kWh",
                 "upper_temperature_c": round(upper, 2),
                 "lower_temperature_c": round(lower, 2),
                 "ambient_temperature_c": round(ambient, 2) if ambient is not None else None,
+                "tank_volume_l": tank_volume_l,
+                "minimum_useful_temperature_c": minimum_useful,
                 **common,
             },
         )
@@ -206,11 +228,15 @@ def main() -> None:
     token = os.environ.get("SUPERVISOR_TOKEN", "")
     if not token:
         raise RuntimeError("SUPERVISOR_TOKEN is not available")
+    cfg = json.loads(OPTIONS_PATH.read_text()) if OPTIONS_PATH.exists() else {}
     db = sqlite3.connect(DB_PATH, timeout=30)
+    db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    ensure_dhw_model_schema(db)
+    db.commit()
     publisher = Publisher(token)
     while True:
         try:
-            publish_diagnostics(db, publisher)
+            publish_diagnostics(db, publisher, cfg)
         except Exception:
             LOG.exception("DHW diagnostics publishing failed")
         time.sleep(300)
