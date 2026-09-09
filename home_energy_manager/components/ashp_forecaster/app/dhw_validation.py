@@ -42,8 +42,10 @@ class EnergyComparison:
 @dataclass(frozen=True)
 class ConfidenceResult:
     confidence: float
+    trial_ready: bool
     thermal_ready: bool
     promotion_ready: bool
+    performance_bad: bool
     passive_samples: int
     cycle_count: int
     demand_days: int
@@ -83,7 +85,6 @@ def _nearest_sample(
 
 
 def apply_actuals(db: sqlite3.Connection, *, tolerance_minutes: float = 4.0) -> int:
-    """Fill actual temperatures for due validation rows from the nearest real sample."""
     now = datetime.now(timezone.utc)
     rows = db.execute(
         "SELECT forecast_ts,target_ts FROM dhw_forecast_validation "
@@ -110,7 +111,6 @@ def apply_actuals(db: sqlite3.Connection, *, tolerance_minutes: float = 4.0) -> 
 
 
 def apply_actual_energy(db: sqlite3.Connection, *, tolerance_minutes: float = 4.0) -> int:
-    """Back-fill observed electrical kWh for each 30-minute validation interval."""
     now = datetime.now(timezone.utc)
     rows = db.execute(
         "SELECT forecast_ts,target_ts FROM dhw_forecast_validation "
@@ -130,7 +130,6 @@ def apply_actual_energy(db: sqlite3.Connection, *, tolerance_minutes: float = 4.
             if before is None or after is None or before[3] is None or after[3] is None:
                 continue
             delta = float(after[3]) - float(before[3])
-            # Reject meter reset/discontinuity or physically implausible half-hour use.
             if delta < -1e-6 or delta > 10.0:
                 continue
             db.execute(
@@ -185,7 +184,6 @@ def energy_comparison(
     lookback_days: int = 14,
     max_horizon_hours: float = 6.0,
 ) -> EnergyComparison:
-    """Compare thermal and legacy 30-minute DHW kWh against the same actual intervals."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
     rows = db.execute(
         "SELECT forecast_ts,target_ts,predicted_dhw_kwh,legacy_dhw_kwh,actual_dhw_kwh "
@@ -280,29 +278,58 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
         + 0.10 * draw_score
         + 0.20 * validation_score
     )
-    thermal_ready = bool(
+
+    # Trial readiness deliberately excludes forward validation. Once the physical model,
+    # demand model and live sensors are all available, production may use thermal while
+    # legacy continues in parallel as the comparator/fallback.
+    trial_ready = bool(
         sensor_score == 1.0
         and passive_samples >= 24
         and cycle_count >= 5
         and demand_days >= 7
         and draw_count >= 10
+    )
+
+    thermal_ready = bool(
+        trial_ready
         and validation_count >= 20
         and upper_mae is not None and upper_mae <= 2.0
         and lower_mae is not None and lower_mae <= 4.0
     )
-    # A readiness flag only: production remains on the legacy forecast until a separate
-    # promotion commit explicitly switches the source. Require a full week of energy
-    # comparison and the thermal forecast to be no worse than legacy on the same intervals.
+
     promotion_ready = bool(
         thermal_ready
         and energy.count >= 20
         and energy.days >= 7
         and energy.thermal_not_worse
     )
+
+    # Do not call the model poor before there is meaningful evidence. Once there are at
+    # least 20 comparable intervals across two days, require a material miss rather than
+    # tiny noise: thermal MAE must be >15% worse than legacy and >0.03 kWh/interval worse.
+    energy_bad = bool(
+        energy.count >= 20
+        and energy.days >= 2
+        and energy.thermal_mae_kwh is not None
+        and energy.legacy_mae_kwh is not None
+        and energy.thermal_mae_kwh > energy.legacy_mae_kwh * 1.15
+        and energy.thermal_mae_kwh > energy.legacy_mae_kwh + 0.03
+    )
+    # Temperature validation can independently flag a clearly implausible tank trajectory.
+    temp_bad = bool(
+        validation_count >= 20
+        and upper_mae is not None
+        and lower_mae is not None
+        and (upper_mae > 3.0 or lower_mae > 6.0)
+    )
+    performance_bad = energy_bad or temp_bad
+
     return ConfidenceResult(
         confidence=min(max(confidence, 0.0), 1.0),
+        trial_ready=trial_ready,
         thermal_ready=thermal_ready,
         promotion_ready=promotion_ready,
+        performance_bad=performance_bad,
         passive_samples=passive_samples,
         cycle_count=cycle_count,
         demand_days=demand_days,
@@ -321,8 +348,11 @@ def persist_confidence(db: sqlite3.Connection, result: ConfidenceResult) -> None
     now = datetime.now(timezone.utc).isoformat()
     values = [
         ("dhw_model_confidence", result.confidence, result.validation_count, result.upper_mae_c),
+        ("dhw_trial_ready", 1.0 if result.trial_ready else 0.0, result.validation_count, None),
         ("dhw_thermal_ready", 1.0 if result.thermal_ready else 0.0, result.validation_count, result.lower_mae_c),
         ("dhw_promotion_ready", 1.0 if result.promotion_ready else 0.0, result.energy_validation_count, result.thermal_energy_mae_kwh),
+        ("dhw_performance_bad", 1.0 if result.performance_bad else 0.0, result.energy_validation_count, result.thermal_energy_mae_kwh),
+        ("dhw_energy_validation_days", float(result.energy_validation_days), result.energy_validation_count, None),
     ]
     if result.thermal_energy_mae_kwh is not None:
         values.append(("dhw_thermal_energy_mae_kwh", result.thermal_energy_mae_kwh, result.energy_validation_count, None))
