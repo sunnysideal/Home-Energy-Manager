@@ -24,7 +24,11 @@ def legacy_options():
             "base_temperature_c": 15.5,
         },
         "home_forecaster": {
-            "settings": {"timezone": "Europe/London", "history_days": 28},
+            "settings": {
+                "timezone": "Europe/London",
+                "history_days": 28,
+                "controller_refresh_request_entity": "sensor.custom_refresh_request",
+            },
             "battery": {
                 "soc": "sensor.battery_soc",
                 "capacity_kwh": "sensor.battery_capacity",
@@ -87,6 +91,8 @@ def legacy_options():
             },
         },
         "controller": {
+            "status_entity_id": "sensor.custom_controller_status",
+            "home_energy_forecast_entity": "sensor.custom_home_forecast",
             "operation_mode": "forecast_only",
             "safety_buffer_soc": 20,
             "export_start": "20:00",
@@ -107,25 +113,45 @@ def test_legacy_layout_is_preserved_for_component_runtime():
 
     assert canonical["battery"]["soc"] == "sensor.battery_soc"
     assert canonical["grid"]["import_energy_total_kwh"] == "sensor.smart_meter_import"
+    assert canonical["inverter"]["house_load_energy_total_kwh"] == "sensor.house_energy"
     assert canonical["inverter"]["import_energy_total_kwh"] == "sensor.inverter_import"
     assert canonical["solar"]["energy_total_kwh"] == "sensor.pv_energy"
     assert canonical["heat_pump"]["ch_energy_total_kwh"] == "sensor.hp_ch"
     assert canonical["dhw"]["tank_upper_temperature"] == "sensor.dhw_top"
     assert canonical["ev"]["energy_total_kwh"] == "sensor.ev_energy"
     assert canonical["energy_strategy"]["operation_mode"] == "forecast_only"
+    assert "home_energy_forecast_entity" not in canonical["energy_strategy"]
+    assert "status_entity_id" not in canonical["energy_strategy"]
+    assert canonical["advanced"]["internal"] == {
+        "forecast_refresh_request_entity": "sensor.custom_refresh_request",
+        "home_energy_forecast_entity": "sensor.custom_home_forecast",
+        "controller_status_entity": "sensor.custom_controller_status",
+    }
 
     # Component contracts remain unchanged after the migration layer renders them.
     assert runtime["home_forecaster"]["battery"]["soc"] == "sensor.battery_soc"
+    assert runtime["home_forecaster"]["load"]["energy_total_kwh"] == "sensor.house_energy"
     assert runtime["home_forecaster"]["meter"]["import_energy_total_kwh"] == "sensor.smart_meter_import"
+    assert runtime["home_forecaster"]["settings"]["controller_refresh_request_entity"] == "sensor.custom_refresh_request"
     assert runtime["ashp_forecaster"]["dhw_tank_upper_temperature_entity"] == "sensor.dhw_top"
     assert runtime["controller"]["operation_mode"] == "forecast_only"
+    assert runtime["controller"]["home_energy_forecast_entity"] == "sensor.custom_home_forecast"
+    assert runtime["controller"]["status_entity_id"] == "sensor.custom_controller_status"
 
 
 def test_canonical_domain_value_overrides_legacy_duplicate_without_rewriting_saved_options():
     saved = legacy_options()
     saved["battery"] = {"soc": "sensor.new_soc"}
     saved["grid"] = {"import_energy_total_kwh": "sensor.new_grid_import"}
+    saved["inverter"] = {"house_load_energy_total_kwh": "sensor.new_house_energy"}
     saved["ev"] = {"smart_charging_active": "binary_sensor.new_ev_active"}
+    saved["advanced"] = {
+        "internal": {
+            "home_energy_forecast_entity": "sensor.home_energy_forecast",
+            "controller_status_entity": "sensor.home_energy_controller",
+            "forecast_refresh_request_entity": "sensor.home_energy_forecast_refresh_request",
+        }
+    }
     before = deepcopy(saved)
 
     runtime, canonical, diagnostics = migrate_runtime_options(saved)
@@ -134,11 +160,32 @@ def test_canonical_domain_value_overrides_legacy_duplicate_without_rewriting_sav
     assert diagnostics.source_layout == "canonical"
     assert canonical["battery"]["soc"] == "sensor.new_soc"
     assert canonical["grid"]["import_energy_total_kwh"] == "sensor.new_grid_import"
+    assert canonical["inverter"]["house_load_energy_total_kwh"] == "sensor.new_house_energy"
     assert canonical["ev"]["smart_charging_active"] == "binary_sensor.new_ev_active"
     assert runtime["home_forecaster"]["battery"]["soc"] == "sensor.new_soc"
+    assert runtime["home_forecaster"]["load"]["energy_total_kwh"] == "sensor.new_house_energy"
     assert runtime["home_forecaster"]["meter"]["import_energy_total_kwh"] == "sensor.new_grid_import"
     assert runtime["controller"]["ev_smart_charging_active_entity"] == "binary_sensor.new_ev_active"
+    assert runtime["controller"]["home_energy_forecast_entity"] == "sensor.home_energy_forecast"
     assert diagnostics.conflicts
+
+
+def test_internal_entities_default_to_package_owned_ids_when_legacy_values_absent():
+    saved = legacy_options()
+    saved["home_forecaster"]["settings"].pop("controller_refresh_request_entity")
+    saved["controller"].pop("home_energy_forecast_entity")
+    saved["controller"].pop("status_entity_id")
+
+    runtime, canonical, _ = migrate_runtime_options(saved)
+
+    assert canonical["advanced"]["internal"] == {
+        "forecast_refresh_request_entity": "sensor.home_energy_forecast_refresh_request",
+        "home_energy_forecast_entity": "sensor.home_energy_forecast",
+        "controller_status_entity": "sensor.home_energy_controller",
+    }
+    assert runtime["home_forecaster"]["settings"]["controller_refresh_request_entity"] == "sensor.home_energy_forecast_refresh_request"
+    assert runtime["controller"]["home_energy_forecast_entity"] == "sensor.home_energy_forecast"
+    assert runtime["controller"]["status_entity_id"] == "sensor.home_energy_controller"
 
 
 def test_accidental_0131_home_forecaster_layout_is_still_accepted():
