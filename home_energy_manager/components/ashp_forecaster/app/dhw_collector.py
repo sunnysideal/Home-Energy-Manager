@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from dhw_cycle_tracker import CycleSample, build_cycle
 from dhw_draw_detector import ThermalSample, detect_draw
 from dhw_model import ensure_dhw_model_schema
 from dhw_passive_learner import learn_passive_parameters, persist_passive_fit
@@ -100,6 +101,69 @@ def _previous_sample(db: sqlite3.Connection, before_ts: str) -> ThermalSample | 
         )
     except (TypeError, ValueError):
         return None
+
+
+def _recent_cycle_samples(db: sqlite3.Connection, hours: float = 6.0) -> list[CycleSample]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    rows = db.execute(
+        "SELECT timestamp,upper_temp_c,lower_temp_c,dhw_heating,dhw_energy_total_kwh,"
+        "outdoor_temp_c,valid FROM dhw_thermal_samples WHERE timestamp>=? "
+        "AND upper_temp_c IS NOT NULL AND lower_temp_c IS NOT NULL ORDER BY timestamp",
+        (cutoff,),
+    ).fetchall()
+    out: list[CycleSample] = []
+    for row in rows:
+        try:
+            out.append(
+                CycleSample(
+                    timestamp=datetime.fromisoformat(str(row[0])),
+                    upper_temp_c=float(row[1]),
+                    lower_temp_c=float(row[2]),
+                    dhw_heating=bool(row[3]),
+                    dhw_energy_total_kwh=float(row[4]) if row[4] is not None else None,
+                    outdoor_temp_c=float(row[5]) if row[5] is not None else None,
+                    valid=bool(row[6]),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _persist_latest_cycle(db: sqlite3.Connection) -> bool:
+    cycle = build_cycle(_recent_cycle_samples(db))
+    if cycle is None:
+        return False
+    exists = db.execute(
+        "SELECT 1 FROM dhw_heating_cycles WHERE start_ts=? LIMIT 1",
+        (cycle.start_ts.isoformat(),),
+    ).fetchone()
+    if exists:
+        return False
+    with db:
+        db.execute(
+            "INSERT INTO dhw_heating_cycles("
+            "start_ts,end_ts,start_upper_c,start_lower_c,end_upper_c,end_lower_c,"
+            "electrical_kwh,outdoor_temp_c,cycle_type,valid"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                cycle.start_ts.isoformat(), cycle.end_ts.isoformat(),
+                cycle.start_upper_c, cycle.start_lower_c,
+                cycle.end_upper_c, cycle.end_lower_c,
+                cycle.electrical_kwh, cycle.outdoor_temp_c,
+                cycle.cycle_type, int(cycle.valid),
+            ),
+        )
+    LOG.info(
+        "DHW heating cycle stored: start=%s end=%s duration=%.0fmin energy=%.3fkWh "
+        "upper=%.1f->%.1fC lower=%.1f->%.1fC outdoor=%s type=%s",
+        cycle.start_ts.isoformat(), cycle.end_ts.isoformat(), cycle.duration_minutes,
+        cycle.electrical_kwh, cycle.start_upper_c, cycle.end_upper_c,
+        cycle.start_lower_c, cycle.end_lower_c,
+        f"{cycle.outdoor_temp_c:.1f}C" if cycle.outdoor_temp_c is not None else "n/a",
+        cycle.cycle_type,
+    )
+    return True
 
 
 def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
@@ -221,6 +285,7 @@ def main() -> None:
         try:
             if lower:
                 record_sample(db, token, cfg)
+                _persist_latest_cycle(db)
                 if time.monotonic() - last_fit_monotonic >= 3600.0:
                     fit = learn_passive_parameters(
                         db,
