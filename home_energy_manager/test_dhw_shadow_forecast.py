@@ -91,6 +91,34 @@ def test_cold_tank_triggers_cycle_when_mode_on():
     assert result[-1].lower_temp_c > 30.0
 
 
+def test_shadow_forecast_never_leaves_lower_zone_above_upper_after_heating():
+    aggressive_lower_response = mod.ShadowModel(
+        intercept_kwh=0.2,
+        upper_kwh_per_c=0.04,
+        lower_kwh_per_c=0.08,
+        typical_power_kw=3.0,
+        upper_c_per_kwh=1.0,
+        lower_c_per_kwh=12.0,
+        upper_loss_w_per_k=0.0,
+        lower_loss_w_per_k=0.0,
+        coupling_w_per_k=0.0,
+        demand={},
+    )
+    result = mod.build_shadow_forecast(
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
+        initial_upper_c=44.0,
+        initial_lower_c=43.0,
+        target_temp_c=50.0,
+        hysteresis_c=5.0,
+        mode="on",
+        schedule_bits={},
+        model=aggressive_lower_response,
+        horizon_hours=1,
+    )
+    assert any(slot.dhw_kwh > 0 for slot in result)
+    assert all(slot.lower_temp_c <= slot.upper_temp_c + 1e-9 for slot in result)
+
+
 def test_schedule_mode_only_heats_in_enabled_half_hour():
     schedule = {"wednesday_pm": 1}
     result = mod.build_shadow_forecast(
