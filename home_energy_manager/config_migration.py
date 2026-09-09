@@ -82,8 +82,6 @@ def _pick(
     if not candidates:
         value = default
     else:
-        # Canonical user-domain config is authoritative when present. Otherwise
-        # retain the first legacy source to preserve existing 0.1.x behaviour.
         chosen_path, value = candidates[0]
         for other_path, other_value in candidates[1:]:
             if other_value == value:
@@ -192,7 +190,6 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
     diagnostics.source_layout = "canonical" if any(isinstance(raw.get(k), dict) for k in CANONICAL_DOMAINS) else "legacy"
 
     mappings: tuple[tuple[str, tuple[str, ...], Any], ...] = (
-        # Battery identity/telemetry: configured once, consumed by Home Forecaster and then discovered by Controller.
         ("battery.soc", ("home_forecaster.battery.soc",), ""),
         ("battery.capacity_kwh", ("home_forecaster.battery.capacity_kwh",), ""),
         ("battery.reserve_soc", ("home_forecaster.battery.reserve_soc",), ""),
@@ -200,7 +197,6 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
         ("battery.charge_energy_total_kwh", ("home_forecaster.battery.battery_charge_energy_total_kwh",), ""),
         ("battery.discharge_energy_total_kwh", ("home_forecaster.battery.battery_discharge_energy_total_kwh",), ""),
 
-        # True utility meter boundary is deliberately separate from inverter/battery metering.
         ("grid.import_energy_total_kwh", ("home_forecaster.meter.import_energy_total_kwh",), ""),
         ("grid.export_energy_total_kwh", ("home_forecaster.meter.export_energy_total_kwh",), ""),
         ("inverter.house_load_energy_total_kwh", ("home_forecaster.load.energy_total_kwh",), ""),
@@ -245,7 +241,6 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
         ("heat_pump.weather", ("ashp_forecaster.weather_entity",), "weather.forecast_home"),
         ("heat_pump.summer_mode_off", ("ashp_forecaster.summer_mode_off_entity",), "number.ecomax360i_summer_mode_off"),
         ("heat_pump.summer_mode_on", ("ashp_forecaster.summer_mode_on_entity",), "number.ecomax360i_summer_mode_on"),
-        ("heat_pump.forecast_48h", ("home_forecaster.ashp.forecast_48h",), "sensor.ashp_forecast_next_48h"),
 
         ("dhw.energy_total_kwh", ("ashp_forecaster.dhw_energy_entity", "home_forecaster.ashp.dhw_energy_total_kwh"), "sensor.ashp_electrical_energy_dhw"),
         ("dhw.mode", ("ashp_forecaster.dhw_mode_entity",), "select.dhw_mode"),
@@ -265,9 +260,6 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
     for canonical_path, legacy_paths, default in mappings:
         _pick(raw, canonical, canonical_path, legacy_paths, diagnostics, default)
 
-    # Controller policy belongs to the user-facing strategy domain. Keep every
-    # existing policy field verbatim, excluding component plumbing and the EV
-    # fields consolidated above.
     controller = raw.get("controller") if isinstance(raw.get("controller"), dict) else {}
     strategy = canonical["energy_strategy"]
     canonical_strategy = raw.get("energy_strategy") if isinstance(raw.get("energy_strategy"), dict) else {}
@@ -288,7 +280,6 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
             )
         strategy[key] = value
 
-    # Advanced contains tuning/learning settings rather than user-domain entity identity.
     hf_settings = _get(raw, "home_forecaster.settings", {})
     if isinstance(hf_settings, dict):
         canonical["advanced"]["home_forecaster"] = {
@@ -325,6 +316,10 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
         "controller_status_entity": str(
             _get(raw, "controller.status_entity_id", "sensor.home_energy_controller")
             or "sensor.home_energy_controller"
+        ),
+        "ashp_forecast_entity": str(
+            _get(raw, "home_forecaster.ashp.forecast_48h", "sensor.ashp_forecast_next_48h")
+            or "sensor.ashp_forecast_next_48h"
         ),
     }
 
@@ -390,8 +385,11 @@ def apply_canonical(runtime: dict[str, Any], canonical: dict[str, Any]) -> None:
     for key in ("energy_total_kwh", "solcast_today", "solcast_tomorrow", "solcast_day_3"):
         hs[key] = solar.get(key, "")
 
+    advanced = canonical["advanced"]
+    internal = advanced.get("internal", {}) if isinstance(advanced.get("internal"), dict) else {}
+
     ha = hf.setdefault("ashp", {})
-    ha["forecast_48h"] = hp.get("forecast_48h", "sensor.ashp_forecast_next_48h")
+    ha["forecast_48h"] = str(internal.get("ashp_forecast_entity") or "sensor.ashp_forecast_next_48h")
     ha["ch_energy_total_kwh"] = hp.get("ch_energy_total_kwh", "")
     ha["dhw_energy_total_kwh"] = dhw.get("energy_total_kwh", "")
 
@@ -415,14 +413,10 @@ def apply_canonical(runtime: dict[str, Any], canonical: dict[str, Any]) -> None:
     af["dhw_hysteresis_entity"] = dhw.get("hysteresis", "")
     af["dhw_schedule_prefix"] = dhw.get("schedule_prefix", "")
 
-    # Advanced tuning is copied back into the component contract. Timezone is
-    # intentionally not canonical; runtime components resolve it from Home Assistant.
-    advanced = canonical["advanced"]
     hfs = hf.setdefault("settings", {})
     for key, value in advanced.get("home_forecaster", {}).items():
         if key != "timezone":
             hfs[key] = value
-    internal = advanced.get("internal", {}) if isinstance(advanced.get("internal"), dict) else {}
     hfs["controller_refresh_request_entity"] = str(
         internal.get("forecast_refresh_request_entity") or "sensor.home_energy_forecast_refresh_request"
     )
