@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 
 from dhw_draw_detector import ThermalSample, detect_draw
 from dhw_model import ensure_dhw_model_schema
+from dhw_passive_learner import learn_passive_parameters, persist_passive_fit
 
 LOG = logging.getLogger("ashp_dhw_collector")
 HA_API = "http://supervisor/core/api"
@@ -117,7 +118,6 @@ def record_sample(db: sqlite3.Connection, token: str, cfg: dict) -> bool:
     energy_delta = None
     if energy_total is not None and previous_total is not None:
         delta = energy_total - previous_total
-        # A falling cumulative meter normally means reset/restart. Do not train from it.
         if 0.0 <= delta <= 10.0:
             energy_delta = delta
 
@@ -211,6 +211,7 @@ def main() -> None:
         )
 
     sample_minutes = max(1, int(cfg.get("dhw_thermal_sample_minutes", 5)))
+    last_fit_monotonic = -3600.0
     while True:
         now = datetime.now(timezone.utc)
         boundary = _next_boundary(now, sample_minutes)
@@ -220,8 +221,27 @@ def main() -> None:
         try:
             if lower:
                 record_sample(db, token, cfg)
+                if time.monotonic() - last_fit_monotonic >= 3600.0:
+                    fit = learn_passive_parameters(
+                        db,
+                        volume_l=float(cfg.get("dhw_tank_volume_l", 250)),
+                    )
+                    last_fit_monotonic = time.monotonic()
+                    if fit is not None:
+                        persist_passive_fit(db, fit)
+                        LOG.info(
+                            "DHW passive model learned: upper_loss=%.3fW/K lower_loss=%.3fW/K "
+                            "coupling=%.3fW/K intervals=%d rmse=%.3fC",
+                            fit.upper_loss_w_per_k,
+                            fit.lower_loss_w_per_k,
+                            fit.coupling_w_per_k,
+                            fit.sample_count,
+                            fit.rmse_c,
+                        )
+                    else:
+                        LOG.info("DHW passive model not ready: insufficient/unsuitable quiet samples")
         except Exception:
-            LOG.exception("DHW thermal sample failed")
+            LOG.exception("DHW thermal sample/learning failed")
         time.sleep(0.25)
 
 
