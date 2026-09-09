@@ -18,6 +18,20 @@ CANONICAL_DOMAINS = (
     "advanced",
 )
 
+PACKAGE_INTERNAL_ENTITIES = {
+    "forecast_refresh_request_entity": "sensor.home_energy_forecast_refresh_request",
+    "home_energy_forecast_entity": "sensor.home_energy_forecast",
+    "controller_status_entity": "sensor.home_energy_controller",
+    "ashp_forecast_entity": "sensor.ashp_forecast_next_48h",
+}
+
+PACKAGE_INTERNAL_LEGACY_PATHS = {
+    "forecast_refresh_request_entity": ("home_forecaster.settings.controller_refresh_request_entity",),
+    "home_energy_forecast_entity": ("controller.home_energy_forecast_entity",),
+    "controller_status_entity": ("controller.status_entity_id",),
+    "ashp_forecast_entity": ("home_forecaster.ashp.forecast_48h", "home_forecaster.ashp.forecast_entity"),
+}
+
 
 @dataclass
 class MigrationDiagnostics:
@@ -60,6 +74,26 @@ def _set(root: dict[str, Any], path: str, value: Any) -> None:
             cur[part] = nxt
         cur = nxt
     cur[parts[-1]] = value
+
+
+def _record_package_internal_overrides(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> None:
+    """Record stale/custom package-plumbing IDs while always using canonical endpoints."""
+    for key, canonical_value in PACKAGE_INTERNAL_ENTITIES.items():
+        for path in PACKAGE_INTERNAL_LEGACY_PATHS[key]:
+            value = _get(raw, path)
+            if _nonempty(value) and str(value) != canonical_value:
+                diagnostics.moves.append(
+                    f"{path}={value!r} -> package-owned {canonical_value}"
+                )
+
+    advanced_internal = _get(raw, "advanced.internal", {})
+    if isinstance(advanced_internal, dict):
+        for key, canonical_value in PACKAGE_INTERNAL_ENTITIES.items():
+            value = advanced_internal.get(key)
+            if _nonempty(value) and str(value) != canonical_value:
+                diagnostics.conflicts.append(
+                    f"advanced.internal.{key}: package-owned value {canonical_value!r} overrides {value!r}"
+                )
 
 
 def _pick(
@@ -304,27 +338,15 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
             if k.startswith("battery_efficiency_") or k.startswith("battery_idle_")
         }
     canonical["advanced"]["mqtt"] = deepcopy(raw.get("mqtt", {})) if isinstance(raw.get("mqtt"), dict) else {}
-    canonical["advanced"]["internal"] = {
-        "forecast_refresh_request_entity": str(
-            _get(raw, "home_forecaster.settings.controller_refresh_request_entity", "sensor.home_energy_forecast_refresh_request")
-            or "sensor.home_energy_forecast_refresh_request"
-        ),
-        "home_energy_forecast_entity": str(
-            _get(raw, "controller.home_energy_forecast_entity", "sensor.home_energy_forecast")
-            or "sensor.home_energy_forecast"
-        ),
-        "controller_status_entity": str(
-            _get(raw, "controller.status_entity_id", "sensor.home_energy_controller")
-            or "sensor.home_energy_controller"
-        ),
-        "ashp_forecast_entity": str(
-            _get(raw, "home_forecaster.ashp.forecast_48h", "sensor.ashp_forecast_next_48h")
-            or "sensor.ashp_forecast_next_48h"
-        ),
-    }
+    _record_package_internal_overrides(raw, diagnostics)
+    canonical["advanced"]["internal"] = deepcopy(PACKAGE_INTERNAL_ENTITIES)
 
     user_advanced = raw.get("advanced") if isinstance(raw.get("advanced"), dict) else {}
     for key, value in user_advanced.items():
+        if key == "internal":
+            # Cross-component package API endpoints are not user configuration. Allowing
+            # stale MQTT-generated entity IDs here can silently disconnect components.
+            continue
         if isinstance(value, dict) and isinstance(canonical["advanced"].get(key), dict):
             canonical["advanced"][key].update(value)
         else:
