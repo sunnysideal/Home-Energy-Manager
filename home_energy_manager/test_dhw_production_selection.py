@@ -12,7 +12,7 @@ if str(APP) not in sys.path:
 
 from dhw_model import ensure_dhw_model_schema
 from dhw_passive_learner import PassiveFit, persist_passive_fit
-from dhw_production_selector import select_dhw_forecast
+from dhw_production_selector import EXPECTED_PRODUCTION_SLOTS, select_dhw_forecast
 from dhw_validation import confidence_result
 
 
@@ -32,11 +32,19 @@ def _param(db: sqlite3.Connection, name: str, value: float, count: int = 0) -> N
     db.commit()
 
 
-def _fresh_state(starts: list[datetime], values: list[float]) -> dict:
+def _starts() -> list[datetime]:
+    start = datetime.now(timezone.utc).replace(minute=30 if datetime.now(timezone.utc).minute >= 30 else 0, second=0, microsecond=0)
+    start += timedelta(minutes=30)
+    return [start + timedelta(minutes=30 * i) for i in range(EXPECTED_PRODUCTION_SLOTS)]
+
+
+def _fresh_state(starts: list[datetime], values: list[float], *, complete: bool = True) -> dict:
     return {
         "state": str(sum(values)),
         "attributes": {
             "status": "published_shadow",
+            "horizon_complete": complete,
+            "forecast_slots": len(starts),
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "forecast": [
                 {"start": start.isoformat(), "dhw_kwh": value}
@@ -53,12 +61,20 @@ def test_passive_fit_is_visible_to_readiness_gate() -> None:
     assert result.passive_samples == 3609
 
 
+def test_selector_rejects_non_96_production_contract() -> None:
+    db = _db()
+    start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    result = select_dhw_forecast(db, [start], [0.5], lambda _: {})
+    assert result.source == "legacy"
+    assert result.reason == "unsupported_production_horizon"
+
+
 def test_selector_stays_legacy_until_promotion_ready() -> None:
     db = _db()
     _param(db, "dhw_thermal_ready", 1.0)
-    starts = [datetime.now(timezone.utc).replace(second=0, microsecond=0)]
-    legacy = [0.5]
-    state = _fresh_state(starts, [0.8])
+    starts = _starts()
+    legacy = [0.5] * len(starts)
+    state = _fresh_state(starts, [0.8] * len(starts))
     result = select_dhw_forecast(db, starts, legacy, lambda _: state)
     assert result.source == "legacy"
     assert result.values == legacy
@@ -69,18 +85,19 @@ def test_selector_requires_sustained_promotion_before_using_thermal() -> None:
     db = _db()
     _param(db, "dhw_promotion_ready", 1.0)
     _param(db, "dhw_thermal_ready", 1.0)
-    start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    starts = [start, start + timedelta(minutes=30)]
-    state = _fresh_state(starts, [0.4, 0.8])
+    starts = _starts()
+    thermal = [0.4 if i % 2 == 0 else 0.8 for i in range(len(starts))]
+    state = _fresh_state(starts, thermal)
+    legacy = [0.1] * len(starts)
 
-    first = select_dhw_forecast(db, starts, [0.1, 0.1], lambda _: state)
-    second = select_dhw_forecast(db, starts, [0.1, 0.1], lambda _: state)
-    third = select_dhw_forecast(db, starts, [0.1, 0.1], lambda _: state)
+    first = select_dhw_forecast(db, starts, legacy, lambda _: state)
+    second = select_dhw_forecast(db, starts, legacy, lambda _: state)
+    third = select_dhw_forecast(db, starts, legacy, lambda _: state)
 
     assert first.source == "legacy" and first.reason == "promotion_streak_1_of_3"
     assert second.source == "legacy" and second.reason == "promotion_streak_2_of_3"
     assert third.source == "thermal"
-    assert third.values == [0.4, 0.8]
+    assert third.values == thermal
     assert third.reason == "promoted_after_sustained_validation"
 
 
@@ -88,40 +105,59 @@ def test_selector_falls_back_immediately_when_thermal_forecast_is_stale() -> Non
     db = _db()
     _param(db, "dhw_promotion_ready", 1.0)
     _param(db, "dhw_thermal_ready", 1.0)
-    start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    fresh = _fresh_state([start], [0.9])
+    starts = _starts()
+    thermal = [0.9] * len(starts)
+    fresh = _fresh_state(starts, thermal)
+    legacy = [0.2] * len(starts)
     for _ in range(3):
-        select_dhw_forecast(db, [start], [0.2], lambda _: fresh)
+        select_dhw_forecast(db, starts, legacy, lambda _: fresh)
 
-    stale = {
-        "attributes": {
-            "status": "published_shadow",
-            "last_updated": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
-            "forecast": [{"start": start.isoformat(), "dhw_kwh": 0.9}],
-        }
-    }
-    result = select_dhw_forecast(db, [start], [0.2], lambda _: stale)
+    stale = _fresh_state(starts, thermal)
+    stale["attributes"]["last_updated"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    result = select_dhw_forecast(db, starts, legacy, lambda _: stale)
     assert result.source == "legacy"
-    assert result.values == [0.2]
+    assert result.values == legacy
     assert result.reason == "thermal_forecast_stale"
+
+
+def test_selector_rejects_horizon_marked_incomplete() -> None:
+    db = _db()
+    _param(db, "dhw_promotion_ready", 1.0)
+    _param(db, "dhw_thermal_ready", 1.0)
+    starts = _starts()
+    state = _fresh_state(starts, [0.9] * len(starts), complete=False)
+    legacy = [0.2] * len(starts)
+    result = select_dhw_forecast(db, starts, legacy, lambda _: state)
+    assert result.source == "legacy"
+    assert result.values == legacy
+    assert result.reason == "thermal_horizon_incomplete"
 
 
 def test_selector_falls_back_when_any_requested_slot_is_missing() -> None:
     db = _db()
     _param(db, "dhw_promotion_ready", 1.0)
     _param(db, "dhw_thermal_ready", 1.0)
-    start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    starts = [start, start + timedelta(minutes=30)]
-    state = {
-        "attributes": {
-            "status": "published_shadow",
-            "last_updated": datetime.now(timezone.utc).isoformat(),
-            "forecast": [{"start": starts[0].isoformat(), "dhw_kwh": 0.9}],
-        }
-    }
-    result = select_dhw_forecast(db, starts, [0.2, 0.3], lambda _: state)
+    starts = _starts()
+    state = _fresh_state(starts, [0.9] * len(starts))
+    state["attributes"]["forecast"] = state["attributes"]["forecast"][:-1]
+    state["attributes"]["forecast_slots"] = len(starts)  # metadata alone must not make it complete
+    legacy = [0.2] * len(starts)
+    result = select_dhw_forecast(db, starts, legacy, lambda _: state)
     assert result.source == "legacy"
-    assert result.values == [0.2, 0.3]
+    assert result.values == legacy
+    assert result.reason == "thermal_horizon_incomplete"
+
+
+def test_selector_rejects_shifted_96_slot_forecast() -> None:
+    db = _db()
+    _param(db, "dhw_promotion_ready", 1.0)
+    _param(db, "dhw_thermal_ready", 1.0)
+    starts = _starts()
+    shifted = [start + timedelta(minutes=30) for start in starts]
+    state = _fresh_state(shifted, [0.7] * len(shifted))
+    legacy = [0.2] * len(starts)
+    result = select_dhw_forecast(db, starts, legacy, lambda _: state)
+    assert result.source == "legacy"
     assert result.reason == "thermal_forecast_incomplete"
 
 
@@ -129,14 +165,15 @@ def test_active_thermal_needs_two_quality_failures_before_demotion() -> None:
     db = _db()
     _param(db, "dhw_promotion_ready", 1.0)
     _param(db, "dhw_thermal_ready", 1.0)
-    start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    state = _fresh_state([start], [0.7])
+    starts = _starts()
+    state = _fresh_state(starts, [0.7] * len(starts))
+    legacy = [0.2] * len(starts)
     for _ in range(3):
-        select_dhw_forecast(db, [start], [0.2], lambda _: state)
+        select_dhw_forecast(db, starts, legacy, lambda _: state)
 
     _param(db, "dhw_promotion_ready", 0.0)
-    warning = select_dhw_forecast(db, [start], [0.2], lambda _: state)
-    demoted = select_dhw_forecast(db, [start], [0.2], lambda _: state)
+    warning = select_dhw_forecast(db, starts, legacy, lambda _: state)
+    demoted = select_dhw_forecast(db, starts, legacy, lambda _: state)
 
     assert warning.source == "thermal"
     assert warning.reason == "quality_gate_warning_1_of_2"
