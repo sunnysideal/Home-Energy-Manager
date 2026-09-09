@@ -117,6 +117,8 @@ def _usable_energy(
 def _status(result) -> str:
     if result.promotion_ready:
         return "ready_for_promotion"
+    if result.thermal_ready and result.energy_validation_days < 7:
+        return "validating_against_legacy"
     if result.thermal_ready:
         return "thermal_model_ready"
     if result.cycle_count < 5:
@@ -159,6 +161,8 @@ def publish_diagnostics(db: sqlite3.Connection, publisher: Publisher, cfg: dict[
             "demand_days": result.demand_days,
             "draw_events": result.draw_count,
             "validation_points_0_6h": result.validation_count,
+            "energy_validation_points": result.energy_validation_count,
+            "energy_validation_days": result.energy_validation_days,
             **common,
         },
     )
@@ -179,6 +183,33 @@ def publish_diagnostics(db: sqlite3.Connection, publisher: Publisher, cfg: dict[
             "friendly_name": "ASHP DHW Lower Temperature MAE",
             "unit_of_measurement": "°C",
             "validation_points": near.count,
+            **common,
+        },
+    )
+    publisher.sensor(
+        "sensor.ashp_dhw_thermal_energy_mae",
+        round(result.thermal_energy_mae_kwh, 3) if result.thermal_energy_mae_kwh is not None else "unknown",
+        {
+            "friendly_name": "ASHP DHW Thermal Forecast Energy MAE",
+            "unit_of_measurement": "kWh",
+            "validation_points": result.energy_validation_count,
+            "validation_days": result.energy_validation_days,
+            **common,
+        },
+    )
+    publisher.sensor(
+        "sensor.ashp_dhw_legacy_energy_mae",
+        round(result.legacy_energy_mae_kwh, 3) if result.legacy_energy_mae_kwh is not None else "unknown",
+        {
+            "friendly_name": "ASHP DHW Legacy Forecast Energy MAE",
+            "unit_of_measurement": "kWh",
+            "validation_points": result.energy_validation_count,
+            "validation_days": result.energy_validation_days,
+            "thermal_not_worse": bool(
+                result.thermal_energy_mae_kwh is not None
+                and result.legacy_energy_mae_kwh is not None
+                and result.thermal_energy_mae_kwh <= result.legacy_energy_mae_kwh
+            ),
             **common,
         },
     )
@@ -230,9 +261,7 @@ def main() -> None:
         raise RuntimeError("SUPERVISOR_TOKEN is not available")
     cfg = json.loads(OPTIONS_PATH.read_text()) if OPTIONS_PATH.exists() else {}
     db = sqlite3.connect(DB_PATH, timeout=30)
-    db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     ensure_dhw_model_schema(db)
-    db.commit()
     publisher = Publisher(token)
     while True:
         try:
