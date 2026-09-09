@@ -90,8 +90,6 @@ def _quiet_intervals(
             continue
         if str(current[0]) in draw_times:
             continue
-        # Conservative quiet-period gate. Normal standing loss/coupling is much slower;
-        # larger changes are likely draws, heating transitions or sensor artefacts.
         if abs(cu - pu) > 0.60 or abs(cl - pl) > 0.60:
             continue
         ambient_raw = previous[5]
@@ -109,10 +107,8 @@ def _quiet_intervals(
         upper_drop_kwh = upper_cap * (pu - cu)
         lower_drop_kwh = lower_cap * (pl - cl)
 
-        # Upper: drop = K_upper*dT_ambient + K_coupling*dT_zone
         rows.append(([upper_ambient * scale, 0.0, gap * scale], upper_drop_kwh,
                      (pu, pl, cu, cl, hours)))
-        # Lower: drop = K_lower*dT_ambient - K_coupling*dT_zone
         rows.append(([0.0, lower_ambient * scale, -gap * scale], lower_drop_kwh,
                      (pu, pl, cu, cl, hours)))
     return rows
@@ -145,8 +141,6 @@ def learn_passive_parameters(
     upper_loss, lower_loss, coupling = solution
     if not all(math.isfinite(v) for v in solution):
         return None
-    # Physical plausibility bounds prevent a small/noisy dataset from creating a
-    # parameter set that could later destabilise simulation.
     if not (0.0 <= upper_loss <= 10.0 and 0.0 <= lower_loss <= 10.0 and 0.0 <= coupling <= 30.0):
         return None
 
@@ -164,13 +158,23 @@ def learn_passive_parameters(
 
 
 def persist_passive_fit(db: sqlite3.Connection, fit: PassiveFit) -> None:
+    """Persist canonical names used by validation/simulation plus legacy aliases.
+
+    Earlier thermal-model builds wrote unprefixed names while the shadow simulator and
+    readiness gate read ``dhw_*`` names. Writing both keeps existing databases and any
+    diagnostic consumers compatible while making the canonical production path agree.
+    """
     now = datetime.now(timezone.utc).isoformat()
+    values = (
+        ("dhw_upper_loss_w_per_k", fit.upper_loss_w_per_k),
+        ("dhw_lower_loss_w_per_k", fit.lower_loss_w_per_k),
+        ("dhw_coupling_w_per_k", fit.coupling_w_per_k),
+        ("upper_loss_w_per_k", fit.upper_loss_w_per_k),
+        ("lower_loss_w_per_k", fit.lower_loss_w_per_k),
+        ("coupling_w_per_k", fit.coupling_w_per_k),
+    )
     with db:
-        for name, value in (
-            ("upper_loss_w_per_k", fit.upper_loss_w_per_k),
-            ("lower_loss_w_per_k", fit.lower_loss_w_per_k),
-            ("coupling_w_per_k", fit.coupling_w_per_k),
-        ):
+        for name, value in values:
             db.execute(
                 "INSERT INTO dhw_model_parameters(name,value,sample_count,updated_at,error) "
                 "VALUES(?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
