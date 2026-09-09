@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -7,6 +8,7 @@ MODULE_PATH = ROOT / "components" / "ashp_forecaster" / "app" / "dhw_simulator.p
 spec = importlib.util.spec_from_file_location("dhw_simulator", MODULE_PATH)
 sim = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = sim
 spec.loader.exec_module(sim)
 
 
