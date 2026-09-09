@@ -173,17 +173,6 @@ options:
     ev_smart_charging_enabled: true
     ev_smart_charging_dispatch_entity: ''
     ev_smart_charging_active_entity: ''
-  mqtt:
-    enabled: bool
-    auto_discover_broker: bool
-    host: str?
-    port: int(1,65535)
-    username: str?
-    password: password?
-    ssl: bool
-    discovery_prefix: str
-    topic_prefix: str
-    migrate_legacy_states: bool
 schema:
   mqtt:
     enabled: bool
