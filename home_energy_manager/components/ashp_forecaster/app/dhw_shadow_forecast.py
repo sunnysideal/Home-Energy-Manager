@@ -185,6 +185,7 @@ def persist_shadow_validation(
     forecast_ts: datetime | None = None,
     source: str = "thermal_shadow",
     keep_days: int = 7,
+    step_minutes: int = 5,
 ) -> int:
     """Store 30-minute validation checkpoints while keeping 5-minute simulation internal."""
     if not slots:
@@ -200,7 +201,8 @@ def persist_shadow_validation(
             if not chunk:
                 continue
             endpoint = chunk[-1]
-            target_iso = endpoint.start.astimezone(timezone.utc).isoformat()
+            target_time = endpoint.start + timedelta(minutes=step_minutes)
+            target_iso = target_time.astimezone(timezone.utc).isoformat()
             predicted_dhw = sum(slot.dhw_kwh for slot in chunk)
             db.execute(
                 "INSERT INTO dhw_forecast_validation("
