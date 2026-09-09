@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dhw_cycle_learner import learn_cycle_energy, persist_cycle_energy_fit
 from dhw_cycle_tracker import CycleSample, build_cycle
@@ -60,9 +61,18 @@ def _finite_state(token: str, entity_id: str) -> float | None:
 
 
 def _ha_timezone_name(token: str) -> str:
+    fallback = str(os.environ.get("TZ") or "UTC").strip() or "UTC"
+    try:
+        ZoneInfo(fallback)
+    except ZoneInfoNotFoundError:
+        fallback = "UTC"
     data = _ha_json(token, "/config") or {}
-    value = str(data.get("time_zone") or "UTC").strip()
-    return value or "UTC"
+    value = str(data.get("time_zone") or fallback).strip() or fallback
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        return fallback
+    return value
 
 
 def _valid_tank_temp(value: float | None) -> bool:
