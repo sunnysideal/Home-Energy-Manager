@@ -16,6 +16,8 @@ jobs:
     defaults:
       run:
         working-directory: home_energy_manager
+    env:
+      PYTHONPATH: .:components/ashp_forecaster/app:components/controller
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
