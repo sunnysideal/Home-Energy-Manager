@@ -22,7 +22,12 @@ def write_options(path: Path, action="export"):
     }))
 
 
+def set_test_version(monkeypatch):
+    monkeypatch.setattr(launcher, "VERSION", "test-build")
+
+
 def test_export_import_roundtrip_with_options(tmp_path, monkeypatch):
+    set_test_version(monkeypatch)
     source = tmp_path / "source"
     target = tmp_path / "target"
     source.mkdir(); target.mkdir()
@@ -40,6 +45,7 @@ def test_export_import_roundtrip_with_options(tmp_path, monkeypatch):
     with zipfile.ZipFile(bundle) as zf:
         manifest = json.loads(zf.read("manifest.json"))
         assert manifest["format_version"] == 2
+        assert manifest["home_energy_manager_version"] == "test-build"
         assert {x["name"] for x in manifest["files"]} == set(launcher.MIGRATION_FILES)
         exported_options = json.loads(zf.read("options.json"))
         assert exported_options["mqtt"]["password"] == "secret"
@@ -57,6 +63,7 @@ def test_export_import_roundtrip_with_options(tmp_path, monkeypatch):
 
 
 def test_import_refuses_existing_state_without_marker(tmp_path, monkeypatch):
+    set_test_version(monkeypatch)
     source = tmp_path / "source"; source.mkdir()
     make_db(source / "controller.db")
     options = tmp_path / "options.json"; write_options(options)
@@ -74,6 +81,7 @@ def test_import_refuses_existing_state_without_marker(tmp_path, monkeypatch):
 
 
 def test_existing_v016_migration_marker_skips_databases_but_restores_options(tmp_path, monkeypatch):
+    set_test_version(monkeypatch)
     source = tmp_path / "source"; source.mkdir()
     make_db(source / "controller.db")
     options = tmp_path / "options.json"; write_options(options)
