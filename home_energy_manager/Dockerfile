@@ -32,6 +32,7 @@ COPY components/ashp_forecaster/app/dhw_shadow_runner.py /app/runtime/ashp_forec
 COPY components/ashp_forecaster/app/dhw_validation.py /app/runtime/ashp_forecaster/dhw_validation.py
 COPY components/ashp_forecaster/app/dhw_validation_runner.py /app/runtime/ashp_forecaster/dhw_validation_runner.py
 COPY components/ashp_forecaster/app/dhw_diagnostics_runner.py /app/runtime/ashp_forecaster/dhw_diagnostics_runner.py
+COPY components/ashp_forecaster/app/dhw_state_validation.py /app/runtime/ashp_forecaster/dhw_state_validation.py
 COPY components/ashp_forecaster/app/dhw_collector.py /app/runtime/ashp_forecaster/dhw_collector.py
 COPY components/ashp_forecaster/app/dhw_production_selector.py /app/runtime/ashp_forecaster/dhw_production_selector.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
