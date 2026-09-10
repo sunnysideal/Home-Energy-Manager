@@ -24,6 +24,14 @@ VERSION = os.environ.get("HOME_ENERGY_MANAGER_VERSION", "0.1.43")
 LOG = logging.getLogger("home_energy_axle")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(message)s")
 
+AXLE_SOURCE_ENTITIES = {
+    "start": "sensor.axle_vpp_axle_start_time",
+    "end": "sensor.axle_vpp_axle_end_time",
+    "type": "sensor.axle_vpp_axle_import_export",
+    "window": "sensor.axle_vpp_axle_event_window_state",
+    "updated": "sensor.axle_vpp_axle_updated_at",
+}
+
 
 def parse_dt(value):
     if value in (None, "", "unknown", "unavailable"):
@@ -81,13 +89,7 @@ class AxleAdapter:
     async def update(self):
         output = str(self.cfg.get("publish_entity", "sensor.home_energy_manager_axle"))
         enabled = bool(self.cfg.get("enabled", True))
-        ids = {
-            "start": str(self.cfg.get("start_time_entity", "sensor.axle_start_time")),
-            "end": str(self.cfg.get("end_time_entity", "sensor.axle_end_time")),
-            "type": str(self.cfg.get("import_export_entity", "sensor.axle_import_export")),
-            "window": str(self.cfg.get("window_state_entity", "sensor.axle_event_window_state")),
-            "updated": str(self.cfg.get("updated_at_entity", "sensor.axle_updated_at")),
-        }
+        ids = dict(AXLE_SOURCE_ENTITIES)
         now = datetime.now(timezone.utc)
 
         if not enabled:
