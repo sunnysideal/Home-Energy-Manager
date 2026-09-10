@@ -30,17 +30,17 @@ COMPONENT_OPTIONS = {
 }
 DEFAULT_AXLE_OPTIONS = {
     "enabled": True,
-    "start_time_entity": "sensor.axle_start_time",
-    "end_time_entity": "sensor.axle_end_time",
-    "import_export_entity": "sensor.axle_import_export",
-    "window_state_entity": "sensor.axle_event_window_state",
-    "updated_at_entity": "sensor.axle_updated_at",
+    "start_time_entity": "sensor.axle_vpp_axle_start_time",
+    "end_time_entity": "sensor.axle_vpp_axle_end_time",
+    "import_export_entity": "sensor.axle_vpp_axle_import_export",
+    "window_state_entity": "sensor.axle_vpp_axle_event_window_state",
+    "updated_at_entity": "sensor.axle_vpp_axle_updated_at",
     "publish_entity": "sensor.home_energy_manager_axle",
     "poll_seconds": 30,
 }
 HA_CONFIG_URL = "http://supervisor/core/api/config"
 SUPERVISOR_BASE = "http://supervisor"
-VERSION = "0.1.44"
+VERSION = "0.1.45"
 children = []
 stopping = False
 
@@ -205,7 +205,7 @@ def load_and_split_options():
     canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
     if isinstance(canonical_mqtt, dict): mqtt = canonical_mqtt
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.44"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.45"
     print("[manager] config migration: " f"layout={diagnostics.source_layout} canonical=v{diagnostics.canonical_version} " f"moves={len(diagnostics.moves)} duplicates={len(diagnostics.duplicates)} conflicts={len(diagnostics.conflicts)}", flush=True)
     for message in diagnostics.conflicts: print(f"[manager] config conflict: {message}", flush=True)
     for name, path in COMPONENT_OPTIONS.items():
