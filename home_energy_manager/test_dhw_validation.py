@@ -128,8 +128,11 @@ def seed_ready_model(db, now):
 
 
 def add_energy_validation(db, now, *, days, thermal, legacy):
+    # Keep at least 20 comparable intervals even when deliberately exercising a
+    # single-day data set; `days` controls date coverage, not sample count.
+    slots_per_day = max(10, (20 + days - 1) // days)
     for day in range(days):
-        for slot in range(10):
+        for slot in range(slots_per_day):
             forecast = now - timedelta(days=day, hours=3 + slot / 10)
             target = forecast + timedelta(hours=2)
             insert_validation(db, forecast, target, thermal=thermal, legacy=legacy, actual=0.0)
