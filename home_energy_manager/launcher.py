@@ -40,9 +40,15 @@ DEFAULT_AXLE_OPTIONS = {
 }
 HA_CONFIG_URL = "http://supervisor/core/api/config"
 SUPERVISOR_BASE = "http://supervisor"
-VERSION = "0.1.47"
+VERSION = os.environ.get("HOME_ENERGY_MANAGER_VERSION", "").strip()
 children = []
 stopping = False
+
+
+def _require_version() -> str:
+    if not VERSION:
+        raise RuntimeError("HOME_ENERGY_MANAGER_VERSION is missing; the add-on image must be built with BUILD_VERSION")
+    return VERSION
 
 
 def _sha256(path: Path) -> str:
@@ -99,6 +105,7 @@ def _restore_supervisor_options(options: dict) -> None:
 
 
 def export_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_BUNDLE, options_path: Path = OPTIONS) -> Path:
+    version = _require_version()
     bundle.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="hem-migration-export-") as tmp_name:
         tmp = Path(tmp_name); files = []
@@ -110,7 +117,7 @@ def export_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
             else: shutil.copy2(source, destination)
             files.append({"name": name, "size": destination.stat().st_size, "sha256": _sha256(destination)})
         if not files: raise RuntimeError("No learned-state files exist in /data; nothing to export")
-        manifest = {"format_version": 2, "home_energy_manager_version": VERSION, "files": files}
+        manifest = {"format_version": 2, "home_energy_manager_version": version, "files": files}
         (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         if options_path.exists(): shutil.copy2(options_path, tmp / "options.json")
         temp_bundle = bundle.with_suffix(bundle.suffix + ".tmp"); temp_bundle.unlink(missing_ok=True)
@@ -123,6 +130,7 @@ def export_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
 
 
 def import_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_BUNDLE, marker: Path = MIGRATION_MARKER) -> None:
+    version = _require_version()
     if not bundle.exists(): raise RuntimeError(f"Migration bundle not found: {bundle}")
     marker_exists = marker.exists(); existing = [name for name in MIGRATION_FILES if (data_dir / name).exists()]
     if existing and not marker_exists:
@@ -151,7 +159,7 @@ def import_migration_bundle(data_dir: Path = DATA_DIR, bundle: Path = MIGRATION_
             for item in entries:
                 name = item["name"]; src = tmp / name; dst = data_dir / name; temp_dst = data_dir / (name + ".migration_tmp")
                 shutil.copy2(src, temp_dst); temp_dst.replace(dst); restored.append(name)
-            marker.write_text(json.dumps({"format_version": format_version, "imported_by_version": VERSION, "bundle": str(bundle), "files": restored}, indent=2) + "\n")
+            marker.write_text(json.dumps({"format_version": format_version, "imported_by_version": version, "bundle": str(bundle), "files": restored}, indent=2) + "\n")
         else:
             print(f"[manager] learned-state migration already completed; marker={marker}", flush=True)
         if isinstance(migrated_options, dict): _restore_supervisor_options(migrated_options)
@@ -205,7 +213,6 @@ def load_and_split_options():
     canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
     if isinstance(canonical_mqtt, dict): mqtt = canonical_mqtt
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.47"
     print("[manager] config migration: " f"layout={diagnostics.source_layout} canonical=v{diagnostics.canonical_version} " f"moves={len(diagnostics.moves)} duplicates={len(diagnostics.duplicates)} conflicts={len(diagnostics.conflicts)}", flush=True)
     for message in diagnostics.conflicts: print(f"[manager] config conflict: {message}", flush=True)
     for name, path in COMPONENT_OPTIONS.items():
@@ -251,6 +258,7 @@ def stop_all(signum=None, frame=None):
 
 
 def main():
+    _require_version()
     raw = load_and_split_options()
     if raw is None: return
     signal.signal(signal.SIGTERM, stop_all); signal.signal(signal.SIGINT, stop_all)

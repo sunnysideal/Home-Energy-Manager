@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 ROOT = Path(__file__).resolve().parent
 
@@ -24,12 +23,3 @@ def test_forecast_entity_has_registry_and_runtime_fallbacks():
     assert '"default_entity_id": entity_id' in mqtt
     assert "async def resolve_forecast_entity" in controller
     assert "auto-discovered %s" in controller
-
-
-def test_manager_version_is_consistent():
-    package = _text("config.yaml")
-    launcher = _text("launcher.py")
-    match = re.search(r"^version:\s*([^\s]+)", package, re.MULTILINE)
-    assert match
-    version = match.group(1).strip().strip(chr(34)).strip(chr(39))
-    assert f'HOME_ENERGY_MANAGER_VERSION"] = "{version}"' in launcher
