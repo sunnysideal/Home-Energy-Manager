@@ -2,7 +2,7 @@
 """Axle-only controller.
 
 Passive like Forecast Only except when a HACS-backed Axle Export event requires
-preparation or is active.  It does not run the normal optimisation planner.
+preparation or is active. It never loads the normal optimisation planner.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def parse_dt(value):
 
 
 def time_value(dt):
-    return dt.astimezone().strftime("%H:%M:%S")
+    return dt.strftime("%H:%M:%S")
 
 
 class AxleOnlyController:
@@ -117,8 +117,16 @@ class AxleOnlyController:
                 snap[key] = {"entity": entity, "state": item.get("state")}
         self.snapshot = snap
 
+    async def ensure_snapshot(self, ents, key):
+        if self.event_key and self.event_key != key and self.snapshot:
+            await self.restore_snapshot()
+        if not self.snapshot:
+            await self.capture_snapshot(ents)
+        self.event_key = key
+
     async def restore_snapshot(self):
         if not self.snapshot:
+            self.event_key = None
             return
         for key, item in self.snapshot.items():
             try:
@@ -158,29 +166,29 @@ class AxleOnlyController:
         max_discharge = number(await self.state(str(ents.get("inverter_max_discharge_rate") or "")))
         max_charge = number(await self.state(str(ents.get("inverter_max_charge_rate") or "")))
         discharge_eff = float(self.cfg.get("axle_discharge_efficiency", 0.95))
+        charge_eff = 0.95
+        margin_minutes = max(0, int(self.cfg.get("axle_charge_margin_minutes", 10)))
         required_soc = None
         full_event_possible = None
+        latest_charge_start = None
         action = "passive"
         message = "Axle Only is passive; no qualifying Axle Export event is active or requires preparation."
 
         if not event_available:
             if self.snapshot:
                 await self.restore_snapshot()
-        elif None in (soc, capacity, reserve, max_discharge, max_charge) or capacity <= 0:
+        elif None in (soc, capacity, reserve, max_discharge, max_charge) or capacity <= 0 or max_charge <= 0:
             action = "blocked"
             message = "Axle Export event detected but required battery/controller inputs are unavailable."
         else:
             duration_h = (end - start).total_seconds() / 3600
             required_kwh = (max_discharge / 1000.0) * duration_h / max(0.5, discharge_eff)
-            required_soc = min(100.0, reserve + required_kwh / capacity * 100.0)
-            full_event_possible = reserve + required_kwh / capacity * 100.0 <= 100.0
-            if self.event_key and self.event_key != key:
-                await self.restore_snapshot()
-            if not self.snapshot:
-                await self.capture_snapshot(ents)
-                self.event_key = key
+            raw_required_soc = reserve + required_kwh / capacity * 100.0
+            required_soc = min(100.0, raw_required_soc)
+            full_event_possible = raw_required_soc <= 100.0
 
             if active:
+                await self.ensure_snapshot(ents, key)
                 action = "axle_export"
                 message = "Axle Export event active: battery forced to maximum discharge rate down to configured reserve."
                 await self.set_if_needed(str(ents.get("charge_schedule_enable") or ""), "off")
@@ -192,21 +200,28 @@ class AxleOnlyController:
                 if ents.get("eco_mode"):
                     await self.set_if_needed(str(ents.get("eco_mode")), "on")
             elif upcoming and soc + 0.5 < required_soc:
-                remaining_h = max((start - now).total_seconds() / 3600, 1 / 60)
                 shortfall_kwh = capacity * (required_soc - soc) / 100.0
-                required_charge_w = min(max_charge, max(500.0, shortfall_kwh / remaining_h * 1000.0 / 0.95))
-                action = "axle_prepare"
-                message = "Preparing battery for Axle Export event; charging only the SOC shortfall required for full-rate discharge."
-                charge_end = min(start, now + timedelta(hours=shortfall_kwh / max(required_charge_w / 1000.0 * 0.95, 0.1)) + timedelta(minutes=2))
-                await self.set_if_needed(str(ents.get("discharge_schedule_enable") or ""), "off")
-                await self.set_if_needed(str(ents.get("charge_slot_1_start") or ""), time_value(now))
-                await self.set_if_needed(str(ents.get("charge_slot_1_end") or ""), time_value(charge_end))
-                await self.set_if_needed(str(ents.get("charge_slot_1_target") or ""), math.ceil(required_soc))
-                await self.set_if_needed(str(ents.get("charge_rate") or ""), round(required_charge_w))
-                await self.set_if_needed(str(ents.get("charge_schedule_enable") or ""), "on")
+                max_stored_kw = max_charge / 1000.0 * charge_eff
+                charge_hours = shortfall_kwh / max(max_stored_kw, 0.1)
+                latest_charge_start = start - timedelta(hours=charge_hours, minutes=margin_minutes)
+                if now >= latest_charge_start:
+                    await self.ensure_snapshot(ents, key)
+                    action = "axle_prepare"
+                    message = "Preparing battery for Axle Export event at maximum available charge rate; only the required SOC shortfall is targeted."
+                    charge_end = min(start, now + timedelta(hours=charge_hours, minutes=2))
+                    local_now = now.astimezone(start.tzinfo)
+                    await self.set_if_needed(str(ents.get("discharge_schedule_enable") or ""), "off")
+                    await self.set_if_needed(str(ents.get("charge_slot_1_start") or ""), time_value(local_now))
+                    await self.set_if_needed(str(ents.get("charge_slot_1_end") or ""), time_value(charge_end))
+                    await self.set_if_needed(str(ents.get("charge_slot_1_target") or ""), math.ceil(required_soc))
+                    await self.set_if_needed(str(ents.get("charge_rate") or ""), round(max_charge))
+                    await self.set_if_needed(str(ents.get("charge_schedule_enable") or ""), "on")
+                else:
+                    action = "axle_waiting"
+                    message = "Axle Export event needs additional charge, but intervention is not yet necessary; existing inverter settings remain untouched."
             else:
                 action = "axle_ready"
-                message = "Battery already has enough stored energy for full-rate discharge throughout the Axle Export event."
+                message = "Battery currently has enough stored energy for full-rate discharge throughout the Axle Export event; existing inverter settings remain untouched."
 
         attrs = {
             "friendly_name": "Home Energy Controller", "version": VERSION,
@@ -216,6 +231,7 @@ class AxleOnlyController:
             "axle_event_type": event_type or None, "axle_event_start": start.isoformat() if start else None,
             "axle_event_end": end.isoformat() if end else None, "axle_event_active": active,
             "axle_action": action, "battery_soc": soc, "required_event_start_soc": round(required_soc, 1) if required_soc is not None else None,
+            "latest_charge_start": latest_charge_start.isoformat() if latest_charge_start else None,
             "full_event_possible": full_event_possible, "max_discharge_rate_w": max_discharge,
             "controller_inputs_version": ci.get("version"), "last_status_update": now.isoformat(), "message": message,
         }
