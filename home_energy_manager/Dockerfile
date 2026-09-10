@@ -34,6 +34,7 @@ COPY components/ashp_forecaster/app/dhw_diagnostics_runner.py /app/runtime/ashp_
 COPY components/ashp_forecaster/app/dhw_collector.py /app/runtime/ashp_forecaster/dhw_collector.py
 COPY components/ashp_forecaster/app/dhw_production_selector.py /app/runtime/ashp_forecaster/dhw_production_selector.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
+COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/axle/main.py /app/runtime/axle/main.py
 COPY components/controller/app.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
