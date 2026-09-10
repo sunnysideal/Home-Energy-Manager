@@ -8,7 +8,13 @@ CONFIG = (ROOT / "config.yaml").read_text(encoding="utf-8")
 
 
 def test_axle_source_is_hacs_entities_not_direct_api():
-    for entity in ("sensor.axle_start_time", "sensor.axle_end_time", "sensor.axle_import_export", "sensor.axle_updated_at"):
+    for entity in (
+        "sensor.axle_vpp_axle_start_time",
+        "sensor.axle_vpp_axle_end_time",
+        "sensor.axle_vpp_axle_import_export",
+        "sensor.axle_vpp_axle_event_window_state",
+        "sensor.axle_vpp_axle_updated_at",
+    ):
         assert entity in ADAPTER
     assert "sensor.home_energy_manager_axle" in ADAPTER
     assert "api.axle" not in ADAPTER.lower()

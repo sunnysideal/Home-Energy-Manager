@@ -80,9 +80,14 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
 def test_axle_boundary_is_hacs_only_and_axle_controller_is_isolated():
     adapter = (ROOT / "components" / "axle" / "main.py").read_text()
     axle_controller = (ROOT / "components" / "controller" / "axle_only.py").read_text()
-    assert "sensor.axle_start_time" in adapter
-    assert "sensor.axle_end_time" in adapter
-    assert "sensor.axle_import_export" in adapter
+    for entity_id in (
+        "sensor.axle_vpp_axle_start_time",
+        "sensor.axle_vpp_axle_end_time",
+        "sensor.axle_vpp_axle_import_export",
+        "sensor.axle_vpp_axle_event_window_state",
+        "sensor.axle_vpp_axle_updated_at",
+    ):
+        assert entity_id in adapter
     assert "sensor.home_energy_manager_axle" in adapter
     assert "api.axle" not in adapter.lower()
     assert "axle_only" in axle_controller
