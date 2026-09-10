@@ -33,6 +33,7 @@ PRODUCTION_INTERVAL_MINUTES = 30
 PRODUCTION_HOURS = 48
 PRODUCTION_SLOTS = PRODUCTION_HOURS * 60 // PRODUCTION_INTERVAL_MINUTES
 THERMAL_STEP_MINUTES = 5
+DRAW_REFRESH_POLL_SECONDS = 5.0
 
 
 class Publisher:
@@ -140,6 +141,20 @@ def _latest_tank_state(db: sqlite3.Connection) -> tuple[float, float, float | No
     return float(row[0]), float(row[1]), (float(row[2]) if row[2] is not None else None)
 
 
+def _latest_draw_event(db: sqlite3.Connection) -> tuple[str, float, float] | None:
+    """Return the newest detected draw so the forecast can react before its normal refresh."""
+    row = db.execute(
+        "SELECT timestamp,estimated_thermal_kwh,confidence FROM dhw_draw_events "
+        "ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return str(row[0]), float(row[1]), float(row[2])
+    except (TypeError, ValueError):
+        return None
+
+
 def _ceil_local(dt: datetime, minutes: int) -> datetime:
     base = dt.replace(second=0, microsecond=0)
     remainder = base.minute % minutes
@@ -232,6 +247,8 @@ def run_shadow_once(
     cfg: dict,
     timezone_name: str,
     publisher: Publisher | None = None,
+    *,
+    trigger: str = "scheduled",
 ) -> int:
     model = load_shadow_model(db)
     if model is None:
@@ -332,6 +349,7 @@ def run_shadow_once(
                 "start_lower_temperature_c": round(lower, 2),
                 "target_temperature_c": round(target, 2),
                 "mode": mode,
+                "trigger": trigger,
                 "last_updated": now,
             },
         )
@@ -346,6 +364,7 @@ def run_shadow_once(
             "thermal_forecast_published": True,
             "horizon_complete": horizon_complete,
             "legacy_comparison_available": legacy_available,
+            "trigger": trigger,
             "last_updated": now,
         }
         if legacy_available:
@@ -360,10 +379,10 @@ def run_shadow_once(
         publisher.sensor(COMPARISON_ENTITY, comparison_state, comparison_attrs)
 
     LOG.info(
-        "DHW shadow forecast published: simulation_slots=%d published_slots=%d horizon_complete=%s "
+        "DHW shadow forecast published: trigger=%s simulation_slots=%d published_slots=%d horizon_complete=%s "
         "checkpoints=%d thermal_next_48h=%.2fkWh legacy_snapshot=%s legacy_slots=%d "
         "production_source=%s production_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC mode=%s",
-        len(slots), len(published), horizon_complete, checkpoints, total_dhw,
+        trigger, len(slots), len(published), horizon_complete, checkpoints, total_dhw,
         f"{legacy_total:.2f}kWh" if legacy_available else "deferred", len(legacy),
         production_source, production_start, upper, lower, target, mode,
     )
@@ -383,13 +402,40 @@ def main() -> None:
     ensure_dhw_model_schema(db)
     publisher = Publisher(token)
     update_minutes = max(5, int(cfg.get("update_minutes", 15)))
+    update_seconds = update_minutes * 60.0
+
+    # Ignore historical draws at process start. The mandatory startup forecast below already
+    # incorporates the newest valid tank sample; only draws recorded afterwards need to pre-empt
+    # the normal forecast cadence.
+    initial_draw = _latest_draw_event(db)
+    last_draw_timestamp = initial_draw[0] if initial_draw is not None else None
+    next_scheduled_run = 0.0
 
     while True:
-        try:
-            run_shadow_once(db, token, cfg, timezone_name, publisher)
-        except Exception:
-            LOG.exception("DHW shadow forecast failed")
-        time.sleep(update_minutes * 60)
+        now_monotonic = time.monotonic()
+        trigger: str | None = None
+
+        latest_draw = _latest_draw_event(db)
+        if latest_draw is not None and latest_draw[0] != last_draw_timestamp:
+            last_draw_timestamp = latest_draw[0]
+            trigger = "dhw_draw"
+            LOG.info(
+                "DHW draw detected; refreshing thermal forecast immediately: "
+                "timestamp=%s estimated=%.3fkWh confidence=%.0f%%",
+                latest_draw[0], latest_draw[1], latest_draw[2] * 100.0,
+            )
+        elif now_monotonic >= next_scheduled_run:
+            trigger = "startup" if next_scheduled_run == 0.0 else "scheduled"
+
+        if trigger is not None:
+            try:
+                run_shadow_once(db, token, cfg, timezone_name, publisher, trigger=trigger)
+            except Exception:
+                LOG.exception("DHW shadow forecast failed")
+            next_scheduled_run = time.monotonic() + update_seconds
+
+        sleep_for = min(DRAW_REFRESH_POLL_SECONDS, max(0.1, next_scheduled_run - time.monotonic()))
+        time.sleep(sleep_for)
 
 
 if __name__ == "__main__":
