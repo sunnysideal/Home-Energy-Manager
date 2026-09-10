@@ -1,5 +1,6 @@
 from pathlib import Path
 import ast
+import re
 import yaml
 
 ROOT = Path(__file__).resolve().parent
@@ -75,6 +76,48 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
     # The pricing runner imports the base forecaster at runtime, so main.py must
     # still be explicitly copied even though it is no longer the launched entrypoint.
     assert "COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py" in dockerfile
+
+
+def test_ashp_runtime_local_imports_are_packaged():
+    """Every local ASHP module imported at runtime must be present in the image.
+
+    The Dockerfile deliberately copies ASHP modules explicitly into a flat runtime
+    directory.  Check the transitive local import closure so adding a new helper
+    cannot pass CI but fail after installation with ModuleNotFoundError.
+    """
+    app_dir = ROOT / "components" / "ashp_forecaster" / "app"
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    copy_re = re.compile(
+        r"^COPY components/ashp_forecaster/app/([A-Za-z0-9_]+\.py) "
+        r"/app/runtime/ashp_forecaster/\1$",
+        re.MULTILINE,
+    )
+    packaged = {Path(name).stem for name in copy_re.findall(dockerfile)}
+    local_modules = {path.stem for path in app_dir.glob("*.py")}
+
+    pending = list(packaged)
+    checked = set()
+    while pending:
+        module = pending.pop()
+        if module in checked:
+            continue
+        checked.add(module)
+        source = app_dir / f"{module}.py"
+        assert source.is_file(), f"Dockerfile packages missing ASHP source module: {module}"
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        imported_local = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_local.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_local.add(node.module.split(".")[0])
+        imported_local &= local_modules
+        missing = imported_local - packaged
+        assert not missing, (
+            f"ASHP runtime module {module}.py imports local module(s) not copied "
+            f"into the image: {sorted(missing)}"
+        )
+        pending.extend(imported_local - checked)
 
 
 def test_axle_boundary_is_hacs_only_and_axle_controller_is_isolated():
