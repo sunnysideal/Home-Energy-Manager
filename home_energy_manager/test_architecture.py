@@ -63,7 +63,7 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
     launcher = (ROOT / "launcher.py").read_text()
     expected = {
         "components/ashp_forecaster/app/runner.py": "/app/runtime/ashp_forecaster/runner.py",
-        "components/home_forecaster/app/main.py": "/app/runtime/home_forecaster/main.py",
+        "components/home_forecaster/app/axle_pricing_runner.py": "/app/runtime/home_forecaster/axle_pricing_runner.py",
         "components/axle/main.py": "/app/runtime/axle/main.py",
         "components/controller/app.py": "/app/runtime/controller/app.py",
         "components/controller/axle_only.py": "/app/runtime/controller/axle_only.py",
@@ -72,6 +72,9 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
         assert (ROOT / source).is_file(), source
         assert f"COPY {source} {runtime}" in dockerfile
         assert runtime in launcher
+    # The pricing runner imports the base forecaster at runtime, so main.py must
+    # still be explicitly copied even though it is no longer the launched entrypoint.
+    assert "COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py" in dockerfile
 
 
 def test_axle_boundary_is_hacs_only_and_axle_controller_is_isolated():
