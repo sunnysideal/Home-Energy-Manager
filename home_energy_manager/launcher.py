@@ -40,7 +40,9 @@ DEFAULT_AXLE_OPTIONS = {
 }
 HA_CONFIG_URL = "http://supervisor/core/api/config"
 SUPERVISOR_BASE = "http://supervisor"
-VERSION = "0.1.47"
+VERSION = os.environ.get("HOME_ENERGY_MANAGER_VERSION", "").strip()
+if not VERSION:
+    raise RuntimeError("HOME_ENERGY_MANAGER_VERSION is missing; the add-on image must be built with BUILD_VERSION")
 children = []
 stopping = False
 
@@ -205,7 +207,6 @@ def load_and_split_options():
     canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
     if isinstance(canonical_mqtt, dict): mqtt = canonical_mqtt
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.47"
     print("[manager] config migration: " f"layout={diagnostics.source_layout} canonical=v{diagnostics.canonical_version} " f"moves={len(diagnostics.moves)} duplicates={len(diagnostics.duplicates)} conflicts={len(diagnostics.conflicts)}", flush=True)
     for message in diagnostics.conflicts: print(f"[manager] config conflict: {message}", flush=True)
     for name, path in COMPONENT_OPTIONS.items():
