@@ -14,7 +14,7 @@ COPY launcher.py /app/launcher.py
 COPY config_migration.py /app/config_migration.py
 # Copy component entry points explicitly into a stable runtime layout.
 # This avoids relying on nested component source layout at runtime.
-RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/controller
+RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/axle /app/runtime/controller
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
 COPY components/ashp_forecaster/app/forecast_runner.py /app/runtime/ashp_forecaster/forecast_runner.py
 COPY components/ashp_forecaster/app/runner.py /app/runtime/ashp_forecaster/runner.py
@@ -34,8 +34,10 @@ COPY components/ashp_forecaster/app/dhw_diagnostics_runner.py /app/runtime/ashp_
 COPY components/ashp_forecaster/app/dhw_collector.py /app/runtime/ashp_forecaster/dhw_collector.py
 COPY components/ashp_forecaster/app/dhw_production_selector.py /app/runtime/ashp_forecaster/dhw_production_selector.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
+COPY components/axle/main.py /app/runtime/axle/main.py
 COPY components/controller/app.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
+COPY components/controller/axle_only.py /app/runtime/controller/axle_only.py
 COPY common /app/common
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh /app/launcher.py
