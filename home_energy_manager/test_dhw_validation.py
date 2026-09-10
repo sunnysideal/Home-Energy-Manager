@@ -54,15 +54,9 @@ def test_actual_sample_is_matched_to_due_shadow_prediction():
     forecast = now - timedelta(hours=2)
     target = now - timedelta(minutes=1)
     insert_validation(db, forecast, target)
-    db.execute(
-        "INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)",
-        ((target + timedelta(minutes=1)).isoformat(), 49.5, 41.0, 100.0),
-    )
+    db.execute("INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)", ((target + timedelta(minutes=1)).isoformat(), 49.5, 41.0, 100.0))
     assert mod.apply_actuals(db) == 1
-    actual = db.execute(
-        "SELECT actual_upper_c,actual_lower_c FROM dhw_forecast_validation"
-    ).fetchone()
-    assert actual == (49.5, 41.0)
+    assert db.execute("SELECT actual_upper_c,actual_lower_c FROM dhw_forecast_validation").fetchone() == (49.5, 41.0)
 
 
 def test_actual_energy_uses_same_30_minute_cumulative_meter_interval():
@@ -72,17 +66,10 @@ def test_actual_energy_uses_same_30_minute_cumulative_meter_interval():
     forecast = target - timedelta(hours=2)
     insert_validation(db, forecast, target, thermal=0.8, legacy=1.0)
     start = target - timedelta(minutes=30)
-    db.execute(
-        "INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)",
-        (start.isoformat(), 45.0, 35.0, 100.0),
-    )
-    db.execute(
-        "INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)",
-        (target.isoformat(), 50.0, 42.0, 100.75),
-    )
+    db.execute("INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)", (start.isoformat(), 45.0, 35.0, 100.0))
+    db.execute("INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)", (target.isoformat(), 50.0, 42.0, 100.75))
     assert mod.apply_actual_energy(db) == 1
-    actual = db.execute("SELECT actual_dhw_kwh FROM dhw_forecast_validation").fetchone()
-    assert abs(actual[0] - 0.75) < 1e-9
+    assert abs(db.execute("SELECT actual_dhw_kwh FROM dhw_forecast_validation").fetchone()[0] - 0.75) < 1e-9
 
 
 def test_actual_energy_rejects_cumulative_meter_reset():
@@ -90,14 +77,8 @@ def test_actual_energy_rejects_cumulative_meter_reset():
     now = datetime.now(timezone.utc).replace(microsecond=0)
     target = now - timedelta(minutes=1)
     insert_validation(db, target - timedelta(hours=1), target)
-    db.execute(
-        "INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)",
-        ((target - timedelta(minutes=30)).isoformat(), 45.0, 35.0, 100.0),
-    )
-    db.execute(
-        "INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)",
-        (target.isoformat(), 50.0, 42.0, 2.0),
-    )
+    db.execute("INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)", ((target - timedelta(minutes=30)).isoformat(), 45.0, 35.0, 100.0))
+    db.execute("INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)", (target.isoformat(), 50.0, 42.0, 2.0))
     assert mod.apply_actual_energy(db) == 0
 
 
@@ -107,11 +88,7 @@ def test_horizon_metrics_are_bucketed_by_forecast_horizon():
     cases = [(3, 1.0, 2.0), (9, 2.0, 3.0), (18, 3.0, 4.0), (30, 4.0, 5.0), (42, 5.0, 6.0)]
     for horizon, upper_error, lower_error in cases:
         target = base + timedelta(hours=horizon)
-        insert_validation(
-            db, base, target,
-            upper_actual=50.0 - upper_error,
-            lower_actual=42.0 - lower_error,
-        )
+        insert_validation(db, base, target, upper_actual=50.0 - upper_error, lower_actual=42.0 - lower_error)
     metrics = {metric.name: metric for metric in mod.horizon_metrics(db, lookback_days=7)}
     assert metrics["0_6h"].upper_mae_c == 1.0
     assert metrics["6_12h"].lower_mae_c == 3.0
@@ -126,12 +103,7 @@ def test_energy_comparison_scores_thermal_and_legacy_against_same_actuals():
     for idx, actual in enumerate((0.0, 0.5, 1.0, 0.25)):
         forecast = now - timedelta(hours=2, days=idx)
         target = forecast + timedelta(hours=2)
-        insert_validation(
-            db, forecast, target,
-            thermal=actual + 0.1,
-            legacy=actual + 0.3,
-            actual=actual,
-        )
+        insert_validation(db, forecast, target, thermal=actual + 0.1, legacy=actual + 0.3, actual=actual)
     result = mod.energy_comparison(db, lookback_days=14)
     assert result.count == 4
     assert result.days == 4
@@ -155,70 +127,79 @@ def seed_ready_model(db, now):
         insert_validation(db, forecast, target, upper_actual=49.0, lower_actual=40.0)
 
 
-def test_promotion_stays_false_until_seven_days_of_energy_comparison():
+def add_energy_validation(db, now, *, days, thermal, legacy):
+    # Keep at least 20 comparable intervals even when deliberately exercising a
+    # single-day data set; `days` controls date coverage, not sample count.
+    slots_per_day = max(10, (20 + days - 1) // days)
+    for day in range(days):
+        for slot in range(slots_per_day):
+            forecast = now - timedelta(days=day, hours=3 + slot / 10)
+            target = forecast + timedelta(hours=2)
+            insert_validation(db, forecast, target, thermal=thermal, legacy=legacy, actual=0.0)
+
+
+def test_promotion_requires_two_days_of_energy_comparison():
     db = db_with_schema()
     now = datetime.now(timezone.utc)
     seed_ready_model(db, now)
-    for idx in range(20):
-        forecast = now - timedelta(hours=8 + (idx % 5), minutes=idx)
-        target = forecast + timedelta(hours=2)
-        insert_validation(db, forecast, target, thermal=0.2, legacy=0.4, actual=0.0)
+    add_energy_validation(db, now, days=1, thermal=0.1, legacy=0.4)
     result = mod.confidence_result(db)
-    assert result.thermal_ready is True
     assert result.energy_validation_count >= 20
-    assert result.energy_validation_days < 7
+    assert result.energy_validation_days < 2
     assert result.promotion_ready is False
 
 
-def test_promotion_can_become_ready_only_when_thermal_is_no_worse_than_legacy():
+def test_energy_can_promote_even_when_temperature_quality_is_poor():
     db = db_with_schema()
     now = datetime.now(timezone.utc)
     seed_ready_model(db, now)
-    for day in range(7):
-        for slot in range(3):
-            forecast = now - timedelta(days=day, hours=3 + slot)
-            target = forecast + timedelta(hours=2)
-            insert_validation(db, forecast, target, thermal=0.1, legacy=0.4, actual=0.0)
+    # Make the existing temperature validations deliberately poor. Temperature quality
+    # must remain diagnostic and must not veto a better energy forecast.
+    db.execute("UPDATE dhw_forecast_validation SET actual_upper_c=44.0,actual_lower_c=25.0 WHERE actual_upper_c IS NOT NULL")
+    add_energy_validation(db, now, days=2, thermal=0.1, legacy=0.4)
     result = mod.confidence_result(db)
-    assert result.thermal_ready is True
-    assert result.energy_validation_days >= 7
+    assert result.thermal_ready is False
     assert result.thermal_energy_mae_kwh < result.legacy_energy_mae_kwh
     assert result.promotion_ready is True
+    assert result.performance_bad is False
 
 
 def test_promotion_is_blocked_when_thermal_energy_error_is_worse():
     db = db_with_schema()
     now = datetime.now(timezone.utc)
     seed_ready_model(db, now)
-    for day in range(7):
-        for slot in range(3):
-            forecast = now - timedelta(days=day, hours=7 + slot)
-            target = forecast + timedelta(hours=2)
-            insert_validation(db, forecast, target, thermal=0.5, legacy=0.1, actual=0.0)
+    add_energy_validation(db, now, days=2, thermal=0.5, legacy=0.1)
+    result = mod.confidence_result(db)
+    assert result.promotion_ready is False
+    assert result.performance_bad is True
+
+
+def test_temperature_quality_uses_only_first_12_hours():
+    db = db_with_schema()
+    now = datetime.now(timezone.utc)
+    seed_ready_model(db, now)
+    # Good near-term validation.
+    for idx in range(20):
+        forecast = now - timedelta(hours=1, minutes=idx)
+        target = forecast + timedelta(hours=9)
+        insert_validation(db, forecast, target, upper_actual=49.0, lower_actual=40.0)
+    # Terrible long-horizon validation must not affect the 12-hour diagnostic gate.
+    for idx in range(20):
+        forecast = now - timedelta(hours=1, minutes=idx)
+        target = forecast + timedelta(hours=30)
+        insert_validation(db, forecast, target, upper_actual=20.0, lower_actual=10.0)
     result = mod.confidence_result(db)
     assert result.thermal_ready is True
-    assert result.promotion_ready is False
 
 
 def test_confidence_persistence_writes_readiness_and_energy_mae():
     db = db_with_schema()
     result = mod.ConfidenceResult(
-        confidence=0.6,
-        trial_ready=True,
-        thermal_ready=True,
-        promotion_ready=True,
-        performance_bad=False,
-        passive_samples=30,
-        cycle_count=6,
-        demand_days=8,
-        draw_count=12,
-        validation_count=25,
-        upper_mae_c=1.2,
-        lower_mae_c=2.5,
-        energy_validation_count=40,
-        energy_validation_days=7,
-        thermal_energy_mae_kwh=0.15,
-        legacy_energy_mae_kwh=0.30,
+        confidence=0.6, trial_ready=True, thermal_ready=True, promotion_ready=True,
+        performance_bad=False, passive_samples=30, cycle_count=6, demand_days=8,
+        draw_count=12, validation_count=25, upper_mae_c=1.2, lower_mae_c=2.5,
+        energy_validation_count=40, energy_validation_days=7,
+        thermal_energy_mae_kwh=0.15, legacy_energy_mae_kwh=0.30,
     )
     mod.persist_confidence(db, result)
     values = dict(db.execute("SELECT name,value FROM dhw_model_parameters"))
