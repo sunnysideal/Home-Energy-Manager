@@ -40,7 +40,7 @@ DEFAULT_AXLE_OPTIONS = {
 }
 HA_CONFIG_URL = "http://supervisor/core/api/config"
 SUPERVISOR_BASE = "http://supervisor"
-VERSION = "0.1.43"
+VERSION = "0.1.44"
 children = []
 stopping = False
 
@@ -205,7 +205,7 @@ def load_and_split_options():
     canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
     if isinstance(canonical_mqtt, dict): mqtt = canonical_mqtt
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
-    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.43"
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.44"
     print("[manager] config migration: " f"layout={diagnostics.source_layout} canonical=v{diagnostics.canonical_version} " f"moves={len(diagnostics.moves)} duplicates={len(diagnostics.duplicates)} conflicts={len(diagnostics.conflicts)}", flush=True)
     for message in diagnostics.conflicts: print(f"[manager] config conflict: {message}", flush=True)
     for name, path in COMPONENT_OPTIONS.items():
@@ -227,7 +227,7 @@ def process_list(raw):
         print("[manager] Axle Only selected: normal optimisation controller will not be started; writes are limited to Axle Export preparation/event handling", flush=True)
     return [
         ("ashp_forecaster", [sys.executable, "-u", "/app/runtime/ashp_forecaster/runner.py"]),
-        ("home_forecaster", [sys.executable, "-u", "/app/runtime/home_forecaster/main.py"]),
+        ("home_forecaster", [sys.executable, "-u", "/app/runtime/home_forecaster/axle_pricing_runner.py"]),
         ("axle", [sys.executable, "-u", "/app/runtime/axle/main.py"]),
         ("controller", [sys.executable, "-u", controller_script]),
     ]
