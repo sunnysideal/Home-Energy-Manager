@@ -315,10 +315,10 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
     energy_bad = bool(
         energy.count >= 20
         and energy.days >= 2
-        and energy.thermal_energy_mae_kwh is not None
-        and energy.legacy_energy_mae_kwh is not None
-        and energy.thermal_energy_mae_kwh > energy.legacy_energy_mae_kwh * 1.15
-        and energy.thermal_energy_mae_kwh > energy.legacy_energy_mae_kwh + 0.03
+        and energy.thermal_mae_kwh is not None
+        and energy.legacy_mae_kwh is not None
+        and energy.thermal_mae_kwh > energy.legacy_mae_kwh * 1.15
+        and energy.thermal_mae_kwh > energy.legacy_mae_kwh + 0.03
     )
     # Temperature drift is reported through thermal_ready/temperature MAE diagnostics,
     # but cannot demote an energy forecast that is performing well.
