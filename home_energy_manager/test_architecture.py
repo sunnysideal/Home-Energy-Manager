@@ -6,13 +6,13 @@ ROOT = Path(__file__).resolve().parent
 COMPONENTS = {
     "ashp_forecaster": ROOT / "components" / "ashp_forecaster",
     "home_forecaster": ROOT / "components" / "home_forecaster",
+    "axle": ROOT / "components" / "axle",
     "controller": ROOT / "components" / "controller",
 }
 
 for name, path in COMPONENTS.items():
     assert path.is_dir(), f"Missing component directory: {name}"
 
-# No component may directly import another component.
 component_names = set(COMPONENTS)
 for owner, directory in COMPONENTS.items():
     for py in directory.rglob("*.py"):
@@ -28,31 +28,28 @@ for owner, directory in COMPONENTS.items():
             assert not forbidden, f"{owner} directly imports sibling component(s) {sorted(forbidden)} in {py}"
 
 launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
-for required in ("ashp_forecaster", "home_forecaster", "controller", "OPTIONS_PATH"):
+for required in ("ashp_forecaster", "home_forecaster", "axle", "controller", "OPTIONS_PATH"):
     assert required in launcher
 for forbidden in ("battery_soc", "export_generated", "charge_rate_w", "degree_day", "pv_kwh"):
     assert forbidden not in launcher, f"Energy/control logic leaked into launcher: {forbidden}"
 
 cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-# Until the user-domain schema is switched on, the public 0.1.x options remain the
-# three private component sections plus MQTT. The migration layer may accept more.
 assert set(cfg["options"]) == component_names | {"mqtt"}
 assert set(cfg["schema"]) == component_names | {"mqtt"}
+assert "axle_only" in cfg["schema"]["controller"]["operation_mode"]
 
 print("Architecture separation checks passed.")
 
-
-# MQTT is shared transport only and must remain outside the component directories.
 mqtt_path = ROOT / "common" / "mqtt.py"
 assert mqtt_path.is_file(), "Shared MQTT transport missing"
 mqtt_text = mqtt_path.read_text(encoding="utf-8")
 for forbidden in ("export_generated", "degree_day", "battery_soc", "charge_target", "offpeak"):
     assert forbidden not in mqtt_text, f"Energy/control logic leaked into MQTT transport: {forbidden}"
 
-# All components may use common MQTT transport, but must not import one another.
 for path in (
     ROOT / "components" / "ashp_forecaster" / "app" / "main.py",
     ROOT / "components" / "home_forecaster" / "app" / "main.py",
+    ROOT / "components" / "axle" / "main.py",
     ROOT / "components" / "controller" / "app.py",
 ):
     text = path.read_text(encoding="utf-8")
@@ -67,9 +64,25 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
     expected = {
         "components/ashp_forecaster/app/runner.py": "/app/runtime/ashp_forecaster/runner.py",
         "components/home_forecaster/app/main.py": "/app/runtime/home_forecaster/main.py",
+        "components/axle/main.py": "/app/runtime/axle/main.py",
         "components/controller/app.py": "/app/runtime/controller/app.py",
+        "components/controller/axle_only.py": "/app/runtime/controller/axle_only.py",
     }
     for source, runtime in expected.items():
         assert (ROOT / source).is_file(), source
         assert f"COPY {source} {runtime}" in dockerfile
         assert runtime in launcher
+
+
+def test_axle_boundary_is_hacs_only_and_axle_controller_is_isolated():
+    adapter = (ROOT / "components" / "axle" / "main.py").read_text()
+    axle_controller = (ROOT / "components" / "controller" / "axle_only.py").read_text()
+    assert "sensor.axle_start_time" in adapter
+    assert "sensor.axle_end_time" in adapter
+    assert "sensor.axle_import_export" in adapter
+    assert "sensor.home_energy_manager_axle" in adapter
+    assert "api.axle" not in adapter.lower()
+    assert "axle_only" in axle_controller
+    assert "components.controller.app" not in axle_controller
+    assert "maximise_export" not in axle_controller
+    assert "export_generated" not in axle_controller
