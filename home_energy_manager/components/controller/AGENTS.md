@@ -42,7 +42,6 @@ Any person or AI modifying this project MUST read this file before changing cont
 
 6. **Export target uses genuine credited export**
    - `export_generated` is matched against genuine credited grid export, not battery discharge energy and not house-side apparent export during EV charging.
-
    - When a true utility-meter export entity is configured and available, its measured export is authoritative and must be used directly.
    - EV-adjusted house-side export accounting is a fallback only when true utility-meter export is unavailable.
 
@@ -97,6 +96,30 @@ Any person or AI modifying this project MUST read this file before changing cont
     - Power Down may override normal export timing where specifically implemented.
     - Power Down behaviour must still preserve its own documented battery-protection rules.
     - Planned Intelligent dispatches do not block Power Down; a confirmed Intelligent slot may pre-empt forced export while active.
+
+### Axle
+
+16. **Axle event data comes from the HACS Axle integration**
+    - Home Energy Manager must not authenticate with or call Axle directly.
+    - The Axle component normalises the installed HACS integration into `sensor.home_energy_manager_axle`; the controller consumes only that package-owned interface.
+
+17. **`axle_only` is passive outside necessary Axle intervention**
+    - The normal optimisation planner is not loaded in `axle_only` mode.
+    - Outside preparation for a qualifying Export event and the event itself, Home Energy Manager must not modify inverter/battery settings.
+    - Any settings temporarily changed for Axle must be restored after the event, cancellation, or controller shutdown.
+
+18. **Only Axle Export events cause battery action**
+    - Import events may be reported but do not cause charging, discharging, or other inverter writes in the initial implementation.
+    - Missing/invalid HACS-derived event data must never invent an Axle event.
+
+19. **Axle preparation targets full-rate battery discharge for the whole event**
+    - Required event-start stored energy is based on configured reserve, event duration, hardware maximum discharge rate, battery capacity and discharge efficiency.
+    - House load must not be added on top of hardware maximum battery discharge: it consumes part of that battery output and therefore reduces grid export rather than increasing possible inverter output.
+    - If a full event at maximum discharge is physically impossible, target 100% SOC and report that limitation.
+
+20. **Axle active-event discharge preserves reserve**
+    - During a qualifying Axle Export event, forced discharge uses the hardware maximum discharge rate and the configured battery reserve as the discharge target.
+    - The controller must never lower the reserve target to increase Axle export.
 
 ## Release checklist
 
