@@ -28,6 +28,16 @@ COMPONENT_OPTIONS = {
     "axle": Path("/data/options_axle.json"),
     "controller": Path("/data/options_controller.json"),
 }
+DEFAULT_AXLE_OPTIONS = {
+    "enabled": True,
+    "start_time_entity": "sensor.axle_start_time",
+    "end_time_entity": "sensor.axle_end_time",
+    "import_export_entity": "sensor.axle_import_export",
+    "window_state_entity": "sensor.axle_event_window_state",
+    "updated_at_entity": "sensor.axle_updated_at",
+    "publish_entity": "sensor.home_energy_manager_axle",
+    "poll_seconds": 30,
+}
 HA_CONFIG_URL = "http://supervisor/core/api/config"
 SUPERVISOR_BASE = "http://supervisor"
 VERSION = "0.1.43"
@@ -188,10 +198,14 @@ def load_and_split_options():
     saved = json.loads(OPTIONS.read_text())
     if handle_migration(saved) == "stop": return None
     raw, canonical, diagnostics = migrate_runtime_options(saved); _resolve_home_assistant_timezone(raw)
+    if not isinstance(raw.get("axle"), dict):
+        raw["axle"] = dict(DEFAULT_AXLE_OPTIONS)
+        print("[manager] Axle configuration absent in saved options; using HACS Axle defaults", flush=True)
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
     if isinstance(canonical_mqtt, dict): mqtt = canonical_mqtt
-    os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":")); os.environ["HOME_ENERGY_MANAGER_VERSION"] = VERSION
+    os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
+    os.environ["HOME_ENERGY_MANAGER_VERSION"] = "0.1.43"
     print("[manager] config migration: " f"layout={diagnostics.source_layout} canonical=v{diagnostics.canonical_version} " f"moves={len(diagnostics.moves)} duplicates={len(diagnostics.duplicates)} conflicts={len(diagnostics.conflicts)}", flush=True)
     for message in diagnostics.conflicts: print(f"[manager] config conflict: {message}", flush=True)
     for name, path in COMPONENT_OPTIONS.items():
