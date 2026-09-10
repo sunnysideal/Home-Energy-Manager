@@ -230,6 +230,16 @@ def _parameter_sample_count(db: sqlite3.Connection, names: list[str]) -> int:
     return min((int(row[0]) for row in rows), default=0)
 
 
+def _combined_temperature_metric(metrics: list[HorizonMetric], names: tuple[str, ...]) -> tuple[int, float | None, float | None]:
+    selected = [metric for metric in metrics if metric.name in names and metric.count > 0]
+    count = sum(metric.count for metric in selected)
+    if count <= 0:
+        return 0, None, None
+    upper = sum(float(metric.upper_mae_c or 0.0) * metric.count for metric in selected) / count
+    lower = sum(float(metric.lower_mae_c or 0.0) * metric.count for metric in selected) / count
+    return count, upper, lower
+
+
 def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
     passive_samples = _parameter_sample_count(
         db,
@@ -245,10 +255,7 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
     draw_count = int(row[0]) if row else 0
 
     metrics = horizon_metrics(db)
-    near = next(metric for metric in metrics if metric.name == "0_6h")
-    validation_count = near.count
-    upper_mae = near.upper_mae_c
-    lower_mae = near.lower_mae_c
+    validation_count, upper_mae, lower_mae = _combined_temperature_metric(metrics, ("0_6h", "6_12h"))
     energy = energy_comparison(db)
 
     row = db.execute(
@@ -279,9 +286,6 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
         + 0.20 * validation_score
     )
 
-    # Trial readiness deliberately excludes forward validation. Once the physical model,
-    # demand model and live sensors are all available, production may use thermal while
-    # legacy continues in parallel as the comparator/fallback.
     trial_ready = bool(
         sensor_score == 1.0
         and passive_samples >= 24
@@ -290,6 +294,8 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
         and draw_count >= 10
     )
 
+    # Tank-temperature quality is a separate diagnostic, judged only over the first
+    # 12 hours. It no longer decides which DHW energy forecast is authoritative.
     thermal_ready = bool(
         trial_ready
         and validation_count >= 20
@@ -297,32 +303,26 @@ def confidence_result(db: sqlite3.Connection) -> ConfidenceResult:
         and lower_mae is not None and lower_mae <= 4.0
     )
 
+    # Production promotion is energy-led. Two independent days and at least 20 comparable
+    # intervals are enough to use the learned forecast when it is no worse than legacy.
     promotion_ready = bool(
-        thermal_ready
+        trial_ready
         and energy.count >= 20
-        and energy.days >= 7
+        and energy.days >= 2
         and energy.thermal_not_worse
     )
 
-    # Do not call the model poor before there is meaningful evidence. Once there are at
-    # least 20 comparable intervals across two days, require a material miss rather than
-    # tiny noise: thermal MAE must be >15% worse than legacy and >0.03 kWh/interval worse.
     energy_bad = bool(
         energy.count >= 20
         and energy.days >= 2
-        and energy.thermal_mae_kwh is not None
-        and energy.legacy_mae_kwh is not None
-        and energy.thermal_mae_kwh > energy.legacy_mae_kwh * 1.15
-        and energy.thermal_mae_kwh > energy.legacy_mae_kwh + 0.03
+        and energy.thermal_energy_mae_kwh is not None
+        and energy.legacy_energy_mae_kwh is not None
+        and energy.thermal_energy_mae_kwh > energy.legacy_energy_mae_kwh * 1.15
+        and energy.thermal_energy_mae_kwh > energy.legacy_energy_mae_kwh + 0.03
     )
-    # Temperature validation can independently flag a clearly implausible tank trajectory.
-    temp_bad = bool(
-        validation_count >= 20
-        and upper_mae is not None
-        and lower_mae is not None
-        and (upper_mae > 3.0 or lower_mae > 6.0)
-    )
-    performance_bad = energy_bad or temp_bad
+    # Temperature drift is reported through thermal_ready/temperature MAE diagnostics,
+    # but cannot demote an energy forecast that is performing well.
+    performance_bad = energy_bad
 
     return ConfidenceResult(
         confidence=min(max(confidence, 0.0), 1.0),
