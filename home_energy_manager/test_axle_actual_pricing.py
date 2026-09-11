@@ -8,10 +8,21 @@ ROOT = Path(__file__).resolve().parent
 APP = ROOT / "components" / "home_forecaster" / "app"
 sys.path.insert(0, str(APP))
 
-spec = importlib.util.spec_from_file_location("axle_pricing_runner_test", APP / "axle_pricing_runner.py")
-axle = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(axle)
+# axle_pricing_runner imports its sibling as the generic module name ``main``.
+# Other tests may already have loaded another component's main.py under that name,
+# so isolate this import and then restore the previous module to avoid collection-order
+# dependence in the full GitHub CI suite.
+_previous_main = sys.modules.pop("main", None)
+try:
+    spec = importlib.util.spec_from_file_location("axle_pricing_runner_test", APP / "axle_pricing_runner.py")
+    axle = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(axle)
+finally:
+    if _previous_main is not None:
+        sys.modules["main"] = _previous_main
+    else:
+        sys.modules.pop("main", None)
 
 
 def test_realised_axle_credit_replaces_normal_export_income():
