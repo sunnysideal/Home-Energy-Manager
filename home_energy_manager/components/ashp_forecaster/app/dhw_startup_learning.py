@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run one DHW learning pass at ASHP component startup.
+"""Run DHW learning immediately at startup and keep efficiency retraining independent.
 
-The collector owns live sampling and hourly retraining. This helper waits for the collector's
-schema/bootstrap work to become available, then runs the same persisted learners once so an
-add-on restart does not have to wait for the collector's next scheduled learning pass.
+The collector owns live sampling and its established hourly passive/cycle/demand retraining.
+This process waits for collector schema/bootstrap data, runs all DHW learners immediately at
+startup, then reruns the temperature-efficiency shadow learner hourly. The efficiency learner
+therefore never depends on the cycle learner returning a fit just to run or report readiness.
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ def _tables_ready(db: sqlite3.Connection) -> bool:
     return {"dhw_thermal_samples", "dhw_heating_cycles", "dhw_draw_events", "dhw_model_parameters"} <= names
 
 
-def _log_efficiency(db: sqlite3.Connection, cycle_fit) -> None:
+def run_efficiency_pass(db: sqlite3.Connection, cycle_fit=None) -> None:
     fit = learn_temperature_efficiency(db)
     if fit is None:
         LOG.info(
@@ -48,11 +49,13 @@ def _log_efficiency(db: sqlite3.Connection, cycle_fit) -> None:
     validation_cycles = 0
     baseline_mae = None
     curve_mae = None
+    if cycle_fit is None:
+        cycle_fit = learn_cycle_energy(db)
     if cycle_fit is not None:
-        validation_cycles, baseline_mae_value, curve_mae_value = evaluate_shadow_cycle_model(db, cycle_fit, fit)
+        validation_cycles, baseline_value, curve_value = evaluate_shadow_cycle_model(db, cycle_fit, fit)
         if validation_cycles:
-            baseline_mae = baseline_mae_value
-            curve_mae = curve_mae_value
+            baseline_mae = baseline_value
+            curve_mae = curve_value
 
     persist_temperature_efficiency_fit(
         db,
@@ -83,7 +86,7 @@ def _log_efficiency(db: sqlite3.Connection, cycle_fit) -> None:
     )
 
 
-def run_learning_pass(db: sqlite3.Connection, cfg: dict) -> None:
+def run_startup_learning_pass(db: sqlite3.Connection, cfg: dict) -> None:
     sample_minutes = max(1, int(cfg.get("dhw_thermal_sample_minutes", 5)))
     passive_fit = learn_passive_parameters(db, volume_l=float(cfg.get("dhw_tank_volume_l", 250)))
     cycle_fit = learn_cycle_energy(db)
@@ -109,9 +112,6 @@ def run_learning_pass(db: sqlite3.Connection, cfg: dict) -> None:
         LOG.info("DHW startup passive model not ready: insufficient/unsuitable quiet samples")
 
     if cycle_fit is not None:
-        # Persist only the cycle model here. persist_cycle_energy_fit also runs the efficiency
-        # shadow learner for backward compatibility; the explicit call below guarantees a
-        # diagnostic even when the cycle model is unavailable.
         persist_cycle_energy_fit(db, cycle_fit)
         LOG.info(
             "DHW startup cycle energy model learned: cycles=%d rmse=%.3fkWh",
@@ -121,7 +121,7 @@ def run_learning_pass(db: sqlite3.Connection, cfg: dict) -> None:
     else:
         LOG.info("DHW startup cycle energy model not ready: need more valid normal cycles")
 
-    _log_efficiency(db, cycle_fit)
+    run_efficiency_pass(db, cycle_fit)
 
     if demand_slots:
         persist_demand_profile(db, demand_slots)
@@ -135,27 +135,42 @@ def main() -> None:
     cfg = json.loads(OPTIONS_PATH.read_text())
     if not str(cfg.get("dhw_tank_lower_temperature_entity") or ""):
         LOG.info("DHW startup learning inactive: lower tank temperature entity is not configured")
-        return
+        while True:
+            time.sleep(3600)
 
-    # The collector creates the schema and performs any historical bootstrap. Wait briefly
-    # for that startup work rather than racing it. Existing installations normally satisfy
-    # this on the first check.
     deadline = time.monotonic() + 60.0
+    db = None
     while time.monotonic() < deadline:
         try:
-            db = sqlite3.connect(DB_PATH, timeout=30)
-            if _tables_ready(db):
-                sample_count = int(db.execute("SELECT COUNT(*) FROM dhw_thermal_samples").fetchone()[0])
+            candidate = sqlite3.connect(DB_PATH, timeout=30)
+            if _tables_ready(candidate):
+                sample_count = int(candidate.execute("SELECT COUNT(*) FROM dhw_thermal_samples").fetchone()[0])
                 if sample_count > 0:
+                    db = candidate
                     LOG.info("DHW startup learning pass: samples=%d", sample_count)
-                    run_learning_pass(db, cfg)
-                    db.close()
-                    return
-            db.close()
+                    break
+            candidate.close()
         except sqlite3.Error:
             pass
         time.sleep(0.5)
-    LOG.warning("DHW startup learning pass skipped: thermal history was not ready within 60s")
+
+    if db is None:
+        LOG.warning("DHW startup learning pass skipped: thermal history was not ready within 60s")
+    else:
+        try:
+            run_startup_learning_pass(db, cfg)
+        except Exception:
+            LOG.exception("DHW startup learning pass failed")
+        finally:
+            db.close()
+
+    while True:
+        time.sleep(3600)
+        try:
+            with sqlite3.connect(DB_PATH, timeout=30) as hourly_db:
+                run_efficiency_pass(hourly_db)
+        except Exception:
+            LOG.exception("DHW hourly temperature efficiency learning failed")
 
 
 if __name__ == "__main__":
