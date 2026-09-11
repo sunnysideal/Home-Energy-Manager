@@ -77,6 +77,9 @@ def main() -> None:
         [sys.executable, "-u", str(ROOT / "dhw_collector.py")], env=passive_env
     ))
     children.append(subprocess.Popen(
+        [sys.executable, "-u", str(ROOT / "dhw_startup_learning.py")], env=passive_env
+    ))
+    children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "dhw_shadow_runner.py")], env=passive_env
     ))
     children.append(subprocess.Popen(

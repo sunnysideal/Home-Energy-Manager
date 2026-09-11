@@ -3,17 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import logging
 import math
 import sqlite3
-
-from dhw_efficiency_learner import (
-    evaluate_shadow_cycle_model,
-    learn_temperature_efficiency,
-    persist_temperature_efficiency_fit,
-)
-
-LOG = logging.getLogger("ashp_dhw_collector")
 
 
 @dataclass(frozen=True)
@@ -159,31 +150,3 @@ def persist_cycle_energy_fit(db: sqlite3.Connection, fit: CycleEnergyFit) -> Non
                 "sample_count=excluded.sample_count,updated_at=excluded.updated_at,error=excluded.error",
                 (name, value, fit.sample_count, now, fit.rmse_kwh),
             )
-
-    # Shadow-only temperature-efficiency learner.  It is intentionally invoked from the
-    # existing hourly cycle-fit path so it needs no new process or production interface.
-    efficiency_fit = learn_temperature_efficiency(db)
-    if efficiency_fit is None:
-        LOG.info("DHW temperature efficiency shadow model not ready: need more clean heating intervals across temperature bands")
-        return
-    validation_cycles, baseline_mae, curve_mae = evaluate_shadow_cycle_model(db, fit, efficiency_fit)
-    persist_temperature_efficiency_fit(
-        db,
-        efficiency_fit,
-        baseline_mae_kwh=baseline_mae if validation_cycles else None,
-        curve_mae_kwh=curve_mae if validation_cycles else None,
-        validation_cycles=validation_cycles,
-    )
-    curve = ",".join(f"{item.center_c:.1f}C:{item.multiplier:.3f}x(n={item.sample_count})" for item in efficiency_fit.bins)
-    LOG.info(
-        "DHW temperature efficiency shadow learned: observations=%d range=%.1f-%.1fC curve=[%s] "
-        "fit_rmse=%.3fx validation_cycles=%d baseline_mae=%.3fkWh curve_mae=%.3fkWh production=unchanged",
-        efficiency_fit.sample_count,
-        efficiency_fit.min_temp_c,
-        efficiency_fit.max_temp_c,
-        curve,
-        efficiency_fit.rmse_multiplier,
-        validation_cycles,
-        baseline_mae,
-        curve_mae,
-    )
