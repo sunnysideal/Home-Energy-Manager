@@ -21,6 +21,10 @@ LOG = logging.getLogger("ashp_dhw_validation")
 DB_PATH = Path(os.environ.get("ASHP_FORECASTER_DB_PATH", "/data/ashp_forecast.db"))
 
 
+def _fit_text(value: float | None, unit: str) -> str:
+    return f"{value:.3f}{unit}" if value is not None else "not_ready"
+
+
 def run_once(db: sqlite3.Connection) -> None:
     matched = apply_actuals(db)
     energy_matched = apply_actual_energy(db)
@@ -43,7 +47,8 @@ def run_once(db: sqlite3.Connection) -> None:
     LOG.info(
         "DHW validation: temp_matched=%d energy_matched=%d confidence=%.0f%% "
         "trial_ready=%s thermal_ready=%s promotion_ready=%s performance_bad=%s "
-        "passive=%d cycles=%d demand_days=%d draws=%d near_validation=%d %s [%s]",
+        "passive=%d fit=%s ready=%s cycles=%d fit=%s ready=%s "
+        "demand_days=%d draws=%d near_validation=%d %s [%s]",
         matched,
         energy_matched,
         result.confidence * 100.0,
@@ -52,7 +57,11 @@ def run_once(db: sqlite3.Connection) -> None:
         result.promotion_ready,
         result.performance_bad,
         result.passive_samples,
+        _fit_text(result.passive_rmse_c, "C"),
+        result.passive_ready,
         result.cycle_count,
+        _fit_text(result.cycle_rmse_kwh, "kWh"),
+        result.heating_ready,
         result.demand_days,
         result.draw_count,
         result.validation_count,
