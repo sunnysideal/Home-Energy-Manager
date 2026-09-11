@@ -4,6 +4,11 @@ The thermal model is authoritative for DHW heating energy. A scheduled/on-mode
 heating cycle is simulated until the configured control sensor reaches the configured
 target temperature; the required electrical energy is therefore an output of the
 simulated tank state rather than a pre-computed historical cycle-energy cap.
+
+When a learned temperature-efficiency curve is available, electrical heating response
+is adjusted progressively as the tank warms: lower-temperature heating gets more sensor
+rise per electrical kWh and higher-temperature heating gets less. The existing learned
+cycle response remains the absolute calibration anchor.
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ import sqlite3
 from dhw_simulator import StepInputs, TankParameters, TankState, stabilise_stratification, step_tank
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+ELECTRICAL_RESPONSE_STEP_KWH = 0.01
 
 
 @dataclass(frozen=True)
@@ -28,13 +34,10 @@ class ShadowModel:
     lower_loss_w_per_k: float
     coupling_w_per_k: float
     demand: dict[tuple[str, int], float]
+    efficiency_curve: tuple[tuple[float, float], ...] = ()
 
     def cycle_energy(self, upper_temp_c: float, lower_temp_c: float, target_temp_c: float) -> float:
-        """Historical comparator only; production heating is target-seeking.
-
-        The learned cycle regression remains available for diagnostics/validation, but
-        it must never cap a simulated production heating cycle.
-        """
+        """Historical comparator only; production heating is target-seeking."""
         upper_deficit = max(target_temp_c - upper_temp_c, 0.0)
         lower_deficit = max(target_temp_c - lower_temp_c, 0.0)
         return max(
@@ -43,6 +46,27 @@ class ShadowModel:
             + self.upper_kwh_per_c * upper_deficit
             + self.lower_kwh_per_c * lower_deficit,
         )
+
+    def efficiency_multiplier(self, temperature_c: float) -> float:
+        """Return learned relative marginal electrical cost at tank temperature.
+
+        Multipliers are normalised around the historical cycle calibration: below 1 means
+        more temperature response per electrical kWh, above 1 means less. Values outside
+        the learned range clamp to the nearest endpoint.
+        """
+        curve = self.efficiency_curve
+        if not curve:
+            return 1.0
+        if temperature_c <= curve[0][0]:
+            return curve[0][1]
+        if temperature_c >= curve[-1][0]:
+            return curve[-1][1]
+        for (left_t, left_m), (right_t, right_m) in zip(curve, curve[1:]):
+            if left_t <= temperature_c <= right_t:
+                span = right_t - left_t
+                fraction = 0.0 if span <= 0.0 else (temperature_c - left_t) / span
+                return left_m + fraction * (right_m - left_m)
+        return 1.0
 
 
 @dataclass(frozen=True)
@@ -53,6 +77,23 @@ class ShadowSlot:
     draw_kwh: float
     dhw_kwh: float
     heating: bool
+
+
+def _load_efficiency_curve(params: dict[str, float]) -> tuple[tuple[float, float], ...]:
+    points: list[tuple[float, float]] = []
+    prefix = "dhw_efficiency_multiplier_"
+    for name, value in params.items():
+        if not name.startswith(prefix):
+            continue
+        try:
+            center_c = int(name[len(prefix):]) / 10.0
+            multiplier = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 0.25 <= multiplier <= 4.0:
+            points.append((center_c, multiplier))
+    points.sort()
+    return tuple(points)
 
 
 def load_shadow_model(db: sqlite3.Connection) -> ShadowModel | None:
@@ -87,6 +128,7 @@ def load_shadow_model(db: sqlite3.Connection) -> ShadowModel | None:
         lower_loss_w_per_k=params.get("dhw_lower_loss_w_per_k", params.get("lower_loss_w_per_k", 0.8)),
         coupling_w_per_k=params.get("dhw_coupling_w_per_k", params.get("coupling_w_per_k", 3.0)),
         demand=demand,
+        efficiency_curve=_load_efficiency_curve(params),
     )
 
 
@@ -110,20 +152,36 @@ def _expected_draw_step(model: ShadowModel, local_dt: datetime, step_minutes: in
     return half_hour_expected * step_minutes / 30.0
 
 
+def _effective_temperature(state: TankState) -> float:
+    return (state.upper_temp_c + state.lower_temp_c) / 2.0
+
+
 def _apply_learned_heating(
     state: TankState,
     model: ShadowModel,
     params: TankParameters,
     electrical_kwh: float,
 ) -> TankState:
-    """Apply the learned sensor response for an electrical heating input."""
-    if electrical_kwh <= 0.0:
-        return state
-    heated = TankState(
-        upper_temp_c=state.upper_temp_c + electrical_kwh * model.upper_c_per_kwh,
-        lower_temp_c=state.lower_temp_c + electrical_kwh * model.lower_c_per_kwh,
-    )
-    return stabilise_stratification(heated, params)
+    """Apply electrical heating using the learned temperature-dependent efficiency.
+
+    The cycle learner's C/kWh response is the normalised calibration anchor. Each small
+    electrical increment is divided by the learned marginal-cost multiplier at the
+    current effective tank temperature, so response changes continuously as the tank
+    warms during a forecast step.
+    """
+    remaining = max(electrical_kwh, 0.0)
+    heated = state
+    while remaining > 1e-12:
+        chunk = min(ELECTRICAL_RESPONSE_STEP_KWH, remaining)
+        multiplier = max(0.25, min(4.0, model.efficiency_multiplier(_effective_temperature(heated))))
+        normalised_kwh = chunk / multiplier
+        heated = TankState(
+            upper_temp_c=heated.upper_temp_c + normalised_kwh * model.upper_c_per_kwh,
+            lower_temp_c=heated.lower_temp_c + normalised_kwh * model.lower_c_per_kwh,
+        )
+        heated = stabilise_stratification(heated, params)
+        remaining -= chunk
+    return heated
 
 
 def _control_temperature(state: TankState, target_sensor: str) -> float:
@@ -142,12 +200,7 @@ def _energy_to_target_this_step(
     max_step_kwh: float,
     target_sensor: str,
 ) -> tuple[float, TankState]:
-    """Return the smallest electrical input this step that makes the control sensor hit target.
-
-    If the target cannot be reached within the step's learned power limit, use the full
-    step energy. A binary solve is used because stabilisation can mix the two zones and
-    therefore makes the effective sensor response piecewise linear.
-    """
+    """Return the smallest electrical input this step that makes the control sensor hit target."""
     if _control_temperature(state, target_sensor) >= target_temp_c:
         return 0.0, state
     full_state = _apply_learned_heating(state, model, params, max_step_kwh)
@@ -227,8 +280,6 @@ def build_shadow_forecast(
 
         control_temp = _control_temperature(state, target_sensor)
         if not opportunity:
-            # A schedule window is an actual heating opportunity. Do not invent heating
-            # outside it; the next enabled window may start a fresh target-seeking cycle.
             heating_cycle_active = False
         elif not heating_cycle_active and control_temp < target_temp_c - hysteresis_c:
             heating_cycle_active = True
