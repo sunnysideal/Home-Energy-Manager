@@ -79,14 +79,26 @@ Does not own:
 - reimplementation of load/PV/ASHP forecasting
 - direct Axle API access or HACS integration internals
 
+## GitHub / CI workflow
+
+- Before committing code changes, inspect the repository's current GitHub Actions workflow(s) relevant to the changed component.
+- Confirm test and implementation assumptions match the actual CI environment, including Python version, working directory, import paths, installed dependencies, and commands executed.
+- Do not assume that focused tests passing means the full CI workflow will pass.
+- Before pushing, reproduce the exact relevant CI commands where practical. At minimum, review the changed code against the exact commands and environment defined by the workflow.
+- After pushing, inspect the GitHub Actions run for the actual current head commit or pull request; do not rely on a successful run from an earlier commit.
+- Do not merge to `main` unless the full required CI workflow for the current head commit has completed successfully.
+- If CI fails, inspect the failing step/output, fix the underlying cause, and confirm a new CI run for the corrected head commit is green before merging.
+
 ## Release checklist
 
-Before packaging:
+Before merging or packaging:
 - read this file;
 - read `components/controller/AGENTS.md` for controller changes;
+- inspect the relevant current GitHub Actions workflow and confirm the test environment/commands used by CI;
 - compile all four Python components;
 - parse the merged `config.yaml`;
 - run controller invariant tests;
 - run `test_architecture.py`;
 - verify no cross-component Python imports were introduced;
-- verify launcher contains no energy/control calculations.
+- verify launcher contains no energy/control calculations;
+- confirm the full required GitHub CI workflow for the current head commit has completed successfully before merging to `main`.
