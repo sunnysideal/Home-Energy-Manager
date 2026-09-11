@@ -112,24 +112,18 @@ def test_energy_comparison_scores_thermal_and_legacy_against_same_actuals():
     assert result.thermal_not_worse is True
 
 
-def seed_ready_model(db, now):
+def seed_ready_model(db, now, *, passive_error=0.10, cycle_error=0.20, demand_days=8, draws=0):
     db.execute("INSERT INTO dhw_thermal_samples VALUES(?,?,?,?,1)", (now.isoformat(), 50.0, 42.0, 100.0))
     for name in ("dhw_upper_loss_w_per_k", "dhw_lower_loss_w_per_k", "dhw_coupling_w_per_k"):
-        db.execute("INSERT INTO dhw_model_parameters VALUES(?,?,?,?,?)", (name, 1.0, 30, now.isoformat(), 0.1))
+        db.execute("INSERT INTO dhw_model_parameters VALUES(?,?,?,?,?)", (name, 1.0, 30, now.isoformat(), passive_error))
     for name in ("dhw_cycle_intercept_kwh", "dhw_cycle_upper_kwh_per_c", "dhw_cycle_lower_kwh_per_c"):
-        db.execute("INSERT INTO dhw_model_parameters VALUES(?,?,?,?,?)", (name, 1.0, 6, now.isoformat(), 0.1))
-    db.execute("INSERT INTO dhw_demand_profile VALUES('weekday',14,8)")
-    for idx in range(10):
+        db.execute("INSERT INTO dhw_model_parameters VALUES(?,?,?,?,?)", (name, 1.0, 6, now.isoformat(), cycle_error))
+    db.execute("INSERT INTO dhw_demand_profile VALUES('weekday',14,?)", (demand_days,))
+    for idx in range(draws):
         db.execute("INSERT INTO dhw_draw_events VALUES(?)", ((now - timedelta(hours=idx)).isoformat(),))
-    for idx in range(20):
-        forecast = now - timedelta(hours=1, minutes=idx)
-        target = forecast + timedelta(hours=2)
-        insert_validation(db, forecast, target, upper_actual=49.0, lower_actual=40.0)
 
 
 def add_energy_validation(db, now, *, days, thermal, legacy):
-    # Keep at least 20 comparable intervals even when deliberately exercising a
-    # single-day data set; `days` controls date coverage, not sample count.
     slots_per_day = max(10, (20 + days - 1) // days)
     for day in range(days):
         for slot in range(slots_per_day):
@@ -138,74 +132,101 @@ def add_energy_validation(db, now, *, days, thermal, legacy):
             insert_validation(db, forecast, target, thermal=thermal, legacy=legacy, actual=0.0)
 
 
-def test_promotion_requires_two_days_of_energy_comparison():
+def test_readiness_is_driven_by_passive_and_heating_fit_not_draw_count():
     db = db_with_schema()
     now = datetime.now(timezone.utc)
-    seed_ready_model(db, now)
-    add_energy_validation(db, now, days=1, thermal=0.1, legacy=0.4)
+    seed_ready_model(db, now, draws=0)
     result = mod.confidence_result(db)
-    assert result.energy_validation_count >= 20
-    assert result.energy_validation_days < 2
-    assert result.promotion_ready is False
-
-
-def test_energy_can_promote_even_when_temperature_quality_is_poor():
-    db = db_with_schema()
-    now = datetime.now(timezone.utc)
-    seed_ready_model(db, now)
-    # Make the existing temperature validations deliberately poor. Temperature quality
-    # must remain diagnostic and must not veto a better energy forecast.
-    db.execute("UPDATE dhw_forecast_validation SET actual_upper_c=44.0,actual_lower_c=25.0 WHERE actual_upper_c IS NOT NULL")
-    add_energy_validation(db, now, days=2, thermal=0.1, legacy=0.4)
-    result = mod.confidence_result(db)
-    assert result.thermal_ready is False
-    assert result.thermal_energy_mae_kwh < result.legacy_energy_mae_kwh
+    assert result.trial_ready is True
+    assert result.passive_ready is True
+    assert result.heating_ready is True
+    assert result.thermal_ready is True
     assert result.promotion_ready is True
+
+
+def test_unpredictable_temperature_forecast_error_does_not_block_physical_readiness():
+    db = db_with_schema()
+    now = datetime.now(timezone.utc)
+    seed_ready_model(db, now)
+    for idx in range(25):
+        forecast = now - timedelta(hours=1, minutes=idx)
+        target = forecast + timedelta(hours=2)
+        insert_validation(db, forecast, target, upper_actual=20.0, lower_actual=10.0)
+    result = mod.confidence_result(db)
+    assert result.upper_mae_c > 2.0
+    assert result.lower_mae_c > 4.0
+    assert result.thermal_ready is True
     assert result.performance_bad is False
 
 
-def test_promotion_is_blocked_when_thermal_energy_error_is_worse():
+def test_poor_passive_fit_blocks_readiness_and_can_mark_performance_bad():
     db = db_with_schema()
     now = datetime.now(timezone.utc)
-    seed_ready_model(db, now)
-    add_energy_validation(db, now, days=2, thermal=0.5, legacy=0.1)
+    seed_ready_model(db, now, passive_error=0.80)
     result = mod.confidence_result(db)
+    assert result.passive_ready is False
+    assert result.thermal_ready is False
     assert result.promotion_ready is False
     assert result.performance_bad is True
 
 
-def test_temperature_quality_uses_only_first_12_hours():
+def test_poor_heating_fit_blocks_readiness_and_can_mark_performance_bad():
+    db = db_with_schema()
+    now = datetime.now(timezone.utc)
+    seed_ready_model(db, now, cycle_error=1.10)
+    result = mod.confidence_result(db)
+    assert result.heating_ready is False
+    assert result.thermal_ready is False
+    assert result.promotion_ready is False
+    assert result.performance_bad is True
+
+
+def test_slot_energy_comparison_is_diagnostic_not_a_veto():
     db = db_with_schema()
     now = datetime.now(timezone.utc)
     seed_ready_model(db, now)
-    # Good near-term validation.
+    add_energy_validation(db, now, days=2, thermal=0.8, legacy=0.1)
+    result = mod.confidence_result(db)
+    assert result.thermal_energy_mae_kwh > result.legacy_energy_mae_kwh
+    assert result.promotion_ready is True
+    assert result.performance_bad is False
+
+
+def test_temperature_quality_is_diagnostic_not_a_readiness_gate():
+    db = db_with_schema()
+    now = datetime.now(timezone.utc)
+    seed_ready_model(db, now)
     for idx in range(20):
         forecast = now - timedelta(hours=1, minutes=idx)
         target = forecast + timedelta(hours=9)
-        insert_validation(db, forecast, target, upper_actual=49.0, lower_actual=40.0)
-    # Terrible long-horizon validation must not affect the 12-hour diagnostic gate.
-    for idx in range(20):
-        forecast = now - timedelta(hours=1, minutes=idx)
-        target = forecast + timedelta(hours=30)
-        insert_validation(db, forecast, target, upper_actual=20.0, lower_actual=10.0)
+        insert_validation(db, forecast, target, upper_actual=35.0, lower_actual=20.0)
     result = mod.confidence_result(db)
+    assert result.validation_count >= 20
+    assert result.upper_mae_c > 2.0
+    assert result.lower_mae_c > 4.0
     assert result.thermal_ready is True
 
 
-def test_confidence_persistence_writes_readiness_and_energy_mae():
+def test_confidence_persistence_writes_physical_fit_readiness_and_errors():
     db = db_with_schema()
     result = mod.ConfidenceResult(
-        confidence=0.6, trial_ready=True, thermal_ready=True, promotion_ready=True,
+        confidence=0.8, trial_ready=True, thermal_ready=True, promotion_ready=True,
         performance_bad=False, passive_samples=30, cycle_count=6, demand_days=8,
-        draw_count=12, validation_count=25, upper_mae_c=1.2, lower_mae_c=2.5,
+        draw_count=0, validation_count=25, upper_mae_c=1.2, lower_mae_c=8.5,
         energy_validation_count=40, energy_validation_days=7,
-        thermal_energy_mae_kwh=0.15, legacy_energy_mae_kwh=0.30,
+        thermal_energy_mae_kwh=0.15, legacy_energy_mae_kwh=0.10,
+        passive_rmse_c=0.10, cycle_rmse_kwh=0.20,
+        passive_ready=True, heating_ready=True,
     )
     mod.persist_confidence(db, result)
     values = dict(db.execute("SELECT name,value FROM dhw_model_parameters"))
-    assert values["dhw_model_confidence"] == 0.6
+    assert values["dhw_model_confidence"] == 0.8
     assert values["dhw_trial_ready"] == 1.0
     assert values["dhw_thermal_ready"] == 1.0
     assert values["dhw_promotion_ready"] == 1.0
+    assert values["dhw_passive_model_ready"] == 1.0
+    assert values["dhw_heating_model_ready"] == 1.0
+    assert values["dhw_passive_rmse_c"] == 0.10
+    assert values["dhw_cycle_rmse_kwh"] == 0.20
     assert values["dhw_thermal_energy_mae_kwh"] == 0.15
-    assert values["dhw_legacy_energy_mae_kwh"] == 0.30
+    assert values["dhw_legacy_energy_mae_kwh"] == 0.10
