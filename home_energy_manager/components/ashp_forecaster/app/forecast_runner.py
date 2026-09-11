@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Production ASHP forecaster entrypoint with guaranteed configured horizon.
 
-This adapter preserves the legacy ASHP forecast contract while adding two production
-safety functions: weather-horizon extension and guarded DHW source selection. The
-thermal DHW model is only selected after its independent validation process persists
-promotion readiness and a fresh, complete thermal forecast is available. Every failure
-condition falls back to legacy DHW before CH priority/total-energy calculations run.
+The learned thermal DHW forecast is authoritative for production. Legacy DHW remains
+available internally as a validation comparator, but is never used as a production
+fallback. If the thermal horizon is unavailable or invalid, the forecast run fails
+rather than publishing a contradictory DHW estimate.
 """
 from __future__ import annotations
 
@@ -22,15 +21,6 @@ LOG = logging.getLogger("ashp_forecast")
 SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
 THERMAL_REFRESH_WAIT_SECONDS = 8.0
 THERMAL_REFRESH_POLL_SECONDS = 0.25
-TRANSIENT_THERMAL_REASONS = {
-    "thermal_entity_unavailable",
-    "thermal_entity_read_failed",
-    "thermal_forecast_not_published",
-    "thermal_horizon_incomplete",
-    "thermal_forecast_missing_timestamp",
-    "thermal_forecast_stale",
-    "thermal_forecast_incomplete",
-}
 
 
 def _fallback_timezone_name() -> str:
@@ -90,9 +80,6 @@ class HorizonHAClient(legacy.HAClient):
         extended = list(raw)
         cursor = last_dt
         appended = 0
-        # Append whole hourly points until the final point is at or beyond the
-        # required horizon.  Using ``cursor <= required_end`` before appending can
-        # stop up to 59 minutes short when ``required_end`` is not hour-aligned.
         while cursor < required_end:
             cursor += timedelta(hours=1)
             extended.append({"datetime": cursor.isoformat(), "temperature": last_temp})
@@ -114,60 +101,41 @@ def _select_dhw_with_refresh_wait(
     starts,
     legacy_values: list[float],
 ) -> SelectionResult:
-    """Select DHW, briefly waiting out the shadow-publisher race when appropriate.
+    """Wait briefly for the sibling thermal publisher, then require its forecast.
 
-    The thermal publisher is a sibling process within the ASHP component. Both wake on
-    the same configured cadence, but process scheduling can let production read HA a few
-    seconds before the freshly aligned 96-slot thermal horizon is published. Only
-    transient publication/alignment failures are retried here. Structural readiness,
-    quality fallback and all other selector decisions remain immediate and unchanged.
+    Both ASHP processes wake on the same cadence, so production can reach this point a
+    few seconds before the newly aligned thermal horizon is published. A short retry
+    window handles only that race; there is deliberately no legacy fallback afterwards.
     """
     max_age_minutes = max(25.0, float(cfg.update_minutes) * 2.0)
-
-    def select() -> SelectionResult:
-        return select_dhw_forecast(
-            store.db,
-            starts,
-            legacy_values,
-            client.get_state,
-            max_age_minutes=max_age_minutes,
-        )
-
-    result = select()
-    if result.source == "thermal" or result.reason not in TRANSIENT_THERMAL_REASONS:
-        return result
-
-    first_reason = result.reason
     deadline = time.monotonic() + THERMAL_REFRESH_WAIT_SECONDS
-    while time.monotonic() < deadline:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        time.sleep(min(THERMAL_REFRESH_POLL_SECONDS, remaining))
-        result = select()
-        if result.source == "thermal" or result.reason not in TRANSIENT_THERMAL_REASONS:
-            break
+    last_error: RuntimeError | None = None
 
-    if result.source == "thermal":
-        LOG.info(
-            "DHW thermal forecast arrived after transient %s; using fresh aligned thermal horizon",
-            first_reason,
-        )
-    elif result.reason in TRANSIENT_THERMAL_REASONS:
-        LOG.info(
-            "DHW thermal forecast still unavailable after %.1fs (%s); using legacy fallback",
-            THERMAL_REFRESH_WAIT_SECONDS,
-            result.reason,
-        )
-    return result
+    while True:
+        try:
+            result = select_dhw_forecast(
+                store.db,
+                starts,
+                legacy_values,
+                client.get_state,
+                max_age_minutes=max_age_minutes,
+            )
+            if last_error is not None:
+                LOG.info("DHW thermal forecast arrived during refresh wait; using authoritative thermal horizon")
+            return result
+        except RuntimeError as exc:
+            last_error = exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"DHW thermal production forecast unavailable after {THERMAL_REFRESH_WAIT_SECONDS:.1f}s; "
+                    "no fallback is permitted"
+                ) from exc
+            time.sleep(min(THERMAL_REFRESH_POLL_SECONDS, remaining))
 
 
 def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
-    """Wrap the legacy DHW builder with a fail-safe production selector.
-
-    Selection occurs before ``legacy.build_forecast`` applies DHW priority to CH, so the
-    public 30-minute slot contract remains internally consistent whichever source wins.
-    """
+    """Require the thermal DHW builder while retaining legacy only as comparator."""
     legacy_builder = legacy.build_dhw_forecast
     last_logged: tuple[str, str] | None = None
 
@@ -187,7 +155,8 @@ def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
                     "friendly_name": "ASHP DHW Production Forecast Source",
                     "source": result.source,
                     "reason": result.reason,
-                    "thermal_selected": result.source == "thermal",
+                    "thermal_selected": True,
+                    "fallback_allowed": False,
                     "last_updated": datetime.now(client.tz).isoformat() if hasattr(client, "tz") else datetime.now().isoformat(),
                 },
             )
