@@ -5,7 +5,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-MODULE_PATH = ROOT / "components" / "ashp_forecaster" / "app" / "dhw_cycle_learner.py"
+APP = ROOT / "components" / "ashp_forecaster" / "app"
+sys.path.insert(0, str(APP))
+MODULE_PATH = APP / "dhw_cycle_learner.py"
 
 spec = importlib.util.spec_from_file_location("dhw_cycle_learner", MODULE_PATH)
 mod = importlib.util.module_from_spec(spec)
@@ -18,13 +20,20 @@ def db_with_schema():
     db = sqlite3.connect(":memory:")
     db.execute(
         "CREATE TABLE dhw_heating_cycles ("
-        "start_ts TEXT,end_ts TEXT,start_upper_c REAL,start_lower_c REAL,end_upper_c REAL,"
-        "end_lower_c REAL,target_temp_c REAL,electrical_kwh REAL,cycle_type TEXT,valid INTEGER)"
+        "start_ts TEXT,end_ts TEXT,start_upper_c REAL,start_lower_c REAL,"
+        "end_upper_c REAL,end_lower_c REAL,target_temp_c REAL,electrical_kwh REAL,"
+        "cycle_type TEXT,valid INTEGER)"
     )
     db.execute(
         "CREATE TABLE dhw_model_parameters ("
         "name TEXT PRIMARY KEY,value REAL,sample_count INTEGER,updated_at TEXT,error REAL)"
     )
+    db.execute(
+        "CREATE TABLE dhw_thermal_samples ("
+        "timestamp TEXT PRIMARY KEY,upper_temp_c REAL,lower_temp_c REAL,dhw_heating INTEGER,"
+        "immersion_heating INTEGER,dhw_energy_delta_kwh REAL,valid INTEGER)"
+    )
+    db.execute("CREATE TABLE dhw_draw_events(timestamp TEXT PRIMARY KEY)")
     return db
 
 
