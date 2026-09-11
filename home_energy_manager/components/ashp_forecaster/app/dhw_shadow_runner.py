@@ -50,12 +50,7 @@ class Publisher:
 
     def _rest(self, entity_id: str, state: Any, attributes: dict[str, Any]) -> None:
         payload = json.dumps({"state": str(state), "attributes": attributes}, default=str).encode()
-        req = Request(
-            f"{HA_API}/states/{entity_id}",
-            data=payload,
-            headers=self.headers,
-            method="POST",
-        )
+        req = Request(f"{HA_API}/states/{entity_id}", data=payload, headers=self.headers, method="POST")
         try:
             with urlopen(req, timeout=15):
                 pass
@@ -69,11 +64,7 @@ class Publisher:
 
 
 def _ha_json(token: str, path: str) -> dict | None:
-    req = Request(
-        f"{HA_API}{path}",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="GET",
-    )
+    req = Request(f"{HA_API}{path}", headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, method="GET")
     try:
         with urlopen(req, timeout=15) as response:
             data = json.loads(response.read())
@@ -141,12 +132,28 @@ def _latest_tank_state(db: sqlite3.Connection) -> tuple[float, float, float | No
     return float(row[0]), float(row[1]), (float(row[2]) if row[2] is not None else None)
 
 
+def _target_sensor_from_config(cfg: dict) -> str:
+    """Map the configured controller tank-temperature entity to its thermal zone.
+
+    dhw_tank_temperature_entity is the authoritative sensor used by the real DHW
+    controller for target/hysteresis decisions. The two thermal entities describe its
+    physical position. Refuse to guess if the configured control sensor is neither.
+    """
+    control = str(cfg.get("dhw_tank_temperature_entity") or "").strip()
+    upper = str(cfg.get("dhw_tank_upper_temperature_entity") or "").strip()
+    lower = str(cfg.get("dhw_tank_lower_temperature_entity") or "").strip()
+    if control and lower and control == lower:
+        return "lower"
+    if control and upper and control == upper:
+        return "upper"
+    raise ValueError(
+        "dhw_tank_temperature_entity must match either dhw_tank_upper_temperature_entity "
+        "or dhw_tank_lower_temperature_entity so the DHW target sensor is unambiguous"
+    )
+
+
 def _latest_draw_event(db: sqlite3.Connection) -> tuple[str, float, float] | None:
-    """Return the newest detected draw so the forecast can react before its normal refresh."""
-    row = db.execute(
-        "SELECT timestamp,estimated_thermal_kwh,confidence FROM dhw_draw_events "
-        "ORDER BY timestamp DESC LIMIT 1"
-    ).fetchone()
+    row = db.execute("SELECT timestamp,estimated_thermal_kwh,confidence FROM dhw_draw_events ORDER BY timestamp DESC LIMIT 1").fetchone()
     if not row:
         return None
     try:
@@ -175,27 +182,17 @@ def _required_simulation_hours(simulation_start: datetime, production_starts: li
         return float(PRODUCTION_HOURS)
     required_end = production_starts[-1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES)
     seconds = max(0.0, (required_end - simulation_start).total_seconds())
-    # build_shadow_forecast truncates to integer step count, so round upward explicitly.
     steps = math.ceil(seconds / (THERMAL_STEP_MINUTES * 60.0))
     return steps * THERMAL_STEP_MINUTES / 60.0
 
 
-def _published_half_hours(
-    slots: list,
-    production_starts: list[datetime],
-    *,
-    step_minutes: int = THERMAL_STEP_MINUTES,
-) -> tuple[list[dict[str, Any]], bool]:
-    """Aggregate exactly the production clock grid from 5-minute thermal slots."""
+def _published_half_hours(slots: list, production_starts: list[datetime], *, step_minutes: int = THERMAL_STEP_MINUTES) -> tuple[list[dict[str, Any]], bool]:
     if not slots or not production_starts:
         return [], False
     by_start = {slot.start.astimezone(timezone.utc): slot for slot in slots}
     rows: list[dict[str, Any]] = []
     for cursor in production_starts:
-        chunk = [
-            by_start.get((cursor + timedelta(minutes=i)).astimezone(timezone.utc))
-            for i in range(0, PRODUCTION_INTERVAL_MINUTES, step_minutes)
-        ]
+        chunk = [by_start.get((cursor + timedelta(minutes=i)).astimezone(timezone.utc)) for i in range(0, PRODUCTION_INTERVAL_MINUTES, step_minutes)]
         if any(slot is None for slot in chunk):
             return rows, False
         complete = [slot for slot in chunk if slot is not None]
@@ -203,11 +200,8 @@ def _published_half_hours(
         dhw_kwh = sum(float(slot.dhw_kwh) for slot in complete)
         draw_kwh = sum(float(slot.draw_kwh) for slot in complete)
         rows.append({
-            "start": cursor.isoformat(),
-            "dhw_active": dhw_kwh > 0.0,
-            "dhw_kwh": round(dhw_kwh, 4),
-            "predicted_draw_kwh": round(draw_kwh, 4),
-            "upper_temperature_c": round(float(endpoint.upper_temp_c), 2),
+            "start": cursor.isoformat(), "dhw_active": dhw_kwh > 0.0, "dhw_kwh": round(dhw_kwh, 4),
+            "predicted_draw_kwh": round(draw_kwh, 4), "upper_temperature_c": round(float(endpoint.upper_temp_c), 2),
             "lower_temperature_c": round(float(endpoint.lower_temp_c), 2),
         })
     return rows, len(rows) == len(production_starts) == PRODUCTION_SLOTS
@@ -215,41 +209,18 @@ def _published_half_hours(
 
 def _publish_not_ready(publisher: Publisher, reason: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
-    publisher.sensor(
-        THERMAL_FORECAST_ENTITY,
-        "unknown",
-        {
-            "friendly_name": "ASHP DHW Thermal Forecast Next 48h",
-            "model": "two_zone_thermal_shadow",
-            "status": "learning",
-            "reason": reason,
-            "forecast": [],
-            "forecast_slots": 0,
-            "horizon_complete": False,
-            "last_updated": now,
-        },
-    )
-    publisher.sensor(
-        COMPARISON_ENTITY,
-        "learning",
-        {
-            "friendly_name": "ASHP DHW Forecast Comparison",
-            "thermal_ready": False,
-            "reason": reason,
-            "last_updated": now,
-        },
-    )
+    publisher.sensor(THERMAL_FORECAST_ENTITY, "unknown", {
+        "friendly_name": "ASHP DHW Thermal Forecast Next 48h", "model": "two_zone_thermal_shadow",
+        "status": "learning", "reason": reason, "forecast": [], "forecast_slots": 0,
+        "horizon_complete": False, "last_updated": now,
+    })
+    publisher.sensor(COMPARISON_ENTITY, "learning", {
+        "friendly_name": "ASHP DHW Forecast Comparison", "thermal_ready": False,
+        "reason": reason, "last_updated": now,
+    })
 
 
-def run_shadow_once(
-    db: sqlite3.Connection,
-    token: str,
-    cfg: dict,
-    timezone_name: str,
-    publisher: Publisher | None = None,
-    *,
-    trigger: str = "scheduled",
-) -> int:
+def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name: str, publisher: Publisher | None = None, *, trigger: str = "scheduled") -> int:
     model = load_shadow_model(db)
     if model is None:
         reason = "cycle_response_model_unavailable"
@@ -265,6 +236,14 @@ def run_shadow_once(
             _publish_not_ready(publisher, reason)
         return 0
     upper, lower, ambient = current
+    try:
+        target_sensor = _target_sensor_from_config(cfg)
+    except ValueError as exc:
+        reason = "dhw_target_sensor_configuration_invalid"
+        LOG.error("DHW shadow forecast not ready: %s", exc)
+        if publisher is not None:
+            _publish_not_ready(publisher, reason)
+        return 0
 
     target = _state_float(token, str(cfg.get("dhw_target_temperature_entity") or ""))
     hysteresis = _state_float(token, str(cfg.get("dhw_hysteresis_entity") or ""))
@@ -285,93 +264,50 @@ def run_shadow_once(
     simulation_hours = _required_simulation_hours(simulation_start, production_starts)
 
     slots = build_shadow_forecast(
-        start=simulation_start,
-        initial_upper_c=upper,
-        initial_lower_c=lower,
-        target_temp_c=target,
-        hysteresis_c=max(0.0, hysteresis),
-        mode=mode,
-        schedule_bits=schedule,
-        model=model,
+        start=simulation_start, initial_upper_c=upper, initial_lower_c=lower,
+        target_temp_c=target, hysteresis_c=max(0.0, hysteresis), mode=mode,
+        schedule_bits=schedule, model=model, target_sensor=target_sensor,
         tank_volume_l=float(cfg.get("dhw_tank_volume_l", 250)),
         ambient_temp_c=ambient if ambient is not None else 20.0,
         minimum_useful_temperature_c=float(cfg.get("dhw_min_usable_temperature_c", 40.0)),
-        horizon_hours=simulation_hours,
-        step_minutes=THERMAL_STEP_MINUTES,
+        horizon_hours=simulation_hours, step_minutes=THERMAL_STEP_MINUTES,
     )
     forecast_ts = datetime.now(timezone.utc)
     legacy, legacy_total = _legacy_forecast(token)
     legacy_available = bool(legacy)
-    legacy_for_validation = legacy if legacy_available else {}
     if not legacy_available:
         LOG.info("DHW legacy comparison deferred: production forecast not yet published")
-
-    checkpoints = persist_shadow_validation(
-        db,
-        slots,
-        forecast_ts=forecast_ts,
-        legacy_dhw_by_start=legacy_for_validation,
-    )
+    checkpoints = persist_shadow_validation(db, slots, forecast_ts=forecast_ts, legacy_dhw_by_start=legacy if legacy_available else {})
     published, horizon_complete = _published_half_hours(slots, production_starts)
-    # Production horizon total deliberately excludes the pre-grid simulation lead-in.
     total_dhw = sum(float(row["dhw_kwh"]) for row in published)
     production_source = (_state_text(token, PRODUCTION_SOURCE_ENTITY) or "legacy").strip().lower()
     if production_source not in {"legacy", "thermal"}:
         production_source = "legacy"
     thermal_authoritative = production_source == "thermal"
     production_start = production_starts[0].isoformat() if production_starts else None
-    production_end = (
-        production_starts[-1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES)
-        if production_starts else None
-    )
+    production_end = production_starts[-1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES) if production_starts else None
 
     if publisher is not None:
         now = forecast_ts.isoformat()
-        publisher.sensor(
-            THERMAL_FORECAST_ENTITY,
-            round(total_dhw, 3),
-            {
-                "friendly_name": "ASHP DHW Thermal Forecast Next 48h",
-                "unit_of_measurement": "kWh",
-                "device_class": "energy",
-                "model": "two_zone_thermal_shadow",
-                "status": "published_shadow",
-                "authoritative": thermal_authoritative,
-                "forecast": published,
-                "forecast_slots": len(published),
-                "expected_forecast_slots": PRODUCTION_SLOTS,
-                "horizon_complete": horizon_complete,
-                "production_start": production_start,
-                "production_end": production_end.isoformat() if production_end else None,
-                "simulation_start": simulation_start.isoformat(),
-                "simulation_slots": len(slots),
-                "start_upper_temperature_c": round(upper, 2),
-                "start_lower_temperature_c": round(lower, 2),
-                "target_temperature_c": round(target, 2),
-                "mode": mode,
-                "trigger": trigger,
-                "last_updated": now,
-            },
-        )
+        publisher.sensor(THERMAL_FORECAST_ENTITY, round(total_dhw, 3), {
+            "friendly_name": "ASHP DHW Thermal Forecast Next 48h", "unit_of_measurement": "kWh", "device_class": "energy",
+            "model": "two_zone_thermal_shadow", "status": "published_shadow", "authoritative": thermal_authoritative,
+            "forecast": published, "forecast_slots": len(published), "expected_forecast_slots": PRODUCTION_SLOTS,
+            "horizon_complete": horizon_complete, "production_start": production_start,
+            "production_end": production_end.isoformat() if production_end else None, "simulation_start": simulation_start.isoformat(),
+            "simulation_slots": len(slots), "start_upper_temperature_c": round(upper, 2), "start_lower_temperature_c": round(lower, 2),
+            "target_temperature_c": round(target, 2), "target_sensor": target_sensor,
+            "target_sensor_entity": str(cfg.get("dhw_tank_temperature_entity") or ""), "mode": mode, "trigger": trigger, "last_updated": now,
+        })
         comparison_attrs = {
-            "friendly_name": "ASHP DHW Forecast Comparison",
-            "unit_of_measurement": "kWh",
-            "thermal_dhw_kwh": round(total_dhw, 3),
-            "thermal_forecast_entity": THERMAL_FORECAST_ENTITY,
-            "legacy_forecast_entity": LEGACY_FORECAST_ENTITY,
-            "production_source_entity": PRODUCTION_SOURCE_ENTITY,
-            "authoritative_forecast": production_source,
-            "thermal_forecast_published": True,
-            "horizon_complete": horizon_complete,
-            "legacy_comparison_available": legacy_available,
-            "trigger": trigger,
-            "last_updated": now,
+            "friendly_name": "ASHP DHW Forecast Comparison", "unit_of_measurement": "kWh", "thermal_dhw_kwh": round(total_dhw, 3),
+            "thermal_forecast_entity": THERMAL_FORECAST_ENTITY, "legacy_forecast_entity": LEGACY_FORECAST_ENTITY,
+            "production_source_entity": PRODUCTION_SOURCE_ENTITY, "authoritative_forecast": production_source,
+            "thermal_forecast_published": True, "horizon_complete": horizon_complete,
+            "legacy_comparison_available": legacy_available, "trigger": trigger, "last_updated": now,
         }
         if legacy_available:
-            comparison_attrs.update({
-                "legacy_dhw_kwh": round(legacy_total, 3),
-                "difference_kwh": round(total_dhw - legacy_total, 3),
-            })
+            comparison_attrs.update({"legacy_dhw_kwh": round(legacy_total, 3), "difference_kwh": round(total_dhw - legacy_total, 3)})
             comparison_state: Any = round(total_dhw - legacy_total, 3)
         else:
             comparison_attrs["reason"] = "legacy_forecast_not_yet_published"
@@ -380,11 +316,11 @@ def run_shadow_once(
 
     LOG.info(
         "DHW shadow forecast published: trigger=%s simulation_slots=%d published_slots=%d horizon_complete=%s "
-        "checkpoints=%d thermal_next_48h=%.2fkWh legacy_snapshot=%s legacy_slots=%d "
-        "production_source=%s production_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC mode=%s",
+        "checkpoints=%d thermal_next_48h=%.2fkWh legacy_snapshot=%s legacy_slots=%d production_source=%s "
+        "production_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC target_sensor=%s mode=%s",
         trigger, len(slots), len(published), horizon_complete, checkpoints, total_dhw,
-        f"{legacy_total:.2f}kWh" if legacy_available else "deferred", len(legacy),
-        production_source, production_start, upper, lower, target, mode,
+        f"{legacy_total:.2f}kWh" if legacy_available else "deferred", len(legacy), production_source,
+        production_start, upper, lower, target, target_sensor, mode,
     )
     return checkpoints
 
@@ -397,43 +333,30 @@ def main() -> None:
         raise RuntimeError("SUPERVISOR_TOKEN is not available")
     ha_cfg = _ha_json(token, "/config") or {}
     timezone_name = str(ha_cfg.get("time_zone") or "UTC")
-
     db = sqlite3.connect(DB_PATH, timeout=30)
     ensure_dhw_model_schema(db)
     publisher = Publisher(token)
     update_minutes = max(5, int(cfg.get("update_minutes", 15)))
     update_seconds = update_minutes * 60.0
-
-    # Ignore historical draws at process start. The mandatory startup forecast below already
-    # incorporates the newest valid tank sample; only draws recorded afterwards need to pre-empt
-    # the normal forecast cadence.
     initial_draw = _latest_draw_event(db)
     last_draw_timestamp = initial_draw[0] if initial_draw is not None else None
     next_scheduled_run = 0.0
-
     while True:
         now_monotonic = time.monotonic()
         trigger: str | None = None
-
         latest_draw = _latest_draw_event(db)
         if latest_draw is not None and latest_draw[0] != last_draw_timestamp:
             last_draw_timestamp = latest_draw[0]
             trigger = "dhw_draw"
-            LOG.info(
-                "DHW draw detected; refreshing thermal forecast immediately: "
-                "timestamp=%s estimated=%.3fkWh confidence=%.0f%%",
-                latest_draw[0], latest_draw[1], latest_draw[2] * 100.0,
-            )
+            LOG.info("DHW draw detected; refreshing thermal forecast immediately: timestamp=%s estimated=%.3fkWh confidence=%.0f%%", latest_draw[0], latest_draw[1], latest_draw[2] * 100.0)
         elif now_monotonic >= next_scheduled_run:
             trigger = "startup" if next_scheduled_run == 0.0 else "scheduled"
-
         if trigger is not None:
             try:
                 run_shadow_once(db, token, cfg, timezone_name, publisher, trigger=trigger)
             except Exception:
                 LOG.exception("DHW shadow forecast failed")
             next_scheduled_run = time.monotonic() + update_seconds
-
         sleep_for = min(DRAW_REFRESH_POLL_SECONDS, max(0.1, next_scheduled_run - time.monotonic()))
         time.sleep(sleep_for)
 
