@@ -153,3 +153,39 @@ def test_validation_skips_partial_start_and_uses_next_complete_clock_half_hour()
     assert written == 1
     row = db.execute("SELECT target_ts,legacy_dhw_kwh FROM dhw_forecast_validation").fetchone()
     assert row == ((complete_start + timedelta(minutes=30)).isoformat(), 0.7)
+
+
+def test_loaded_efficiency_curve_is_used_by_production_model():
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE dhw_model_parameters(name TEXT,value REAL)")
+    db.execute("CREATE TABLE dhw_demand_profile(day_type TEXT,slot_index INTEGER,expected_kwh REAL)")
+    values = {
+        "dhw_cycle_intercept_kwh": 0.2, "dhw_cycle_upper_kwh_per_c": 0.04,
+        "dhw_cycle_lower_kwh_per_c": 0.08, "dhw_cycle_power_kw": 2.0,
+        "dhw_cycle_upper_c_per_kwh": 4.0, "dhw_cycle_lower_c_per_kwh": 4.0,
+        "dhw_efficiency_multiplier_325": 0.8,
+        "dhw_efficiency_multiplier_525": 1.2,
+    }
+    db.executemany("INSERT INTO dhw_model_parameters VALUES(?,?)", values.items())
+    loaded = mod.load_shadow_model(db)
+    assert loaded is not None
+    assert loaded.efficiency_curve == ((32.5, 0.8), (52.5, 1.2))
+    assert loaded.efficiency_multiplier(32.5) == 0.8
+    assert loaded.efficiency_multiplier(52.5) == 1.2
+
+
+def test_same_temperature_lift_costs_more_electricity_at_high_tank_temperature():
+    model = mod.ShadowModel(
+        intercept_kwh=0.0, upper_kwh_per_c=0.0, lower_kwh_per_c=0.0,
+        typical_power_kw=3.0, upper_c_per_kwh=5.0, lower_c_per_kwh=5.0,
+        upper_loss_w_per_k=0.0, lower_loss_w_per_k=0.0, coupling_w_per_k=0.0, demand={},
+        efficiency_curve=((30.0, 0.8), (40.0, 0.8), (50.0, 1.2), (60.0, 1.2)),
+    )
+    start = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    low = mod.build_shadow_forecast(start=start, initial_upper_c=30.0, initial_lower_c=30.0, target_temp_c=35.0, hysteresis_c=2.0, mode="on", schedule_bits={}, model=model, target_sensor="lower", horizon_hours=1)
+    high = mod.build_shadow_forecast(start=start, initial_upper_c=50.0, initial_lower_c=50.0, target_temp_c=55.0, hysteresis_c=2.0, mode="on", schedule_bits={}, model=model, target_sensor="lower", horizon_hours=1)
+    low_kwh = sum(slot.dhw_kwh for slot in low)
+    high_kwh = sum(slot.dhw_kwh for slot in high)
+    assert low_kwh < high_kwh
+    assert low_kwh < 1.0
+    assert high_kwh > 1.0
