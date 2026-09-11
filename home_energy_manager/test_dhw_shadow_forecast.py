@@ -47,73 +47,83 @@ def validation_db():
 
 def test_shadow_forecast_always_covers_full_48_hours():
     result = mod.build_shadow_forecast(
-        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
-        initial_upper_c=50.0,
-        initial_lower_c=45.0,
-        target_temp_c=50.0,
-        hysteresis_c=5.0,
-        mode="off",
-        schedule_bits={},
-        model=base_model(),
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=50.0,
+        initial_lower_c=45.0, target_temp_c=50.0, hysteresis_c=5.0, mode="off",
+        schedule_bits={}, model=base_model(),
     )
     assert len(result) == 576
 
 
 def test_hot_tank_does_not_trigger_unnecessary_cycle():
     result = mod.build_shadow_forecast(
-        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
-        initial_upper_c=50.0,
-        initial_lower_c=48.0,
-        target_temp_c=50.0,
-        hysteresis_c=5.0,
-        mode="on",
-        schedule_bits={},
-        model=base_model(),
-        horizon_hours=2,
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=50.0,
+        initial_lower_c=48.0, target_temp_c=50.0, hysteresis_c=5.0, mode="on",
+        schedule_bits={}, model=base_model(), horizon_hours=2,
     )
     assert sum(slot.dhw_kwh for slot in result) == 0.0
 
 
-def test_cold_tank_triggers_cycle_when_mode_on():
+def test_cold_tank_heats_until_target_in_mode_on():
     result = mod.build_shadow_forecast(
-        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
-        initial_upper_c=40.0,
-        initial_lower_c=30.0,
-        target_temp_c=50.0,
-        hysteresis_c=5.0,
-        mode="on",
-        schedule_bits={},
-        model=base_model(),
-        horizon_hours=2,
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=40.0,
+        initial_lower_c=30.0, target_temp_c=50.0, hysteresis_c=5.0, mode="on",
+        schedule_bits={}, model=base_model(), horizon_hours=2,
     )
-    assert sum(slot.dhw_kwh for slot in result) > 0.0
-    assert result[-1].upper_temp_c > 40.0
-    assert result[-1].lower_temp_c > 30.0
+    heated = [slot for slot in result if slot.dhw_kwh > 0.0]
+    assert heated
+    assert any(abs(slot.upper_temp_c - 50.0) < 1e-5 for slot in heated)
+
+
+def test_cycle_energy_regression_cannot_stop_heating_below_target():
+    # Regression deliberately predicts only 0.01 kWh. Production must ignore that cap
+    # and continue heating until the simulated upper sensor reaches target.
+    model = mod.ShadowModel(
+        intercept_kwh=0.01, upper_kwh_per_c=0.0, lower_kwh_per_c=0.0,
+        typical_power_kw=2.0, upper_c_per_kwh=4.0, lower_c_per_kwh=4.0,
+        upper_loss_w_per_k=0.0, lower_loss_w_per_k=0.0, coupling_w_per_k=0.0, demand={},
+    )
+    result = mod.build_shadow_forecast(
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=40.0,
+        initial_lower_c=40.0, target_temp_c=50.0, hysteresis_c=5.0, mode="on",
+        schedule_bits={}, model=model, horizon_hours=2,
+    )
+    used = sum(slot.dhw_kwh for slot in result)
+    assert used > model.cycle_energy(40.0, 40.0, 50.0)
+    assert any(abs(slot.upper_temp_c - 50.0) < 1e-5 for slot in result)
+
+
+def test_target_seeking_cycle_uses_partial_final_step():
+    model = mod.ShadowModel(
+        intercept_kwh=0.0, upper_kwh_per_c=0.0, lower_kwh_per_c=0.0,
+        typical_power_kw=3.0, upper_c_per_kwh=5.0, lower_c_per_kwh=5.0,
+        upper_loss_w_per_k=0.0, lower_loss_w_per_k=0.0, coupling_w_per_k=0.0, demand={},
+    )
+    result = mod.build_shadow_forecast(
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=49.0,
+        initial_lower_c=49.0, target_temp_c=50.0, hysteresis_c=2.0, mode="on",
+        schedule_bits={}, model=model, horizon_hours=1,
+    )
+    # Hysteresis means 49C should not start a cycle when target-hysteresis is 48C.
+    assert sum(slot.dhw_kwh for slot in result) == 0.0
+    result = mod.build_shadow_forecast(
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=47.0,
+        initial_lower_c=47.0, target_temp_c=50.0, hysteresis_c=2.0, mode="on",
+        schedule_bits={}, model=model, horizon_hours=1,
+    )
+    assert abs(sum(slot.dhw_kwh for slot in result if slot.heating) - 0.6) < 1e-4
+    assert any(abs(slot.upper_temp_c - 50.0) < 1e-5 for slot in result)
 
 
 def test_shadow_forecast_never_leaves_lower_zone_above_upper_after_heating():
     aggressive_lower_response = mod.ShadowModel(
-        intercept_kwh=0.2,
-        upper_kwh_per_c=0.04,
-        lower_kwh_per_c=0.08,
-        typical_power_kw=3.0,
-        upper_c_per_kwh=1.0,
-        lower_c_per_kwh=12.0,
-        upper_loss_w_per_k=0.0,
-        lower_loss_w_per_k=0.0,
-        coupling_w_per_k=0.0,
-        demand={},
+        intercept_kwh=0.2, upper_kwh_per_c=0.04, lower_kwh_per_c=0.08,
+        typical_power_kw=3.0, upper_c_per_kwh=1.0, lower_c_per_kwh=12.0,
+        upper_loss_w_per_k=0.0, lower_loss_w_per_k=0.0, coupling_w_per_k=0.0, demand={},
     )
     result = mod.build_shadow_forecast(
-        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
-        initial_upper_c=44.0,
-        initial_lower_c=43.0,
-        target_temp_c=50.0,
-        hysteresis_c=5.0,
-        mode="on",
-        schedule_bits={},
-        model=aggressive_lower_response,
-        horizon_hours=1,
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=44.0,
+        initial_lower_c=43.0, target_temp_c=50.0, hysteresis_c=5.0, mode="on",
+        schedule_bits={}, model=aggressive_lower_response, horizon_hours=1,
     )
     assert any(slot.dhw_kwh > 0 for slot in result)
     assert all(slot.lower_temp_c <= slot.upper_temp_c + 1e-9 for slot in result)
@@ -122,34 +132,20 @@ def test_shadow_forecast_never_leaves_lower_zone_above_upper_after_heating():
 def test_schedule_mode_only_heats_in_enabled_half_hour():
     schedule = {"wednesday_pm": 1}
     result = mod.build_shadow_forecast(
-        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
-        initial_upper_c=40.0,
-        initial_lower_c=30.0,
-        target_temp_c=50.0,
-        hysteresis_c=5.0,
-        mode="schedule",
-        schedule_bits=schedule,
-        model=base_model(),
-        horizon_hours=1,
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=40.0,
+        initial_lower_c=30.0, target_temp_c=50.0, hysteresis_c=5.0, mode="schedule",
+        schedule_bits=schedule, model=base_model(), horizon_hours=1,
     )
-    first_half = sum(slot.dhw_kwh for slot in result[:6])
-    second_half = sum(slot.dhw_kwh for slot in result[6:])
-    assert first_half > 0.0
-    assert second_half == 0.0
+    assert sum(slot.dhw_kwh for slot in result[:6]) > 0.0
+    assert sum(slot.dhw_kwh for slot in result[6:]) == 0.0
 
 
 def test_expected_draw_is_distributed_across_half_hour():
     demand = {("weekday", 24): 1.2}
     result = mod.build_shadow_forecast(
-        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc),
-        initial_upper_c=50.0,
-        initial_lower_c=45.0,
-        target_temp_c=50.0,
-        hysteresis_c=5.0,
-        mode="off",
-        schedule_bits={},
-        model=base_model(demand),
-        horizon_hours=0.5,
+        start=datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc), initial_upper_c=50.0,
+        initial_lower_c=45.0, target_temp_c=50.0, hysteresis_c=5.0, mode="off",
+        schedule_bits={}, model=base_model(demand), horizon_hours=0.5,
     )
     assert abs(sum(slot.draw_kwh for slot in result) - 1.2) < 1e-9
 
@@ -160,12 +156,9 @@ def test_shadow_model_load_requires_cycle_learning_but_can_use_default_passive_v
     db.execute("CREATE TABLE dhw_demand_profile(day_type TEXT,slot_index INTEGER,expected_kwh REAL)")
     assert mod.load_shadow_model(db) is None
     values = {
-        "dhw_cycle_intercept_kwh": 0.2,
-        "dhw_cycle_upper_kwh_per_c": 0.04,
-        "dhw_cycle_lower_kwh_per_c": 0.08,
-        "dhw_cycle_power_kw": 2.0,
-        "dhw_cycle_upper_c_per_kwh": 4.0,
-        "dhw_cycle_lower_c_per_kwh": 6.0,
+        "dhw_cycle_intercept_kwh": 0.2, "dhw_cycle_upper_kwh_per_c": 0.04,
+        "dhw_cycle_lower_kwh_per_c": 0.08, "dhw_cycle_power_kw": 2.0,
+        "dhw_cycle_upper_c_per_kwh": 4.0, "dhw_cycle_lower_c_per_kwh": 6.0,
     }
     db.executemany("INSERT INTO dhw_model_parameters VALUES(?,?)", values.items())
     loaded = mod.load_shadow_model(db)
@@ -177,21 +170,10 @@ def test_shadow_model_load_requires_cycle_learning_but_can_use_default_passive_v
 def test_validation_persists_matching_legacy_half_hour_value():
     db = validation_db()
     start = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
-    slots = [
-        mod.ShadowSlot(start + timedelta(minutes=5 * idx), 50.0, 42.0, 0.0, 0.1, True)
-        for idx in range(6)
-    ]
-    legacy = {start.isoformat(): 0.8}
-    written = mod.persist_shadow_validation(
-        db,
-        slots,
-        forecast_ts=start - timedelta(minutes=1),
-        legacy_dhw_by_start=legacy,
-    )
+    slots = [mod.ShadowSlot(start + timedelta(minutes=5 * idx), 50.0, 42.0, 0.0, 0.1, True) for idx in range(6)]
+    written = mod.persist_shadow_validation(db, slots, forecast_ts=start - timedelta(minutes=1), legacy_dhw_by_start={start.isoformat(): 0.8})
     assert written == 1
-    row = db.execute(
-        "SELECT target_ts,predicted_dhw_kwh,legacy_dhw_kwh FROM dhw_forecast_validation"
-    ).fetchone()
+    row = db.execute("SELECT target_ts,predicted_dhw_kwh,legacy_dhw_kwh FROM dhw_forecast_validation").fetchone()
     assert row[0] == (start + timedelta(minutes=30)).isoformat()
     assert abs(row[1] - 0.6) < 1e-9
     assert row[2] == 0.8
@@ -200,20 +182,9 @@ def test_validation_persists_matching_legacy_half_hour_value():
 def test_validation_skips_partial_start_and_uses_next_complete_clock_half_hour():
     db = validation_db()
     start = datetime(2026, 9, 9, 13, 35, tzinfo=timezone.utc)
-    slots = [
-        mod.ShadowSlot(start + timedelta(minutes=5 * idx), 50.0, 42.0, 0.0, 0.1, True)
-        for idx in range(11)
-    ]
+    slots = [mod.ShadowSlot(start + timedelta(minutes=5 * idx), 50.0, 42.0, 0.0, 0.1, True) for idx in range(11)]
     complete_start = datetime(2026, 9, 9, 14, 0, tzinfo=timezone.utc)
-    legacy = {complete_start.isoformat(): 0.7}
-    written = mod.persist_shadow_validation(
-        db,
-        slots,
-        forecast_ts=start - timedelta(minutes=1),
-        legacy_dhw_by_start=legacy,
-    )
+    written = mod.persist_shadow_validation(db, slots, forecast_ts=start - timedelta(minutes=1), legacy_dhw_by_start={complete_start.isoformat(): 0.7})
     assert written == 1
-    row = db.execute(
-        "SELECT target_ts,legacy_dhw_kwh FROM dhw_forecast_validation"
-    ).fetchone()
+    row = db.execute("SELECT target_ts,legacy_dhw_kwh FROM dhw_forecast_validation").fetchone()
     assert row == ((complete_start + timedelta(minutes=30)).isoformat(), 0.7)
