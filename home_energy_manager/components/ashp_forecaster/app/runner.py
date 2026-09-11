@@ -76,12 +76,9 @@ def main() -> None:
     children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "dhw_collector.py")], env=passive_env
     ))
-    # One-shot startup learning runs alongside the collector. It waits for the collector's
-    # schema/bootstrap data, then exits after a learning pass. This removes the restart-to-
-    # hourly-pass delay while keeping the collector as owner of ongoing hourly retraining.
-    startup_learning = subprocess.Popen(
+    children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "dhw_startup_learning.py")], env=passive_env
-    )
+    ))
     children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "dhw_shadow_runner.py")], env=passive_env
     ))
@@ -93,10 +90,6 @@ def main() -> None:
     ))
 
     while True:
-        startup_rc = startup_learning.poll()
-        if startup_rc not in (None, 0):
-            print(f"[ashp_forecaster] startup DHW learner exited with code {startup_rc}", flush=True)
-            stop_all()
         for proc in children:
             rc = proc.poll()
             if rc is not None:
