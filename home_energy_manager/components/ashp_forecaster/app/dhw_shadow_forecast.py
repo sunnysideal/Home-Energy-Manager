@@ -1,8 +1,9 @@
-"""48-hour DHW thermal forecast used for validation and guarded production promotion.
+"""48-hour DHW thermal forecast used for validation and production forecasting.
 
-The thermal forecast remains independently validated. Production selection is handled by
-``dhw_production_selector`` and falls back to legacy unless all promotion and freshness
-criteria pass.
+The thermal model is authoritative for DHW heating energy.  A scheduled/on-mode
+heating cycle is simulated until the configured target temperature is reached; the
+required electrical energy is therefore an output of the simulated tank state rather
+than a pre-computed historical cycle-energy cap.
 """
 from __future__ import annotations
 
@@ -29,6 +30,11 @@ class ShadowModel:
     demand: dict[tuple[str, int], float]
 
     def cycle_energy(self, upper_temp_c: float, lower_temp_c: float, target_temp_c: float) -> float:
+        """Historical comparator only; production heating is target-seeking.
+
+        The learned cycle regression remains available for diagnostics/validation, but
+        it must never cap a simulated production heating cycle.
+        """
         upper_deficit = max(target_temp_c - upper_temp_c, 0.0)
         lower_deficit = max(target_temp_c - lower_temp_c, 0.0)
         return max(
@@ -104,6 +110,55 @@ def _expected_draw_step(model: ShadowModel, local_dt: datetime, step_minutes: in
     return half_hour_expected * step_minutes / 30.0
 
 
+def _apply_learned_heating(
+    state: TankState,
+    model: ShadowModel,
+    params: TankParameters,
+    electrical_kwh: float,
+) -> TankState:
+    """Apply the learned sensor response for an electrical heating input."""
+    if electrical_kwh <= 0.0:
+        return state
+    heated = TankState(
+        upper_temp_c=state.upper_temp_c + electrical_kwh * model.upper_c_per_kwh,
+        lower_temp_c=state.lower_temp_c + electrical_kwh * model.lower_c_per_kwh,
+    )
+    return stabilise_stratification(heated, params)
+
+
+def _energy_to_target_this_step(
+    state: TankState,
+    model: ShadowModel,
+    params: TankParameters,
+    target_temp_c: float,
+    max_step_kwh: float,
+) -> tuple[float, TankState]:
+    """Return the smallest electrical input this step that reaches the target.
+
+    If the target cannot be reached within the step's learned power limit, use the full
+    step energy.  A binary solve is used because stabilisation can mix the two zones and
+    therefore makes the effective upper-temperature response piecewise linear.
+    """
+    if state.upper_temp_c >= target_temp_c:
+        return 0.0, state
+    full_state = _apply_learned_heating(state, model, params, max_step_kwh)
+    if full_state.upper_temp_c < target_temp_c:
+        return max_step_kwh, full_state
+
+    lo = 0.0
+    hi = max_step_kwh
+    for _ in range(32):
+        mid = (lo + hi) / 2.0
+        candidate = _apply_learned_heating(state, model, params, mid)
+        if candidate.upper_temp_c >= target_temp_c:
+            hi = mid
+        else:
+            lo = mid
+    energy = hi
+    reached = _apply_learned_heating(state, model, params, energy)
+    return energy, TankState(target_temp_c, min(reached.lower_temp_c, target_temp_c))
+
+
 def build_shadow_forecast(
     *,
     start: datetime,
@@ -124,6 +179,10 @@ def build_shadow_forecast(
         raise ValueError("start must be timezone-aware")
     if horizon_hours <= 0 or step_minutes <= 0:
         raise ValueError("horizon and step must be positive")
+    if model.typical_power_kw <= 0.0:
+        raise ValueError("learned DHW heating power must be positive")
+    if model.upper_c_per_kwh <= 0.0:
+        raise ValueError("learned DHW upper temperature response must be positive")
 
     params = TankParameters(
         volume_l=tank_volume_l,
@@ -133,10 +192,11 @@ def build_shadow_forecast(
         minimum_useful_temperature_c=minimum_useful_temperature_c,
     )
     state = stabilise_stratification(TankState(initial_upper_c, initial_lower_c), params)
-    remaining_cycle_kwh = 0.0
+    heating_cycle_active = False
     out: list[ShadowSlot] = []
     steps = int(horizon_hours * 60 / step_minutes)
     mode = mode.strip().lower()
+    max_step_kwh = model.typical_power_kw * step_minutes / 60.0
 
     for index in range(steps):
         local_dt = start + timedelta(minutes=index * step_minutes)
@@ -151,23 +211,25 @@ def build_shadow_forecast(
         opportunity = mode == "on" or (mode == "schedule" and schedule_enabled(schedule_bits, local_dt))
         if mode == "off":
             opportunity = False
-        if remaining_cycle_kwh <= 1e-9 and opportunity and state.upper_temp_c < target_temp_c - hysteresis_c:
-            remaining_cycle_kwh = model.cycle_energy(state.upper_temp_c, state.lower_temp_c, target_temp_c)
+
+        if not opportunity:
+            # A schedule window is an actual heating opportunity.  Do not invent heating
+            # outside it; the next enabled window may start a fresh target-seeking cycle.
+            heating_cycle_active = False
+        elif not heating_cycle_active and state.upper_temp_c < target_temp_c - hysteresis_c:
+            heating_cycle_active = True
 
         electrical_step = 0.0
-        if remaining_cycle_kwh > 0.0 and opportunity:
-            electrical_step = min(remaining_cycle_kwh, model.typical_power_kw * step_minutes / 60.0)
-            remaining_cycle_kwh -= electrical_step
-            state = TankState(
-                upper_temp_c=min(target_temp_c + 5.0, state.upper_temp_c + electrical_step * model.upper_c_per_kwh),
-                lower_temp_c=min(target_temp_c + 5.0, state.lower_temp_c + electrical_step * model.lower_c_per_kwh),
+        if heating_cycle_active and opportunity:
+            electrical_step, state = _energy_to_target_this_step(
+                state,
+                model,
+                params,
+                target_temp_c,
+                max_step_kwh,
             )
-            # Learned sensor response can put the lower effective zone above the upper.
-            # Such an inversion is buoyantly unstable in a vertical cylinder, so collapse
-            # it immediately to an energy-preserving mixed state before the next step.
-            state = stabilise_stratification(state, params)
-            if state.upper_temp_c >= target_temp_c:
-                remaining_cycle_kwh = 0.0
+            if state.upper_temp_c >= target_temp_c - 1e-6:
+                heating_cycle_active = False
 
         out.append(
             ShadowSlot(
