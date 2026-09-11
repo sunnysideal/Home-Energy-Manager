@@ -1,9 +1,9 @@
 """48-hour DHW thermal forecast used for validation and production forecasting.
 
-The thermal model is authoritative for DHW heating energy.  A scheduled/on-mode
-heating cycle is simulated until the configured target temperature is reached; the
-required electrical energy is therefore an output of the simulated tank state rather
-than a pre-computed historical cycle-energy cap.
+The thermal model is authoritative for DHW heating energy. A scheduled/on-mode
+heating cycle is simulated until the configured control sensor reaches the configured
+target temperature; the required electrical energy is therefore an output of the
+simulated tank state rather than a pre-computed historical cycle-energy cap.
 """
 from __future__ import annotations
 
@@ -126,23 +126,32 @@ def _apply_learned_heating(
     return stabilise_stratification(heated, params)
 
 
+def _control_temperature(state: TankState, target_sensor: str) -> float:
+    if target_sensor == "upper":
+        return state.upper_temp_c
+    if target_sensor == "lower":
+        return state.lower_temp_c
+    raise ValueError("target_sensor must be 'upper' or 'lower'")
+
+
 def _energy_to_target_this_step(
     state: TankState,
     model: ShadowModel,
     params: TankParameters,
     target_temp_c: float,
     max_step_kwh: float,
+    target_sensor: str,
 ) -> tuple[float, TankState]:
-    """Return the smallest electrical input this step that reaches the target.
+    """Return the smallest electrical input this step that makes the control sensor hit target.
 
     If the target cannot be reached within the step's learned power limit, use the full
-    step energy.  A binary solve is used because stabilisation can mix the two zones and
-    therefore makes the effective upper-temperature response piecewise linear.
+    step energy. A binary solve is used because stabilisation can mix the two zones and
+    therefore makes the effective sensor response piecewise linear.
     """
-    if state.upper_temp_c >= target_temp_c:
+    if _control_temperature(state, target_sensor) >= target_temp_c:
         return 0.0, state
     full_state = _apply_learned_heating(state, model, params, max_step_kwh)
-    if full_state.upper_temp_c < target_temp_c:
+    if _control_temperature(full_state, target_sensor) < target_temp_c:
         return max_step_kwh, full_state
 
     lo = 0.0
@@ -150,13 +159,13 @@ def _energy_to_target_this_step(
     for _ in range(32):
         mid = (lo + hi) / 2.0
         candidate = _apply_learned_heating(state, model, params, mid)
-        if candidate.upper_temp_c >= target_temp_c:
+        if _control_temperature(candidate, target_sensor) >= target_temp_c:
             hi = mid
         else:
             lo = mid
     energy = hi
     reached = _apply_learned_heating(state, model, params, energy)
-    return energy, TankState(target_temp_c, min(reached.lower_temp_c, target_temp_c))
+    return energy, reached
 
 
 def build_shadow_forecast(
@@ -169,6 +178,7 @@ def build_shadow_forecast(
     mode: str,
     schedule_bits: dict[str, int],
     model: ShadowModel,
+    target_sensor: str = "upper",
     tank_volume_l: float = 250.0,
     ambient_temp_c: float = 20.0,
     minimum_useful_temperature_c: float = 40.0,
@@ -179,10 +189,13 @@ def build_shadow_forecast(
         raise ValueError("start must be timezone-aware")
     if horizon_hours <= 0 or step_minutes <= 0:
         raise ValueError("horizon and step must be positive")
+    if target_sensor not in {"upper", "lower"}:
+        raise ValueError("target_sensor must be 'upper' or 'lower'")
     if model.typical_power_kw <= 0.0:
         raise ValueError("learned DHW heating power must be positive")
-    if model.upper_c_per_kwh <= 0.0:
-        raise ValueError("learned DHW upper temperature response must be positive")
+    control_response = model.upper_c_per_kwh if target_sensor == "upper" else model.lower_c_per_kwh
+    if control_response <= 0.0:
+        raise ValueError(f"learned DHW {target_sensor} temperature response must be positive")
 
     params = TankParameters(
         volume_l=tank_volume_l,
@@ -212,11 +225,12 @@ def build_shadow_forecast(
         if mode == "off":
             opportunity = False
 
+        control_temp = _control_temperature(state, target_sensor)
         if not opportunity:
-            # A schedule window is an actual heating opportunity.  Do not invent heating
+            # A schedule window is an actual heating opportunity. Do not invent heating
             # outside it; the next enabled window may start a fresh target-seeking cycle.
             heating_cycle_active = False
-        elif not heating_cycle_active and state.upper_temp_c < target_temp_c - hysteresis_c:
+        elif not heating_cycle_active and control_temp < target_temp_c - hysteresis_c:
             heating_cycle_active = True
 
         electrical_step = 0.0
@@ -227,8 +241,9 @@ def build_shadow_forecast(
                 params,
                 target_temp_c,
                 max_step_kwh,
+                target_sensor,
             )
-            if state.upper_temp_c >= target_temp_c - 1e-6:
+            if _control_temperature(state, target_sensor) >= target_temp_c - 1e-6:
                 heating_cycle_active = False
 
         out.append(
