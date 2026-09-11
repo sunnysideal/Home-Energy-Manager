@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent
 APP = ROOT / "components" / "ashp_forecaster" / "app"
 
@@ -83,12 +85,13 @@ def test_dhw_selector_waits_for_fresh_thermal_horizon(monkeypatch):
     def fake_select(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            return runner.SelectionResult(legacy_values, "legacy", "thermal_forecast_incomplete")
-        return runner.SelectionResult(thermal_values, "thermal", "thermal_trial_active")
+            raise RuntimeError("DHW thermal forecast unavailable (thermal_forecast_incomplete); legacy fallback is disabled")
+        return runner.SelectionResult(thermal_values, "thermal", "thermal_authoritative")
 
-    monotonic_values = iter([0.0, 0.0, 0.1])
+    monotonic_values = iter([0.0, 0.0, 0.01])
     monkeypatch.setattr(runner, "select_dhw_forecast", fake_select)
-    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values, 0.1))
+    monkeypatch.setattr(runner, "THERMAL_REFRESH_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values, 0.01))
     monkeypatch.setattr(runner.time, "sleep", lambda _: None)
 
     cfg = SimpleNamespace(update_minutes=15)
@@ -100,27 +103,30 @@ def test_dhw_selector_waits_for_fresh_thermal_horizon(monkeypatch):
 
     assert len(calls) == 2
     assert result.source == "thermal"
+    assert result.reason == "thermal_authoritative"
     assert result.values == thermal_values
 
 
-def test_dhw_selector_does_not_wait_for_non_transient_fallback(monkeypatch):
+def test_dhw_selector_never_returns_legacy_when_thermal_remains_unavailable(monkeypatch):
     calls = []
     legacy_values = [0.0] * 96
 
     def fake_select(*args, **kwargs):
         calls.append(1)
-        return runner.SelectionResult(legacy_values, "legacy", "trial_not_ready")
+        raise RuntimeError("DHW thermal model is not structurally ready; legacy fallback is disabled")
 
+    monotonic_values = iter([0.0, 0.0, 0.1])
     monkeypatch.setattr(runner, "select_dhw_forecast", fake_select)
-    monkeypatch.setattr(runner.time, "sleep", lambda _: (_ for _ in ()).throw(AssertionError("unexpected sleep")))
+    monkeypatch.setattr(runner, "THERMAL_REFRESH_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(monotonic_values, 0.1))
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
 
     cfg = SimpleNamespace(update_minutes=15)
     client = SimpleNamespace(get_state=lambda entity_id: {})
     store = SimpleNamespace(db=object())
     starts = [datetime.now(ZoneInfo("Europe/London")) + timedelta(minutes=30 * i) for i in range(96)]
 
-    result = runner._select_dhw_with_refresh_wait(client, store, cfg, starts, legacy_values)
+    with pytest.raises(RuntimeError, match="no fallback is permitted"):
+        runner._select_dhw_with_refresh_wait(client, store, cfg, starts, legacy_values)
 
-    assert len(calls) == 1
-    assert result.source == "legacy"
-    assert result.reason == "trial_not_ready"
+    assert len(calls) >= 1
