@@ -8,6 +8,14 @@ from typing import Any, Callable, Iterable
 
 DEFAULT_MATCH_TOLERANCE_MINUTES = 15
 DEFAULT_BACKFILL_LOOKBACK_HOURS = 48
+DEFAULT_SCORE_MAX_HORIZON_HOURS = 48.0
+HORIZON_BUCKETS = (
+    ("0_6h", 0.0, 6.0),
+    ("6_12h", 6.0, 12.0),
+    ("12_24h", 12.0, 24.0),
+    ("24_36h", 24.0, 36.0),
+    ("36_48h", 36.0, 48.000001),
+)
 
 
 def _parse_dt(value: str) -> datetime:
@@ -62,8 +70,6 @@ def record_forecast_snapshot(
         if target.tzinfo is None or not math.isfinite(float(temperature)):
             continue
         horizon_hours = (target - issued_at).total_seconds() / 3600.0
-        # Do not store already-expired provider points. They are not useful for
-        # forward forecast verification and can produce misleading negative horizons.
         if horizon_hours < 0:
             continue
         rows.append((issued, _iso(target), horizon_hours, float(temperature), source_entity))
@@ -181,3 +187,71 @@ def complete_pending_actuals(
             completed += db.total_changes - before
 
     return completed, unmatched
+
+
+def _score_errors(errors: list[float]) -> dict[str, float | int | None]:
+    clean = [float(value) for value in errors if math.isfinite(float(value))]
+    if not clean:
+        return {"samples": 0, "mean_bias_c": None, "mae_c": None, "rmse_c": None}
+    count = len(clean)
+    mean_bias = sum(clean) / count
+    mae = sum(abs(value) for value in clean) / count
+    rmse = math.sqrt(sum(value * value for value in clean) / count)
+    return {
+        "samples": count,
+        "mean_bias_c": mean_bias,
+        "mae_c": mae,
+        "rmse_c": rmse,
+    }
+
+
+def raw_forecast_scores(
+    db: sqlite3.Connection,
+    *,
+    max_horizon_hours: float = DEFAULT_SCORE_MAX_HORIZON_HOURS,
+) -> dict[str, Any]:
+    """Score completed raw provider forecasts without applying any calibration.
+
+    error_c is defined as actual - forecast, so a negative mean bias means the
+    provider forecast was warmer than the EcoMAX outdoor sensor on average.
+    Only genuine provider points at horizons from 0 through max_horizon_hours are
+    scored. Synthetic horizon-extension points are never stored by Phase 1.
+    """
+    ensure_schema(db)
+    rows = db.execute(
+        """
+        SELECT horizon_hours, error_c
+        FROM weather_forecast_observations
+        WHERE actual_temperature_c IS NOT NULL
+          AND error_c IS NOT NULL
+          AND horizon_hours >= 0
+          AND horizon_hours <= ?
+        ORDER BY issued_at, target_ts
+        """,
+        (float(max_horizon_hours),),
+    ).fetchall()
+
+    pairs = [
+        (float(horizon), float(error))
+        for horizon, error in rows
+        if math.isfinite(float(horizon)) and math.isfinite(float(error))
+    ]
+    overall = _score_errors([error for _, error in pairs])
+    buckets: dict[str, dict[str, float | int | None]] = {}
+    for name, lower, upper in HORIZON_BUCKETS:
+        if lower >= max_horizon_hours:
+            bucket_errors: list[float] = []
+        else:
+            effective_upper = min(upper, max_horizon_hours + 0.000001)
+            bucket_errors = [
+                error
+                for horizon, error in pairs
+                if horizon >= lower and horizon < effective_upper
+            ]
+        buckets[name] = _score_errors(bucket_errors)
+
+    return {
+        "max_horizon_hours": float(max_horizon_hours),
+        "overall": overall,
+        "horizons": buckets,
+    }
