@@ -73,7 +73,7 @@ async def coordinate_minimise_offpeak(controller, state, plan, window, fallback=
     else:
         fallback_rate = max_charge if max_charge is not None else capacity * 250.0
         rate = int(round(as_float(charge.get('rate_w')) or fallback_rate))
-        charge_start = control_window['start'].replace(second=0, microsecond=0)
+        charge_start = control_window['end'].replace(second=0, microsecond=0)
         charge_end = charge_start
         planned_kwh = 0.0
 
