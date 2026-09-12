@@ -11,7 +11,7 @@ import asyncio
 from datetime import datetime, timedelta
 import os
 
-import app as core
+import app_core as core
 
 core.VERSION = os.environ.get('HOME_ENERGY_MANAGER_VERSION', core.VERSION).strip() or core.VERSION
 _ORIGINAL_PLAN = core.Controller.plan
