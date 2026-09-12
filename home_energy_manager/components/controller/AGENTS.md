@@ -81,14 +81,13 @@ Any person or AI modifying this project MUST read this file before changing cont
 
 ### Calibration
 
-11a. **Minimise Export deep calibration stays inside regular off-peak**
-    - In `minimise_export`, a deep calibration must not deliberately force-discharge the battery during peak-rate time merely to reach the calibration floor.
-    - The default objective is to reach the configured reserve 30 minutes after the regular off-peak window begins.
-    - The controller must calculate the discharge start backwards from that objective using the available discharge rate and expected SOC, but the regular off-peak start is a hard lower bound for that forced discharge.
-    - If the battery cannot physically reach reserve by the default objective without starting before regular off-peak, start at regular off-peak and allow the reserve point to occur later rather than violating the no-peak-import priority.
+11a. **Minimise Export deep calibration targets reserve shortly after off-peak begins**
+    - In `minimise_export`, the default objective is to reach the configured reserve 30 minutes after the regular off-peak window begins.
+    - The controller must calculate the forced-discharge start backwards from that objective using the available discharge rate and expected SOC. The calculated start may be before the regular off-peak boundary when necessary to hit the reserve target on time.
+    - Pre-off-peak calibration discharge is permitted because battery output first supplies house load and only the excess is exported; the discharge must still target the configured reserve and must not deliberately schedule the reserve point before the configured post-off-peak objective.
     - Once reserve is actually observed, remain at reserve for the configured `reserve_dwell_minutes` before recharging.
     - The subsequent calibration recharge must target 100% and may use any charge rate up to the hardware maximum required to complete within the same regular off-peak window; the normal preferred/max C-rate planning limits must not prevent completion of a calibration recharge.
-    - If the remaining regular off-peak window is insufficient for the expected discharge-to-reserve, reserve dwell, recharge to 100%, and configured charge safety margin, postpone the deep calibration rather than extend deliberate calibration activity into peak-rate time.
+    - If the regular off-peak time remaining after the target reserve point is insufficient for the reserve dwell, recharge to 100%, and configured charge safety margin, postpone the deep calibration rather than extend the recharge into peak-rate time.
 
 ### Safety and priorities
 
@@ -116,7 +115,7 @@ Any person or AI modifying this project MUST read this file before changing cont
 
 16. **Axle event data comes from the HACS Axle integration**
     - Home Energy Manager must not authenticate with or call Axle directly.
-    - The Axle component normalises the installed HACS integration into `sensor.home_energy_manager_axle`; the controller consumes only that package-owned interface.
+    - The Axle component normalises the installed HACS Axle integration into `sensor.home_energy_manager_axle`; the controller consumes only that package-owned interface.
 
 17. **`axle_only` is passive outside necessary Axle intervention**
     - The normal optimisation planner is not loaded in `axle_only` mode.
