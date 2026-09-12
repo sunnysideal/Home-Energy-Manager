@@ -76,6 +76,13 @@ class Controller(_legacy.Controller):
             plan = dict(plan)
             plan['mode'] = 'PauseBoth'
         return plan
+    async def plan(self, state, soc, window, fallback=False):
+        plan = await super().plan(state, soc, window, fallback)
+        if plan and plan.get('intelligent_go', {}).get('confirmed'):
+            intelligent = plan['intelligent_go']
+            if intelligent.get('pause_mode') == 'PauseDischarge':
+                intelligent['pause_mode'] = 'PauseBoth'
+        return plan
     async def apply(self,plan):return await _apply_plan(self,plan,_legacy.LOG)
     async def safe(self,window,cap=None,hw=None):return await _apply_safe_fallback(self,window,cap,hw)
 
