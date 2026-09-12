@@ -3,6 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP = (ROOT / "app.py").read_text(encoding="utf-8")
 MINIMISE_RUNTIME = (ROOT / "minimise_export_runtime.py").read_text(encoding="utf-8")
+ACTIVE_RUNTIME = (ROOT / "active_runtime.py").read_text(encoding="utf-8")
 AGENTS = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
 def require(cond, message):
@@ -160,6 +161,22 @@ require("elif mode=='PauseCharge':" in APP and "pause=p.get('pause') or pause" i
         "Apply path does not preserve the planned solar PauseCharge window")
 require("Exception: in `export_generated`" in AGENTS,
         "Intelligent Go solar PauseCharge exception is not documented in AGENTS.md")
+
+# Calibration instrumentation is observation-only. 40% and 20% must be genuine
+# downward crossings; the configured floor remains a visit/latch because a
+# controller restart while physically at reserve still counts as calibration.
+require("previous_soc > threshold and soc <= threshold" in ACTIVE_RUNTIME,
+        "40/20 calibration instrumentation is not downward-crossing based")
+require("last_below_40_soc_at" in ACTIVE_RUNTIME and "last_below_20_soc_at" in ACTIVE_RUNTIME,
+        "40/20 calibration crossing timestamps are not persisted")
+require("soc_crossing_40_step_delta_pp" in ACTIVE_RUNTIME or "f'{key_prefix}_step_delta_pp'" in ACTIVE_RUNTIME,
+        "SOC crossing step size is not recorded")
+require("calibration_previous_soc" in ACTIVE_RUNTIME,
+        "Previous SOC observation is not persisted across controller restarts")
+require("last_deep_calibration_at', now_iso" in ACTIVE_RUNTIME,
+        "Configured low-SOC visit no longer resets the deep calibration interval")
+require("low_soc_visit_active" in ACTIVE_RUNTIME,
+        "Low-SOC visit latch/hysteresis missing")
 
 print("All controller invariant checks passed.")
 
