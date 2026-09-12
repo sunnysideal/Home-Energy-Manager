@@ -50,10 +50,12 @@ COPY components/controller/controller_power_down.py /app/runtime/controller/cont
 COPY components/controller/controller_battery.py /app/runtime/controller/controller_battery.py
 COPY components/controller/controller_tariff.py /app/runtime/controller/controller_tariff.py
 COPY components/controller/controller_plan_applier.py /app/runtime/controller/controller_plan_applier.py
+COPY components/controller/controller_overlay_pipeline.py /app/runtime/controller/controller_overlay_pipeline.py
 COPY components/controller/controller_utils.py /app/runtime/controller/controller_utils.py
 COPY components/controller/controller_db.py /app/runtime/controller/controller_db.py
 COPY components/controller/controller_ha.py /app/runtime/controller/controller_ha.py
-COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_runtime.py
+COPY components/controller/minimise_export_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py
+COPY components/controller/controller_overlay_runtime.py /app/runtime/controller/minimise_export_runtime.py
 COPY components/controller/active_runtime.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
 COPY components/controller/axle_only.py /app/runtime/controller/axle_only_core.py
