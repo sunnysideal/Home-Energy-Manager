@@ -68,13 +68,14 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
     launcher = (ROOT / "launcher.py").read_text()
     expected = {
         "components/ashp_forecaster/app/runner.py": "/app/runtime/ashp_forecaster/runner.py",
-        "components/home_forecaster/app/axle_pricing_runner.py": "/app/runtime/home_forecaster/axle_pricing_runner.py",
+        "components/home_forecaster/app/health_runtime.py": "/app/runtime/home_forecaster/axle_pricing_runner.py",
         "components/axle/main.py": "/app/runtime/axle/main.py",
     }
     for source, runtime in expected.items():
         assert (ROOT / source).is_file(), source
         assert f"COPY {source} {runtime}" in dockerfile
         assert runtime in launcher
+    assert "COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_core.py" in dockerfile
 
     # Controller runtime uses explicit wrappers at the public entrypoints so
     # write-boundary invariants can be enforced without duplicating the planner.
