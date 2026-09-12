@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import main as legacy
 from active_dd_training import build_training as build_active_dd_training
 from dhw_production_selector import SelectionResult, select_dhw_forecast
+from weather_observations import complete_pending_actuals, ensure_schema, record_forecast_snapshot
 
 LOG = logging.getLogger("ashp_forecast")
 SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
@@ -61,6 +62,7 @@ class HorizonHAClient(legacy.HAClient):
         super().__init__(token)
         self.forecast_hours = max(1, int(forecast_hours))
         self.tz = ZoneInfo(timezone_name)
+        self.weather_observation_db = None
 
     def get_hourly_weather(self, entity_id: str):
         raw = super().get_hourly_weather(entity_id)
@@ -70,6 +72,24 @@ class HorizonHAClient(legacy.HAClient):
                 parsed.append((legacy.parse_dt(str(row["datetime"])).astimezone(self.tz), float(row["temperature"])))
             except (KeyError, TypeError, ValueError):
                 continue
+
+        # Phase 1 weather calibration is observation-only. Persist exactly the
+        # provider points returned by Home Assistant before the horizon extension
+        # below adds synthetic last-temperature points for production continuity.
+        if self.weather_observation_db is not None and parsed:
+            try:
+                stored = record_forecast_snapshot(
+                    self.weather_observation_db,
+                    issued_at=datetime.now(self.tz),
+                    source_entity=entity_id,
+                    points=parsed,
+                )
+                if stored:
+                    LOG.debug("Stored %d provider weather forecast observation rows", stored)
+            except Exception as exc:
+                # Calibration collection must never make the live ASHP forecast fail.
+                LOG.warning("Could not store weather forecast observation snapshot: %s", exc)
+
         if len(parsed) < 2:
             return raw
         parsed.sort(key=lambda item: item[0])
@@ -168,6 +188,27 @@ def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
     legacy.build_dhw_forecast = selected_builder
 
 
+def _complete_weather_observations(client: HorizonHAClient, store: legacy.Store, cfg, tz: ZoneInfo) -> None:
+    """Backfill due provider forecasts with the nearest observed EcoMAX temperature."""
+    try:
+        completed, unmatched = complete_pending_actuals(
+            store.db,
+            get_history=client.get_history,
+            actual_entity=cfg.outdoor_temperature_entity,
+            now=datetime.now(tz),
+        )
+    except Exception as exc:
+        # Observation collection is deliberately isolated from production forecasting.
+        LOG.warning("Could not complete weather forecast observations: %s", exc)
+        return
+    if completed or unmatched:
+        LOG.debug(
+            "Weather observation backfill: completed_rows=%d unmatched_targets=%d",
+            completed,
+            unmatched,
+        )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = legacy.Config.load()
@@ -182,6 +223,8 @@ def main() -> None:
     client.tz = ZoneInfo(timezone_name)
     tz = client.tz
     store = legacy.Store(legacy.DB_PATH)
+    ensure_schema(store.db)
+    client.weather_observation_db = store.db
     _install_dhw_selector(client, store)
     legacy.build_training = build_active_dd_training
 
@@ -190,6 +233,7 @@ def main() -> None:
 
     while True:
         try:
+            _complete_weather_observations(client, store, cfg, tz)
             legacy.run_once(client, store, cfg, tz)
         except Exception:
             LOG.exception("Forecast update failed")
