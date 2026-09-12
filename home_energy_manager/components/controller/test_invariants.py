@@ -3,6 +3,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 APP = (ROOT / "app.py").read_text(encoding="utf-8")
 MINIMISE_RUNTIME = (ROOT / "minimise_export_runtime.py").read_text(encoding="utf-8")
+AXLE_ONLY = (ROOT / "axle_only.py").read_text(encoding="utf-8")
 AGENTS = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
 def require(cond, message):
@@ -15,12 +16,23 @@ for required in (
     "No overnight pre-export of forecast solar",
     "Car-charging apparent export is not genuine grid export",
     "Discharge target is invariant",
+    "Charge target is invariant",
     "Planned Intelligent Go slots are advisory only",
     "Confirmed Intelligent Go overlays the normal plan",
     "Axle overlays all active optimisation modes",
     "Axle is a temporary plan overlay, not a second controller",
 ):
     require(required in AGENTS, f"Missing AGENTS.md invariant: {required}")
+
+# Charge-target SOC is user-owned. The active controller may calculate logical
+# target SOCs, but apply() must not write the charge-target entity. Axle-only
+# preparation is subject to the same rule.
+require("('charge_target',self.c['charge_slot_1_target_entity']" not in APP,
+        "Active controller still writes inverter charge target SOC")
+require("ents.get(\"charge_slot_1_target\")" not in AXLE_ONLY,
+        "Axle-only controller still writes inverter charge target SOC")
+require("Charge quantity must be controlled by charge-slot duration and charge rate only" in AGENTS,
+        "Duration/rate-only charging rule is not contractual")
 
 # Core implementation guards.
 require("Never pre-export today's forecast solar generation" in APP,
@@ -32,7 +44,7 @@ require("intelligent_charge_reason='export_generated_topup'" in APP,
 require("intelligent_pause_mode='PauseDischarge'" in APP,
         "Confirmed Intelligent PauseDischarge overlay missing")
 require("charge_slot_target=intelligent_charge_target" in APP,
-        "Temporary Intelligent charge target application missing")
+        "Temporary Intelligent logical charge target application missing")
 require("es=self.export_start(w)" in APP,
         "Normal export-generated path no longer derives start from configured export_start")
 
