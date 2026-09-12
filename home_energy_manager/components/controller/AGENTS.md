@@ -79,6 +79,17 @@ Any person or AI modifying this project MUST read this file before changing cont
     - The controller should charge only the useful amount, subject to battery headroom and available slot duration.
     - For ordinary Rule-1 protection, a confirmed Intelligent slot outside the regular cheap window should use the forecaster's `overnight_start_soc_no_slots` at the tariff-derived next off-peak start. If that forecast arrival SOC is below the safety buffer, charge by the SOC shortfall; do not duplicate the forecaster's load/PV simulation in the controller.
 
+### Calibration
+
+11a. **Minimise Export deep calibration stays inside regular off-peak**
+    - In `minimise_export`, a deep calibration must not deliberately force-discharge the battery during peak-rate time merely to reach the calibration floor.
+    - The default objective is to reach the configured reserve 30 minutes after the regular off-peak window begins.
+    - The controller must calculate the discharge start backwards from that objective using the available discharge rate and expected SOC, but the regular off-peak start is a hard lower bound for that forced discharge.
+    - If the battery cannot physically reach reserve by the default objective without starting before regular off-peak, start at regular off-peak and allow the reserve point to occur later rather than violating the no-peak-import priority.
+    - Once reserve is actually observed, remain at reserve for the configured `reserve_dwell_minutes` before recharging.
+    - The subsequent calibration recharge must target 100% and may use any charge rate up to the hardware maximum required to complete within the same regular off-peak window; the normal preferred/max C-rate planning limits must not prevent completion of a calibration recharge.
+    - If the remaining regular off-peak window is insufficient for the expected discharge-to-reserve, reserve dwell, recharge to 100%, and configured charge safety margin, postpone the deep calibration rather than extend deliberate calibration activity into peak-rate time.
+
 ### Safety and priorities
 
 12. **Safety buffer is protected**
