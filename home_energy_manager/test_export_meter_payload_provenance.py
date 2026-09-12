@@ -1,6 +1,7 @@
 from pathlib import Path
 
-APP=(Path(__file__).parent/"components/controller/app.py").read_text()
+ROOT = Path(__file__).parent / "components/controller"
+APP=(ROOT/"app.py").read_text() + "\n" + (ROOT/"controller_legacy_core.py").read_text()
 
 def test_export_generated_uses_current_forecast_metering():
     assert "metering=attrs.get('metering')" in APP
