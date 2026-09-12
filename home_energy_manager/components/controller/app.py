@@ -70,6 +70,19 @@ class Controller(_legacy.Controller):
     def persist_offpeak(self,window):return _persist_offpeak(self,window)
     def fallback_offpeak(self):return _fallback_offpeak(self)
     def current_active_offpeak(self):return _current_active_offpeak(self)
+    def pause_plan(self, window, state=None):
+        plan = super().pause_plan(window, state)
+        if self.operation_mode() == 'minimise_export' and plan.get('mode') == 'PauseDischarge':
+            plan = dict(plan)
+            plan['mode'] = 'PauseBoth'
+        return plan
+    async def plan(self, state, soc, window, fallback=False):
+        plan = await super().plan(state, soc, window, fallback)
+        if plan and plan.get('intelligent_go', {}).get('confirmed'):
+            intelligent = plan['intelligent_go']
+            if intelligent.get('pause_mode') == 'PauseDischarge':
+                intelligent['pause_mode'] = 'PauseBoth'
+        return plan
     async def apply(self,plan):return await _apply_plan(self,plan,_legacy.LOG)
     async def safe(self,window,cap=None,hw=None):return await _apply_safe_fallback(self,window,cap,hw)
 
