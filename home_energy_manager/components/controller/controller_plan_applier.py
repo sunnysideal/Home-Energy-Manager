@@ -28,7 +28,7 @@ async def desired_inverter_fields(controller, plan, log):
     pause=plan.get('pause') or controller.pause_plan(window)
     if plan.get('intelligent_go',{}).get('confirmed'):
         ig=plan['intelligent_go']; ia=parse_dt(ig.get('slot_start')); ib=parse_dt(ig.get('slot_end')); mode=ig.get('pause_mode') or 'Disabled'
-        if mode=='PauseDischarge' and ia and ib:pause={'mode':'PauseDischarge','start':controller.tstr(ia),'end':controller.tstr(ib)}
+        if mode in ('PauseDischarge','PauseBoth') and ia and ib:pause={'mode':mode,'start':controller.tstr(ia),'end':controller.tstr(ib)}
         elif mode=='PauseCharge':pause=plan.get('pause') or pause
         else:pause={'mode':'Disabled','start':'00:00:00','end':'00:00:00'}
     pause_start=await controller.preserve_active_slot_start('pause',controller.c['pause_start_entity'],controller.c['pause_end_entity'],pause['start'])
