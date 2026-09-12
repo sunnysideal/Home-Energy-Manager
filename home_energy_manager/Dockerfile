@@ -42,6 +42,7 @@ COPY components/axle/main.py /app/runtime/axle/main.py
 COPY components/controller/controller_legacy_core.py /app/runtime/controller/controller_legacy_core.py
 COPY components/controller/app.py /app/runtime/controller/app_core.py
 COPY components/controller/controller_discovery.py /app/runtime/controller/controller_discovery.py
+COPY components/controller/controller_minimise_offpeak.py /app/runtime/controller/controller_minimise_offpeak.py
 COPY components/controller/controller_export_generated.py /app/runtime/controller/controller_export_generated.py
 COPY components/controller/controller_power_down.py /app/runtime/controller/controller_power_down.py
 COPY components/controller/controller_battery.py /app/runtime/controller/controller_battery.py
