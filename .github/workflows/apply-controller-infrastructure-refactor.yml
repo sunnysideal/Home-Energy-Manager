@@ -1,0 +1,77 @@
+name: Apply controller infrastructure refactor
+
+on:
+  push:
+    branches:
+      - refactor/controller-infrastructure
+    paths:
+      - '.github/workflows/apply-controller-infrastructure-refactor.yml'
+      - 'home_energy_manager/tools/apply_controller_infrastructure_refactor.py'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/controller-infrastructure
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Repair one-shot script delimiter
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('home_energy_manager/tools/apply_controller_infrastructure_refactor.py')
+          text = p.read_text()
+          start = text.index('DB = ') + len('DB = ')
+          assert text[start:start+3] == "'''"
+          text = text[:start] + '"""' + text[start+3:]
+          ha = text.index('\n\nHA = ', start)
+          close = text.rfind("'''", start, ha)
+          assert close > start
+          text = text[:close] + '"""' + text[close+3:]
+          p.write_text(text)
+          PY
+
+      - name: Apply infrastructure extraction
+        run: python home_energy_manager/tools/apply_controller_infrastructure_refactor.py
+
+      - name: Bump add-on version to 0.1.66
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('home_energy_manager/config.yaml')
+          text = p.read_text()
+          old = 'version: 0.1.65'
+          assert old in text
+          p.write_text(text.replace(old, 'version: 0.1.66', 1))
+          PY
+
+      - name: Compile and test
+        working-directory: home_energy_manager
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+          python -m compileall -q .
+          pytest -q
+
+      - name: Remove one-shot tooling
+        run: |
+          rm home_energy_manager/tools/apply_controller_infrastructure_refactor.py
+          rm .github/workflows/apply-controller-infrastructure-refactor.yml
+
+      - name: Commit finished refactor
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Extract controller infrastructure and bump to 0.1.66'
+          git push origin HEAD:refactor/controller-infrastructure
