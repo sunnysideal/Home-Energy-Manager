@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 
@@ -21,14 +22,19 @@ def main() -> int:
         text=True,
         bufsize=1,
     )
+
+    def forward_signal(signum, _frame) -> None:
+        if proc.poll() is None:
+            proc.send_signal(signum)
+
+    signal.signal(signal.SIGTERM, forward_signal)
+    signal.signal(signal.SIGINT, forward_signal)
+
     assert proc.stdout is not None
-    try:
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            public_log.write(line)
-    except KeyboardInterrupt:
-        proc.terminate()
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        public_log.write(line)
     return proc.wait()
 
 
