@@ -14,7 +14,6 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY launcher.py /app/launcher.py
 COPY config_migration.py /app/config_migration.py
 # Copy component entry points explicitly into a stable runtime layout.
-# This avoids relying on nested component source layout at runtime.
 RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/axle /app/runtime/controller
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
 COPY components/ashp_forecaster/app/forecast_runner.py /app/runtime/ashp_forecaster/forecast_runner.py
@@ -40,8 +39,11 @@ COPY components/ashp_forecaster/app/dhw_production_selector.py /app/runtime/ashp
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/axle/main.py /app/runtime/axle/main.py
+# Preserve the established runtime entrypoint contract, keep a private copy of
+# the common controller, then overlay the minimise-export policy entrypoint.
 COPY components/controller/app.py /app/runtime/controller/app.py
-COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_runtime.py
+COPY components/controller/app.py /app/runtime/controller/app_core.py
+COPY components/controller/minimise_export_runtime.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
 COPY components/controller/axle_only.py /app/runtime/controller/axle_only.py
 COPY common /app/common
