@@ -76,14 +76,19 @@ def test_selector_rejects_non_96_production_contract() -> None:
     assert _source(db) == "invalid"
 
 
-def test_selector_requires_trial_ready_instead_of_using_legacy() -> None:
+def test_selector_uses_fresh_complete_thermal_even_when_readiness_flag_is_stale() -> None:
     db = _db()
+    _param(db, "dhw_trial_ready", 0.0)
     starts = _starts()
-    legacy = [0.5] * len(starts)
-    state = _fresh_state(starts, [0.8] * len(starts))
-    with pytest.raises(RuntimeError, match="structurally ready"):
-        select_dhw_forecast(db, starts, legacy, lambda _: state)
-    assert _source(db) == "invalid"
+    thermal = [0.8] * len(starts)
+    state = _fresh_state(starts, thermal)
+
+    result = select_dhw_forecast(db, starts, [0.5] * len(starts), lambda _: state)
+
+    assert result.source == "thermal"
+    assert result.values == thermal
+    assert result.reason == "thermal_authoritative"
+    assert _source(db) == "thermal"
 
 
 def test_selector_uses_authoritative_thermal_when_trial_ready() -> None:
@@ -104,7 +109,6 @@ def test_selector_uses_authoritative_thermal_when_trial_ready() -> None:
 
 def test_selector_rejects_stale_thermal_forecast_without_legacy_fallback() -> None:
     db = _db()
-    _param(db, "dhw_trial_ready", 1.0)
     starts = _starts()
     stale = _fresh_state(starts, [0.9] * len(starts))
     stale["attributes"]["last_updated"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
@@ -115,7 +119,6 @@ def test_selector_rejects_stale_thermal_forecast_without_legacy_fallback() -> No
 
 def test_selector_rejects_horizon_marked_incomplete_without_fallback() -> None:
     db = _db()
-    _param(db, "dhw_trial_ready", 1.0)
     starts = _starts()
     state = _fresh_state(starts, [0.9] * len(starts), complete=False)
     with pytest.raises(RuntimeError, match="thermal_horizon_incomplete"):
@@ -125,7 +128,6 @@ def test_selector_rejects_horizon_marked_incomplete_without_fallback() -> None:
 
 def test_selector_rejects_missing_requested_slot_without_fallback() -> None:
     db = _db()
-    _param(db, "dhw_trial_ready", 1.0)
     starts = _starts()
     state = _fresh_state(starts, [0.9] * len(starts))
     state["attributes"]["forecast"] = state["attributes"]["forecast"][:-1]
@@ -137,7 +139,6 @@ def test_selector_rejects_missing_requested_slot_without_fallback() -> None:
 
 def test_selector_rejects_shifted_96_slot_forecast_without_fallback() -> None:
     db = _db()
-    _param(db, "dhw_trial_ready", 1.0)
     starts = _starts()
     shifted = [start + timedelta(minutes=30) for start in starts]
     state = _fresh_state(shifted, [0.7] * len(shifted))
@@ -148,7 +149,6 @@ def test_selector_rejects_shifted_96_slot_forecast_without_fallback() -> None:
 
 def test_performance_diagnostic_does_not_demote_authoritative_thermal() -> None:
     db = _db()
-    _param(db, "dhw_trial_ready", 1.0)
     _param(db, "dhw_performance_bad", 1.0)
     starts = _starts()
     thermal = [0.7] * len(starts)
@@ -165,7 +165,6 @@ def test_performance_diagnostic_does_not_demote_authoritative_thermal() -> None:
 
 def test_promotion_diagnostic_does_not_gate_authoritative_thermal() -> None:
     db = _db()
-    _param(db, "dhw_trial_ready", 1.0)
     _param(db, "dhw_promotion_ready", 0.0)
     starts = _starts()
     thermal = [0.7] * len(starts)
