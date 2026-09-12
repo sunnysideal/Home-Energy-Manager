@@ -48,6 +48,7 @@ COPY components/controller/controller_discovery.py /app/runtime/controller/contr
 COPY components/controller/controller_export_generated.py /app/runtime/controller/controller_export_generated.py
 COPY components/controller/controller_power_down.py /app/runtime/controller/controller_power_down.py
 COPY components/controller/controller_battery.py /app/runtime/controller/controller_battery.py
+COPY components/controller/controller_tariff.py /app/runtime/controller/controller_tariff.py
 COPY components/controller/controller_utils.py /app/runtime/controller/controller_utils.py
 COPY components/controller/controller_db.py /app/runtime/controller/controller_db.py
 COPY components/controller/controller_ha.py /app/runtime/controller/controller_ha.py
