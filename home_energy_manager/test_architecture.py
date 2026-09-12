@@ -35,9 +35,13 @@ for forbidden in ("battery_soc", "export_generated", "charge_rate_w", "degree_da
     assert forbidden not in launcher, f"Energy/control logic leaked into launcher: {forbidden}"
 
 cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
-assert set(cfg["options"]) == component_names | {"mqtt"}
-assert set(cfg["schema"]) == component_names | {"mqtt"}
-assert "axle_only" in cfg["schema"]["controller"]["operation_mode"]
+canonical_public = {
+    "battery", "grid", "inverter", "tariff", "solar", "heat_pump",
+    "dhw", "ev", "energy_strategy", "advanced",
+}
+assert set(cfg["options"]) == canonical_public | {"axle"}
+assert set(cfg["schema"]) == canonical_public | {"axle"}
+assert "axle_only" in cfg["schema"]["energy_strategy"]["operation_mode"]
 
 print("Architecture separation checks passed.")
 
@@ -73,18 +77,10 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
         assert (ROOT / source).is_file(), source
         assert f"COPY {source} {runtime}" in dockerfile
         assert runtime in launcher
-    # The pricing runner imports the base forecaster at runtime, so main.py must
-    # still be explicitly copied even though it is no longer the launched entrypoint.
     assert "COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py" in dockerfile
 
 
 def test_ashp_runtime_local_imports_are_packaged():
-    """Every local ASHP module imported at runtime must be present in the image.
-
-    The Dockerfile deliberately copies ASHP modules explicitly into a flat runtime
-    directory.  Check the transitive local import closure so adding a new helper
-    cannot pass CI but fail after installation with ModuleNotFoundError.
-    """
     app_dir = ROOT / "components" / "ashp_forecaster" / "app"
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     copy_re = re.compile(
