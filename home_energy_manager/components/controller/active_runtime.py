@@ -12,6 +12,7 @@ import minimise_export_runtime as runtime
 core = runtime.core
 _original_ensure = core.Controller.ensure
 _original_publish = core.Controller.publish
+_original_sample = core.Controller.sample
 
 _CALIBRATION_SENSORS = (
     (
@@ -28,8 +29,8 @@ _CALIBRATION_SENSORS = (
     ),
     (
         'sensor.home_energy_manager_last_low_soc',
-        'low_reached_at',
-        'Home Energy Manager Last Calibration Low SOC',
+        'last_low_soc_at',
+        'Home Energy Manager Last Low SOC',
         'mdi:battery-low',
     ),
 )
@@ -46,12 +47,42 @@ async def _ensure_without_charge_target(self, field, entity, desired, window_end
     return await _original_ensure(self, field, entity, desired, window_end)
 
 
+async def _sample_with_any_low_soc_calibration(self):
+    # Let the core sample first. If a scheduled deep calibration is awaiting its
+    # low point, this preserves the existing calibration_low_reached_at marker so
+    # the dwell/recharge sequence can continue normally.
+    await _original_sample(self)
+    if not self.db.ok or not self.discovery_ready or not self.c.get('calibration_enabled', True):
+        return
+    st = await self.ha.state(self.c.get('battery_soc_entity', ''))
+    soc = core.as_float(st.get('state')) if st else None
+    if soc is None:
+        return
+    floor = float(self.c.get('deep_cycle_floor_soc', 4))
+    if soc <= floor:
+        # Any genuine visit to the configured floor is sufficient low-end BMS
+        # calibration. Keep a permanent timestamp for observability and reset the
+        # deep-cycle interval immediately. calibration_low_reached_at remains a
+        # separate workflow marker used only for an already-requested deep cycle.
+        now_iso = core.iso(self.now())
+        previous = core.parse_dt(self.db.get('last_low_soc_at'))
+        # Record once per visit rather than moving the timestamp every 30 seconds
+        # while the battery remains sitting at reserve.
+        if previous is None or (self.now().astimezone(core.timezone.utc) - previous.astimezone(core.timezone.utc)).total_seconds() > 300:
+            self.db.set('last_low_soc_at', now_iso)
+        self.db.set('last_deep_calibration_at', now_iso)
+
+
 async def _publish_with_calibration_sensors(self, plan=None):
     await _original_publish(self, plan)
-    calibration = self.calibration_attrs()
     floor_soc = float(self.c.get('deep_cycle_floor_soc', 4))
+    values = {
+        'last_full_soc_at': self.db.get('last_full_soc_at') if self.db.ok else None,
+        'last_deep_calibration_at': self.db.get('last_deep_calibration_at') if self.db.ok else None,
+        'last_low_soc_at': self.db.get('last_low_soc_at') if self.db.ok else None,
+    }
     for entity_id, key, friendly_name, icon in _CALIBRATION_SENSORS:
-        value = calibration.get(key)
+        value = values.get(key)
         attrs = {
             'friendly_name': friendly_name,
             'device_class': 'timestamp',
@@ -66,6 +97,7 @@ async def _publish_with_calibration_sensors(self, plan=None):
 
 
 core.Controller.ensure = _ensure_without_charge_target
+core.Controller.sample = _sample_with_any_low_soc_calibration
 core.Controller.publish = _publish_with_calibration_sensors
 
 if __name__ == '__main__':
