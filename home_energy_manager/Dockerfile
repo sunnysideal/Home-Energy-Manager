@@ -18,6 +18,7 @@ COPY public_log_runner.py /app/public_log_runner.py
 # Copy component entry points explicitly into a stable runtime layout.
 RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/axle /app/runtime/controller
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
+COPY components/ashp_forecaster/app/active_dd_training.py /app/runtime/ashp_forecaster/active_dd_training.py
 COPY components/ashp_forecaster/app/forecast_runner.py /app/runtime/ashp_forecaster/forecast_runner.py
 COPY components/ashp_forecaster/app/runner.py /app/runtime/ashp_forecaster/runner.py
 COPY components/ashp_forecaster/app/dhw_model.py /app/runtime/ashp_forecaster/dhw_model.py

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import main as legacy
+from active_dd_training import build_training as build_active_dd_training
 from dhw_production_selector import SelectionResult, select_dhw_forecast
 
 LOG = logging.getLogger("ashp_forecast")
@@ -182,6 +183,7 @@ def main() -> None:
     tz = client.tz
     store = legacy.Store(legacy.DB_PATH)
     _install_dhw_selector(client, store)
+    legacy.build_training = build_active_dd_training
 
     LOG.info("ASHP Energy Forecaster starting in timezone %s", tz.key)
     LOG.info("CH=%s temperature=%s weather=%s", cfg.ch_energy_entity, cfg.outdoor_temperature_entity, cfg.weather_entity)
