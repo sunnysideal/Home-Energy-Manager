@@ -1,4 +1,5 @@
 """Pure utility helpers for the Home Energy Manager controller."""
+
 import math
 from datetime import datetime
 
