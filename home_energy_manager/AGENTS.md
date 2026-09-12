@@ -79,6 +79,14 @@ Does not own:
 - reimplementation of load/PV/ASHP forecasting
 - direct Axle API access or HACS integration internals
 
+## Live deployment / debugging
+
+The development Home Energy Manager instance exposes its current add-on log at:
+
+`https://assist.paton.online/local/home_energy_manager/latest.log`
+
+When diagnosing reported runtime behaviour, check this URL for the current logs before asking the user to upload or paste logs. Treat it as a read-only development/debugging endpoint; do not attempt to modify the running Home Assistant instance through it.
+
 ## GitHub / CI workflow
 
 - Before committing code changes, inspect the repository's current GitHub Actions workflow(s) relevant to the changed component.
