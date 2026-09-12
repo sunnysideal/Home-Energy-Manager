@@ -41,3 +41,10 @@ def test_public_log_file_creates_parent_directory(tmp_path: Path) -> None:
     log.write("hello\n")
 
     assert path.read_text() == "hello\n"
+
+
+def test_public_log_runtime_files_are_packaged_into_image() -> None:
+    dockerfile = Path("Dockerfile").read_text()
+
+    assert "COPY public_log.py /app/public_log.py" in dockerfile
+    assert "COPY public_log_runner.py /app/public_log_runner.py" in dockerfile
