@@ -40,6 +40,7 @@ COPY components/ashp_forecaster/app/dhw_collector.py /app/runtime/ashp_forecaste
 COPY components/ashp_forecaster/app/dhw_production_selector.py /app/runtime/ashp_forecaster/dhw_production_selector.py
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_runner.py
+COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/health_runtime.py
 COPY components/axle/main.py /app/runtime/axle/main.py
 # Preserve the established runtime entrypoint contract, keep private copies of
 # the controller cores, then overlay policy/write-boundary entrypoints.
