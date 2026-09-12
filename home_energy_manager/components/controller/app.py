@@ -20,10 +20,7 @@ from controller_export_generated import (
     export_generated_guardrail_end as _export_generated_guardrail_end,
     export_generated_topup_need as _export_generated_topup_need,
 )
-from controller_power_down import (
-    power_down_protected_soc as _power_down_protected_soc,
-    power_down_info as _power_down_info,
-)
+from controller_power_down import power_down_protected_soc as _power_down_protected_soc, power_down_info as _power_down_info
 from controller_battery import (
     soc_at as _soc_at, forecast_battery_kwh_between as _forecast_battery_kwh_between,
     planned_discharge_soc_adjustment as _planned_discharge_soc_adjustment,
@@ -33,11 +30,10 @@ from controller_battery import (
     dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
 )
 from controller_tariff import (
-    offpeak_from_forecast as _offpeak_from_forecast,
-    persist_offpeak as _persist_offpeak,
-    fallback_offpeak as _fallback_offpeak,
-    current_active_offpeak as _current_active_offpeak,
+    offpeak_from_forecast as _offpeak_from_forecast, persist_offpeak as _persist_offpeak,
+    fallback_offpeak as _fallback_offpeak, current_active_offpeak as _current_active_offpeak,
 )
+from controller_plan_applier import apply_plan as _apply_plan, apply_safe_fallback as _apply_safe_fallback
 from controller_legacy_core import *  # noqa: F401,F403
 
 _legacy.VERSION = os.environ.get('HOME_ENERGY_MANAGER_VERSION', _legacy.VERSION).strip() or _legacy.VERSION
@@ -45,28 +41,18 @@ VERSION = _legacy.VERSION
 
 class Controller(_legacy.Controller):
     """Controller composed from the staged behaviour-preserving extractions."""
-    def discover_from_forecast(self, state):
-        return _discover_from_forecast(self, state)
-    async def update_effective_export_accounting(self):
-        return await _update_effective_export_accounting(self)
-    def effective_export_accounting(self):
-        return _effective_export_accounting(self)
-    def export_generated_inputs(self, state):
-        return _export_generated_inputs(self, state)
-    def forecast_export_kwh_between(self, state, start, end, attr='forecast_no_slots'):
-        return _forecast_export_kwh_between(self, state, start, end, attr)
-    def forced_incremental_grid_export_kwh(self, state, start, end, rate_w):
-        return _forced_incremental_grid_export_kwh(self, state, start, end, rate_w)
-    def export_generated_end(self, state, start, latest, remaining_kwh, rate_w):
-        return _export_generated_end(self, state, start, latest, remaining_kwh, rate_w)
-    def export_generated_guardrail_end(self, state, start, latest, rate_w, arrival_soc, cap, reserve):
-        return _export_generated_guardrail_end(self, state, start, latest, rate_w, arrival_soc, cap, reserve)
-    def export_generated_topup_need(self, state, export_info, arrival_soc, cap, reserve, discharge_rate_w, window):
-        return _export_generated_topup_need(self, state, export_info, arrival_soc, cap, reserve, discharge_rate_w, window)
-    def power_down_protected_soc(self, state, session_end, next_offpeak_start, cap, reserve):
-        return _power_down_protected_soc(self, state, session_end, next_offpeak_start, cap, reserve)
-    async def power_down_info(self, state, window, cap, reserve, discharge_rate_w):
-        return await _power_down_info(self, state, window, cap, reserve, discharge_rate_w)
+    LOG = _legacy.LOG
+    def discover_from_forecast(self,state):return _discover_from_forecast(self,state)
+    async def update_effective_export_accounting(self):return await _update_effective_export_accounting(self)
+    def effective_export_accounting(self):return _effective_export_accounting(self)
+    def export_generated_inputs(self,state):return _export_generated_inputs(self,state)
+    def forecast_export_kwh_between(self,state,start,end,attr='forecast_no_slots'):return _forecast_export_kwh_between(self,state,start,end,attr)
+    def forced_incremental_grid_export_kwh(self,state,start,end,rate_w):return _forced_incremental_grid_export_kwh(self,state,start,end,rate_w)
+    def export_generated_end(self,state,start,latest,remaining_kwh,rate_w):return _export_generated_end(self,state,start,latest,remaining_kwh,rate_w)
+    def export_generated_guardrail_end(self,state,start,latest,rate_w,arrival_soc,cap,reserve):return _export_generated_guardrail_end(self,state,start,latest,rate_w,arrival_soc,cap,reserve)
+    def export_generated_topup_need(self,state,export_info,arrival_soc,cap,reserve,discharge_rate_w,window):return _export_generated_topup_need(self,state,export_info,arrival_soc,cap,reserve,discharge_rate_w,window)
+    def power_down_protected_soc(self,state,session_end,next_offpeak_start,cap,reserve):return _power_down_protected_soc(self,state,session_end,next_offpeak_start,cap,reserve)
+    async def power_down_info(self,state,window,cap,reserve,discharge_rate_w):return await _power_down_info(self,state,window,cap,reserve,discharge_rate_w)
     def soc_at(self,state,when,attr='forecast_no_slots'):return _soc_at(self,state,when,attr)
     def forecast_battery_kwh_between(self,state,start,end,attr='forecast_no_slots'):return _forecast_battery_kwh_between(self,state,start,end,attr)
     def planned_discharge_soc_adjustment(self,state,ds,de,rate_w,cap,reserve):return _planned_discharge_soc_adjustment(self,state,ds,de,rate_w,cap,reserve)
@@ -81,5 +67,7 @@ class Controller(_legacy.Controller):
     def persist_offpeak(self,window):return _persist_offpeak(self,window)
     def fallback_offpeak(self):return _fallback_offpeak(self)
     def current_active_offpeak(self):return _current_active_offpeak(self)
+    async def apply(self,plan):return await _apply_plan(self,plan,_legacy.LOG)
+    async def safe(self,window,cap=None,hw=None):return await _apply_safe_fallback(self,window,cap,hw)
 
 _legacy.Controller = Controller
