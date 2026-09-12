@@ -77,7 +77,7 @@ def _disabled_discharge(controller, plan, anchor):
 
 
 def _minimise_calibration_discharge(controller, plan, window, capacity, reserve, max_discharge, forecast):
-    """Keep minimise-export deep discharge inside the regular cheap window."""
+    """Time minimise-export deep discharge to reach reserve at the target point."""
     if controller.calibration_state() != 'awaiting_deep_low':
         return None
 
@@ -86,6 +86,8 @@ def _minimise_calibration_discharge(controller, plan, window, capacity, reserve,
     safety_minutes = max(0, int(controller.c.get('charge_safety_margin_minutes', 10)))
     target_floor_time = window['start'] + timedelta(minutes=target_minutes)
 
+    # Use the no-slots forecast SOC at the off-peak boundary as the expected SOC
+    # before calibration. If unavailable, fall back to the planner's initial SOC.
     start_soc = core.as_float(forecast.get('attributes', {}).get('overnight_start_soc_no_slots'))
     if start_soc is None:
         start_soc = core.as_float(plan.get('initial_soc'))
@@ -95,20 +97,20 @@ def _minimise_calibration_discharge(controller, plan, window, capacity, reserve,
 
     discharge_kwh = float(capacity) * max(0.0, start_soc - float(reserve)) / 100.0
     discharge_hours = discharge_kwh / max(0.001, float(max_discharge) / 1000.0)
-    desired_start = target_floor_time - timedelta(hours=discharge_hours)
-    discharge_start = max(window['start'], desired_start).replace(second=0, microsecond=0)
+    # The reserve point is the invariant. Starting before off-peak is intentional:
+    # battery output supplies house load first and exports only the excess.
+    discharge_start = (target_floor_time - timedelta(hours=discharge_hours)).replace(second=0, microsecond=0)
     expected_floor = discharge_start + timedelta(hours=discharge_hours)
 
-    # Calibration must fit wholly inside regular off-peak. Estimate the recharge
-    # at hardware maximum here; the deep_recharge replan below is allowed to pick
-    # whatever rate is actually required up to that hardware limit.
+    # Only the post-floor part must fit in regular off-peak: dwell at reserve,
+    # recharge at up to hardware maximum, then retain the configured safety margin.
     recharge_kwh = float(capacity) * max(0.0, 100.0 - float(reserve)) / 100.0
     recharge_hours = recharge_kwh / max(0.001, float(controller._calibration_max_charge_w) / 1000.0)
     expected_complete = expected_floor + timedelta(hours=recharge_hours, minutes=dwell_minutes + safety_minutes)
     feasible = expected_complete <= window['end']
 
     diagnostics = {
-        'state': 'awaiting_deep_low', 'strategy': 'regular_offpeak_deep_cycle',
+        'state': 'awaiting_deep_low', 'strategy': 'target_reserve_after_offpeak_start',
         'reserve_target_minutes_after_offpeak_start': target_minutes,
         'target_reserve_at': core.iso(target_floor_time), 'expected_reserve_at': core.iso(expected_floor),
         'reserve_dwell_minutes': dwell_minutes, 'expected_complete_by': core.iso(expected_complete),
