@@ -40,7 +40,11 @@ COPY components/ashp_forecaster/app/dhw_production_selector.py /app/runtime/ashp
 COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/axle/main.py /app/runtime/axle/main.py
-COPY components/controller/app.py /app/runtime/controller/app.py
+# Keep the common controller implementation as app_core. The runtime policy
+# layer only changes minimise_export target selection; all other modes delegate
+# unchanged to the common implementation.
+COPY components/controller/app.py /app/runtime/controller/app_core.py
+COPY components/controller/minimise_export_runtime.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
 COPY components/controller/axle_only.py /app/runtime/controller/axle_only.py
 COPY common /app/common
