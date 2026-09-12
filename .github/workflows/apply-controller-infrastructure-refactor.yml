@@ -24,12 +24,13 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Repair one-shot script delimiter
+      - name: Repair one-shot script
         run: |
           python - <<'PY'
           from pathlib import Path
           p = Path('home_energy_manager/tools/apply_controller_infrastructure_refactor.py')
           text = p.read_text()
+          text = text.replace('ROOT = Path(__file__).resolve().parents[1]', 'ROOT = Path(__file__).resolve().parents[0]')
           start = text.index('DB = ') + len('DB = ')
           assert text[start:start+3] == "'''"
           text = text[:start] + '"""' + text[start+3:]
