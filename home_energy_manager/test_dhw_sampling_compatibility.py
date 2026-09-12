@@ -3,6 +3,8 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent
 RUNNER_PATH = ROOT / "components" / "ashp_forecaster" / "app" / "runner.py"
 
@@ -38,11 +40,12 @@ def test_thermal_only_keys_are_not_forwarded_to_legacy_forecaster(tmp_path, monk
 
 def test_merged_package_exposes_passive_dhw_settings():
     package = (ROOT / "config.yaml").read_text()
+    cfg = yaml.safe_load(package)
     assert re.search(r"^version:\s*0\.1\.\d+", package, re.MULTILINE)
-    assert "dhw_tank_upper_temperature_entity:" in package
-    assert "dhw_tank_lower_temperature_entity:" in package
-    assert "dhw_tank_volume_l: 250" in package
-    assert "dhw_thermal_sample_minutes: 5" in package
+    assert "tank_upper_temperature" in cfg["options"]["dhw"]
+    assert "tank_lower_temperature" in cfg["options"]["dhw"]
+    assert cfg["options"]["advanced"]["ashp_forecaster"]["dhw_tank_volume_l"] == 250
+    assert cfg["options"]["advanced"]["ashp_forecaster"]["dhw_thermal_sample_minutes"] == 5
 
 
 def test_merged_image_packages_dhw_runtime_files():
