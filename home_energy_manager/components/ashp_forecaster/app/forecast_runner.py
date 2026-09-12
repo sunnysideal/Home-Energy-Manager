@@ -76,10 +76,11 @@ class HorizonHAClient(legacy.HAClient):
         # Phase 1 weather calibration is observation-only. Persist exactly the
         # provider points returned by Home Assistant before the horizon extension
         # below adds synthetic last-temperature points for production continuity.
-        if self.weather_observation_db is not None and parsed:
+        observation_db = getattr(self, "weather_observation_db", None)
+        if observation_db is not None and parsed:
             try:
                 stored = record_forecast_snapshot(
-                    self.weather_observation_db,
+                    observation_db,
                     issued_at=datetime.now(self.tz),
                     source_entity=entity_id,
                     points=parsed,
