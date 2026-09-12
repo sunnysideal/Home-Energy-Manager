@@ -1,7 +1,8 @@
 # Runtime policy layer for the active Home Energy Controller.
 #
 # The core controller remains the common implementation. This layer adds:
-#   * minimise_export peak-period energy protection; and
+#   * minimise_export peak-period energy protection;
+#   * minimise_export deep-calibration timing; and
 #   * a qualifying Axle Export-event overlay for every active optimisation mode.
 #
 # Axle is deliberately a plan overlay rather than a second controller. When the
@@ -81,6 +82,67 @@ def _disabled_discharge(controller, plan, anchor):
     }
 
 
+def _minimise_calibration_discharge(controller, plan, window, capacity, reserve, max_discharge, forecast):
+    """Keep minimise-export deep discharge inside the regular cheap window."""
+    if controller.calibration_state() != 'awaiting_deep_low':
+        return None
+
+    target_minutes = max(0, int(controller.c.get('calibration_reserve_target_minutes_after_offpeak_start', 30)))
+    dwell_minutes = max(0, int(controller.c.get('reserve_dwell_minutes', 30)))
+    safety_minutes = max(0, int(controller.c.get('charge_safety_margin_minutes', 10)))
+    target_floor_time = window['start'] + timedelta(minutes=target_minutes)
+
+    start_soc = core.as_float(forecast.get('attributes', {}).get('overnight_start_soc_no_slots'))
+    if start_soc is None:
+        start_soc = core.as_float(plan.get('initial_soc'))
+    if start_soc is None:
+        start_soc = 100.0
+    start_soc = core.clamp(float(start_soc), float(reserve), 100.0)
+
+    discharge_kwh = float(capacity) * max(0.0, start_soc - float(reserve)) / 100.0
+    discharge_hours = discharge_kwh / max(0.001, float(max_discharge) / 1000.0)
+    desired_start = target_floor_time - timedelta(hours=discharge_hours)
+    discharge_start = max(window['start'], desired_start).replace(second=0, microsecond=0)
+    expected_floor = discharge_start + timedelta(hours=discharge_hours)
+
+    # Calibration must fit wholly inside regular off-peak. Estimate the recharge
+    # at hardware maximum here; the deep_recharge replan below is allowed to pick
+    # whatever rate is actually required up to that hardware limit.
+    recharge_kwh = float(capacity) * max(0.0, 100.0 - float(reserve)) / 100.0
+    recharge_hours = recharge_kwh / max(0.001, float(controller._calibration_max_charge_w) / 1000.0)
+    expected_complete = expected_floor + timedelta(minutes=dwell_minutes, hours=recharge_hours, minutes=safety_minutes)
+    feasible = expected_complete <= window['end']
+
+    diagnostics = {
+        'state': 'awaiting_deep_low',
+        'strategy': 'regular_offpeak_deep_cycle',
+        'reserve_target_minutes_after_offpeak_start': target_minutes,
+        'target_reserve_at': core.iso(target_floor_time),
+        'expected_reserve_at': core.iso(expected_floor),
+        'reserve_dwell_minutes': dwell_minutes,
+        'expected_complete_by': core.iso(expected_complete),
+        'offpeak_end': core.iso(window['end']),
+        'feasible': bool(feasible),
+    }
+
+    if not feasible:
+        _disabled_discharge(controller, plan, window['start'])
+        plan['discharge']['kind'] = 'calibration_postponed'
+        diagnostics['action'] = 'postponed'
+        return diagnostics
+
+    plan['discharge'] = {
+        'start': core.iso(discharge_start),
+        'end': core.iso(expected_floor.replace(second=0, microsecond=0)),
+        'rate_w': int(round(max_discharge)),
+        'target_soc': int(round(reserve)),
+        'planned_kwh': round(discharge_kwh, 3),
+        'kind': 'calibration_to_reserve',
+    }
+    diagnostics['action'] = 'discharge_to_reserve'
+    return diagnostics
+
+
 async def _apply_axle_overlay(controller, forecast, plan, window, capacity, reserve, max_charge, max_discharge):
     """Overlay Axle preparation/export on a freshly calculated normal plan."""
     axle_entity = str(controller.c.get('axle_entity', 'sensor.home_energy_manager_axle')).strip()
@@ -113,9 +175,6 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         'action': 'protecting',
     }
 
-    # A confirmed EV Smart Charging settlement half-hour is always a no-export
-    # period. It may charge if the ordinary controller decides that is useful;
-    # Axle export resumes on the next fresh plan after the half-hour.
     intelligent = await controller.intelligent_go_info()
     confirmed_intelligent = bool(intelligent.get('confirmed'))
 
@@ -124,8 +183,6 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
             _disabled_discharge(controller, plan, now)
             diagnostics['action'] = 'suspended_for_confirmed_ev_smart_charging'
         else:
-            # Active paid event: no simultaneous scheduled charge and no pause
-            # mode that could inhibit forced discharge.
             plan['charge'] = dict(plan.get('charge', {}))
             plan['charge']['start'] = core.iso(now.replace(second=0, microsecond=0))
             plan['charge']['end'] = plan['charge']['start']
@@ -143,15 +200,8 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         plan['axle'] = diagnostics
         return plan
 
-    # Upcoming Axle event. Normal forced export is lower priority than retaining
-    # enough battery energy to deliver the paid event, so suppress it while the
-    # event requirement is being protected.
     _disabled_discharge(controller, plan, now)
 
-    # If the regular cheap window completes before the event, make that cheap
-    # charge do the preparation. Include forecast load-minus-PV between cheap end
-    # and event start so required SOC is available at the event, not merely at
-    # cheap-window end.
     cheap_before_event = window['start'] < start and window['end'] <= start
     if cheap_before_event:
         net_kwh, complete = _forecast_net_kwh(controller, forecast, window['end'], start)
@@ -171,9 +221,6 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         plan['axle'] = diagnostics
         return plan
 
-    # Event occurs before the next regular cheap opportunity. Use forecast SOC at
-    # event start to decide whether intervention is needed. Do not peak-charge
-    # early: wait until the latest practical start, then charge only the shortfall.
     forecast_event_soc = controller.soc_at(forecast, start, 'forecast_no_slots')
     live_soc = await controller.live_soc()
     if forecast_event_soc is None:
@@ -221,12 +268,16 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
 
 async def _plan_with_policies(self, forecast, soc, window, fallback=False):
     original_floor = self.c.get('minimise_export_min_soc', 25)
+    original_max_c_rate = self.c.get('max_charge_c_rate', 0.4)
     minimise_diagnostics = None
     capacity = reserve = max_charge = max_discharge = None
+    self._calibration_max_charge_w = 0.0
 
     if not fallback and self.operation_mode() == 'minimise_export':
         capacity, _ = await self.num('battery_capacity_entity', 'battery_capacity', True)
         reserve, _ = await self.num('battery_reserve_entity', 'battery_reserve', True)
+        max_charge, _ = await self.num('inverter_max_charge_rate_entity', 'max_charge_rate', False)
+        max_discharge, _ = await self.num('inverter_max_discharge_rate_entity', 'max_discharge_rate', False)
         if capacity is not None and reserve is not None and capacity > 0:
             active = _current_regular_offpeak(self, window)
             if active:
@@ -254,6 +305,16 @@ async def _plan_with_policies(self, forecast, soc, window, fallback=False):
                 'forecast_coverage_complete': bool(complete),
                 'strategy': 'avoid_peak_import_to_next_regular_offpeak',
             }
+
+            # Deep-recharge calibration is deadline-driven. Let the core charge
+            # solver use the physical inverter maximum rather than the normal
+            # max C-rate cap, so it can select any rate required to finish cheaply.
+            if self.calibration_state() == 'deep_recharge' and max_charge is not None and max_charge > 0:
+                self._calibration_max_charge_w = float(max_charge)
+                self.c['max_charge_c_rate'] = max(float(original_max_c_rate), float(max_charge) / (float(capacity) * 1000.0))
+            elif max_charge is not None:
+                self._calibration_max_charge_w = float(max_charge)
+
             core.LOG.info(
                 'Minimise export overnight protection: configured_floor=%d%% target=%d%% bridge=%s->%s peak_energy=%.2fkWh coverage=%s',
                 int(round(configured_floor)), dynamic_floor,
@@ -266,22 +327,32 @@ async def _plan_with_policies(self, forecast, soc, window, fallback=False):
         result = await _ORIGINAL_PLAN(self, forecast, soc, window, fallback=fallback)
     finally:
         self.c['minimise_export_min_soc'] = original_floor
+        self.c['max_charge_c_rate'] = original_max_c_rate
 
     if result is None:
         return None
     if minimise_diagnostics is not None:
         result['minimise_export'] = minimise_diagnostics
 
-    # Launcher routes forecast_only and axle_only elsewhere, so this runtime only
-    # sees the three active optimisation modes. Keep the mode check explicit as a
-    # regression guard against future launcher changes.
+    if (not fallback and self.operation_mode() == 'minimise_export' and
+            None not in (capacity, reserve, max_charge, max_discharge) and
+            capacity > 0 and max_charge > 0 and max_discharge > 0):
+        calibration = _minimise_calibration_discharge(
+            self, result, window, float(capacity), float(reserve),
+            float(max_discharge), forecast
+        )
+        if calibration is not None:
+            result['calibration'] = calibration
+
     if not fallback and self.operation_mode() in ('minimise_export', 'maximise_export', 'export_generated'):
         if capacity is None:
             capacity, _ = await self.num('battery_capacity_entity', 'battery_capacity', True)
         if reserve is None:
             reserve, _ = await self.num('battery_reserve_entity', 'battery_reserve', True)
-        max_charge, _ = await self.num('inverter_max_charge_rate_entity', 'max_charge_rate', False)
-        max_discharge, _ = await self.num('inverter_max_discharge_rate_entity', 'max_discharge_rate', False)
+        if max_charge is None:
+            max_charge, _ = await self.num('inverter_max_charge_rate_entity', 'max_charge_rate', False)
+        if max_discharge is None:
+            max_discharge, _ = await self.num('inverter_max_discharge_rate_entity', 'max_discharge_rate', False)
         if None not in (capacity, reserve, max_charge, max_discharge) and capacity > 0 and max_charge > 0 and max_discharge > 0:
             result = await _apply_axle_overlay(
                 self, forecast, result, window,
