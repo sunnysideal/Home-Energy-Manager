@@ -13,6 +13,7 @@ small and each extraction can remain behaviour-preserving.
 import os
 
 import controller_legacy_core as _legacy
+from common.mqtt import MQTTPublisher
 from controller_db import DB
 from controller_ha import HA
 from controller_utils import as_float, parse_dt, clamp, iso, weighted_quantile, recency_weight
