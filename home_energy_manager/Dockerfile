@@ -1,16 +1,11 @@
 FROM python:3.13-alpine
-
 ARG BUILD_VERSION
 ARG BUILD_ARCH
 ENV HOME_ENERGY_MANAGER_VERSION="${BUILD_VERSION}"
-LABEL io.hass.version="${BUILD_VERSION}" \
-      io.hass.type="app" \
-      io.hass.arch="${BUILD_ARCH}"
-
+LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="${BUILD_ARCH}"
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
-
 COPY launcher.py /app/launcher.py
 COPY config_migration.py /app/config_migration.py
 COPY public_log.py /app/public_log.py
@@ -50,10 +45,13 @@ COPY components/controller/controller_power_down.py /app/runtime/controller/cont
 COPY components/controller/controller_battery.py /app/runtime/controller/controller_battery.py
 COPY components/controller/controller_tariff.py /app/runtime/controller/controller_tariff.py
 COPY components/controller/controller_plan_applier.py /app/runtime/controller/controller_plan_applier.py
+COPY components/controller/controller_overlay_pipeline.py /app/runtime/controller/controller_overlay_pipeline.py
 COPY components/controller/controller_utils.py /app/runtime/controller/controller_utils.py
 COPY components/controller/controller_db.py /app/runtime/controller/controller_db.py
 COPY components/controller/controller_ha.py /app/runtime/controller/controller_ha.py
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_runtime.py
+COPY components/controller/minimise_export_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py
+COPY components/controller/controller_overlay_runtime.py /app/runtime/controller/minimise_export_runtime.py
 COPY components/controller/active_runtime.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
 COPY components/controller/axle_only.py /app/runtime/controller/axle_only_core.py
@@ -61,5 +59,4 @@ COPY components/controller/axle_only_runtime.py /app/runtime/controller/axle_onl
 COPY common /app/common
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh /app/launcher.py
-
 CMD ["/run.sh"]
