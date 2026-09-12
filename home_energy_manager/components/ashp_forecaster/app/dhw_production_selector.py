@@ -1,9 +1,9 @@
 """Thermal-only production selection for the DHW forecast.
 
 Legacy DHW values may continue to be calculated and scored as a comparator, but they
-are never substituted into production.  Once the learned thermal model is structurally
-ready, a fresh complete thermal horizon is required; an invalid/missing thermal horizon
-is surfaced as an error rather than silently publishing a contradictory fallback.
+are never substituted into production. A fresh, complete, correctly aligned thermal
+horizon is the production-readiness contract; learned readiness/confidence flags remain
+diagnostics and must not veto a forecast the thermal publisher has successfully built.
 """
 from __future__ import annotations
 
@@ -23,16 +23,6 @@ class SelectionResult:
     values: list[float]
     source: str
     reason: str
-
-
-def _parameter_value(db: sqlite3.Connection, name: str) -> float | None:
-    row = db.execute("SELECT value FROM dhw_model_parameters WHERE name=?", (name,)).fetchone()
-    if not row:
-        return None
-    try:
-        return float(row[0])
-    except (TypeError, ValueError):
-        return None
 
 
 def _set_metadata(db: sqlite3.Connection, key: str, value: str | int) -> None:
@@ -125,7 +115,11 @@ def select_dhw_forecast(
 
     ``legacy_values`` is deliberately retained in the interface so the existing legacy
     calculation can continue to feed validation/comparison without changing the public
-    ASHP component boundary.  It is never selected for production.
+    ASHP component boundary. It is never selected for production.
+
+    Production readiness is proven by the published thermal horizon itself. Persisted
+    model confidence/readiness flags are diagnostic state and can temporarily lag live
+    sensor recovery or a freshly published forecast, so they must not block production.
     """
     del retry_successes, demotion_failures
     if len(starts) != len(legacy_values):
@@ -136,11 +130,6 @@ def select_dhw_forecast(
         raise RuntimeError(
             f"DHW thermal production requires {EXPECTED_PRODUCTION_SLOTS} aligned slots; got {len(starts)}"
         )
-
-    trial_ready = _parameter_value(db, "dhw_trial_ready")
-    if trial_ready is None or trial_ready < 0.5:
-        _persist_source(db, "invalid")
-        raise RuntimeError("DHW thermal model is not structurally ready; legacy fallback is disabled")
 
     try:
         state = get_state(THERMAL_FORECAST_ENTITY)
