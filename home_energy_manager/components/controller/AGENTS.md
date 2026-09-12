@@ -47,6 +47,13 @@ Any person or AI modifying this project MUST read this file before changing cont
 
 ### Overnight charging
 
+6a. **Charge target is invariant**
+   - The controller must never write or alter the inverter charge-target SOC entity.
+   - The inverter charge target is user-owned configuration and remains whatever value the user has set outside Home Energy Manager.
+   - Charge quantity must be controlled by charge-slot duration and charge rate only.
+   - Logical SOC objectives such as minimise-export protection, 100% regular charging, calibration recharge, EV Smart Charging top-up, Power Down preparation, and Axle preparation may still be calculated by the planner, but they must be translated into duration/rate rather than written to the inverter as a target SOC.
+   - This invariant applies to all controller modes that can write inverter settings, including `axle_only`.
+
 7. **Regular overnight target**
    - In `export_generated` and `maximise_export`, the regular overnight objective is 100% SOC by the end of the regular overnight cheap window unless an explicitly documented calibration rule applies.
    - Current regular window is normally 23:30–05:30, but timing comes from configured/forecast off-peak data.
@@ -88,7 +95,7 @@ Any person or AI modifying this project MUST read this file before changing cont
     - Natural house consumption during the preparation day should reduce the energy that later needs forced discharge; forced export is only for the residual energy required to reach reserve on schedule.
     - The controller must calculate the forced-discharge start backwards from the reserve objective using the available discharge rate and expected SOC. The calculated start may be before the regular off-peak boundary when necessary to hit the reserve target on time.
     - While an `awaiting_deep_low` calibration discharge is scheduled, `PauseDischarge` must not block that discharge; Eco/self-consumption remains available before the forced-discharge slot.
-    - Pre-off-peak calibration discharge is permitted because battery output first supplies house load and only the excess is exported; the discharge must still target the configured reserve and must not deliberately schedule the reserve point before the configured post-off-peak objective.
+    - Pre-off-peak calibration discharge is permitted because battery output first supplies house load and only the excess is exported; the discharge must still target the configured reserve and must not deliberately schedule the reserve point before the configured post-offpeak objective.
     - Once reserve is actually observed, remain at reserve for the configured `reserve_dwell_minutes` before recharging.
     - The subsequent calibration recharge must target 100% and may use any charge rate up to the hardware maximum required to complete within the same regular off-peak window; the normal preferred/max C-rate planning limits must not prevent completion of a calibration recharge.
     - If the regular off-peak time remaining after the target reserve point is insufficient for the reserve dwell, recharge to 100%, and configured charge safety margin, postpone the deep calibration rather than extend the recharge into peak-rate time.
