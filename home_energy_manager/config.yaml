@@ -229,7 +229,7 @@ schema:
   dhw:
     energy_total_kwh: str
     mode: str
-    tank_temperature: str?
+    tank_temperature: str
     tank_upper_temperature: str?
     tank_lower_temperature: str?
     ambient_temperature: str?
