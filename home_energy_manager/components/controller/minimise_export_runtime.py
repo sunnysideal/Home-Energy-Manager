@@ -1,23 +1,19 @@
 # Runtime policy layer for the active Home Energy Controller.
 #
-# The core controller remains the common implementation for all normal modes.
-# In minimise_export, this layer raises the ordinary overnight SOC floor to the
-# amount required to carry the house from the end of the cheap window to the
-# following regular cheap window while retaining the configured safety buffer.
-# This is deliberately calculated with the core controller's existing reverse
-# load/PV energy model, so time spent pinned at inverter reserve is not lost just
-# because the no-slots arrival SOC cannot fall any further.
+# The core controller remains the common implementation. In minimise_export,
+# this layer raises the ordinary overnight SOC floor to the amount required to
+# carry the house from cheap-rate end to the following regular cheap window
+# while retaining the configured safety buffer. It uses the core controller's
+# existing reverse load/PV energy model, so time spent pinned at inverter reserve
+# is not lost merely because forecast SOC cannot fall any further.
 
 import asyncio
 from datetime import datetime, timedelta
 import os
 
-import app_core as core
+import app as core
 
-# Keep the runtime component version aligned with the package image even though
-# the historical core source still carries its old standalone version constant.
 core.VERSION = os.environ.get('HOME_ENERGY_MANAGER_VERSION', core.VERSION).strip() or core.VERSION
-
 _ORIGINAL_PLAN = core.Controller.plan
 
 
@@ -35,7 +31,6 @@ def _current_regular_offpeak(controller, next_window):
     now = controller.now()
     if active and active['start'] <= now < active['end']:
         return active
-
     previous = {
         'start': _shift_local_day(controller, next_window['start'], -1),
         'end': _shift_local_day(controller, next_window['end'], -1),
@@ -53,32 +48,23 @@ async def _plan_with_minimise_peak_protection(self, forecast, soc, window, fallb
     if not fallback and self.operation_mode() == 'minimise_export':
         capacity, _ = await self.num('battery_capacity_entity', 'battery_capacity', True)
         reserve, _ = await self.num('battery_reserve_entity', 'battery_reserve', True)
-
         if capacity is not None and reserve is not None and capacity > 0:
             active = _current_regular_offpeak(self, window)
             if active:
-                # Already inside cheap rate: protect from this cheap block's end
-                # until the tariff-derived next regular cheap start.
                 bridge_start = active['end']
                 next_offpeak_start = window['start']
             else:
-                # Before tonight's cheap rate: size tonight's charge for the
-                # following peak period (cheap end -> following cheap start).
                 bridge_start = window['end']
                 next_offpeak_start = _shift_local_day(self, window['start'], 1)
 
             protected_soc, required_peak_kwh, complete = self.power_down_protected_soc(
                 forecast, bridge_start, next_offpeak_start, capacity, reserve
             )
-
             configured_floor = float(original_floor)
             dynamic_floor = int(round(core.clamp(
-                max(configured_floor, protected_soc),
-                float(reserve),
-                100.0,
+                max(configured_floor, protected_soc), float(reserve), 100.0
             )))
             self.c['minimise_export_min_soc'] = dynamic_floor
-
             diagnostics = {
                 'configured_floor_soc': int(round(configured_floor)),
                 'required_target_soc': dynamic_floor,
@@ -108,7 +94,6 @@ async def _plan_with_minimise_peak_protection(self, forecast, soc, window, fallb
 
 
 core.Controller.plan = _plan_with_minimise_peak_protection
-
 
 if __name__ == '__main__':
     try:
