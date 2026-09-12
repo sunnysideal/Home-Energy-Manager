@@ -59,18 +59,21 @@ async def _sample_with_any_low_soc_calibration(self):
     if soc is None:
         return
     floor = float(self.c.get('deep_cycle_floor_soc', 4))
-    if soc <= floor:
+    low_active = bool(self.db.get('low_soc_visit_active'))
+    if soc <= floor and not low_active:
         # Any genuine visit to the configured floor is sufficient low-end BMS
         # calibration. Keep a permanent timestamp for observability and reset the
         # deep-cycle interval immediately. calibration_low_reached_at remains a
         # separate workflow marker used only for an already-requested deep cycle.
         now_iso = core.iso(self.now())
-        previous = core.parse_dt(self.db.get('last_low_soc_at'))
-        # Record once per visit rather than moving the timestamp every 30 seconds
-        # while the battery remains sitting at reserve.
-        if previous is None or (self.now().astimezone(core.timezone.utc) - previous.astimezone(core.timezone.utc)).total_seconds() > 300:
-            self.db.set('last_low_soc_at', now_iso)
+        self.db.set('last_low_soc_at', now_iso)
         self.db.set('last_deep_calibration_at', now_iso)
+        self.db.set('low_soc_visit_active', True)
+        core.LOG.info('Calibration low SOC observed naturally/actively: soc=%.1f%% floor=%.1f%%; deep-cycle interval reset', soc, floor)
+    elif soc > floor + 0.5 and low_active:
+        # Hysteresis makes a sustained stay at reserve one visit, rather than
+        # refreshing the timestamp on every sample.
+        self.db.set('low_soc_visit_active', False)
 
 
 async def _publish_with_calibration_sensors(self, plan=None):
