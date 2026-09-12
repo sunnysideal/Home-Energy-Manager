@@ -32,6 +32,7 @@ def test_minimise_export_coordinates_pause_and_charge_as_one_plan():
 
 def test_minimise_export_does_not_schedule_charge_when_preserved_soc_meets_target():
     assert "needs_charge = target > preserved_soc + 0.5" in JOINT
+    assert "charge_start = control_window['end'].replace(second=0, microsecond=0)" in JOINT
     assert "charge_end = charge_start" in JOINT
     assert "planned_kwh = 0.0" in JOINT
 
