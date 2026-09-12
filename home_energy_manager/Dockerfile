@@ -48,6 +48,7 @@ COPY components/axle/main.py /app/runtime/axle/main.py
 COPY components/controller/controller_legacy_core.py /app/runtime/controller/controller_legacy_core.py
 COPY components/controller/app.py /app/runtime/controller/app_core.py
 COPY components/controller/controller_discovery.py /app/runtime/controller/controller_discovery.py
+COPY components/controller/controller_export_generated.py /app/runtime/controller/controller_export_generated.py
 COPY components/controller/controller_utils.py /app/runtime/controller/controller_utils.py
 COPY components/controller/controller_db.py /app/runtime/controller/controller_db.py
 COPY components/controller/controller_ha.py /app/runtime/controller/controller_ha.py
