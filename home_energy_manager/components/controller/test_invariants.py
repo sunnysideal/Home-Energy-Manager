@@ -17,6 +17,8 @@ for required in (
     "Discharge target is invariant",
     "Planned Intelligent Go slots are advisory only",
     "Confirmed Intelligent Go overlays the normal plan",
+    "Axle overlays all active optimisation modes",
+    "Axle is a temporary plan overlay, not a second controller",
 ):
     require(required in AGENTS, f"Missing AGENTS.md invariant: {required}")
 
@@ -82,6 +84,33 @@ require("forecast_coverage_complete" in MINIMISE_RUNTIME,
         "Minimise Export peak-protection coverage is not exposed diagnostically")
 require("If forecast coverage is incomplete, the target must fail safe to 100%" in AGENTS,
         "Minimise Export incomplete-forecast fail-safe is not contractual")
+
+# Axle is a higher-priority plan overlay in all active optimisation modes. It
+# must not become a second concurrent controller and forecast_only stays write-free.
+require("self.operation_mode() in ('minimise_export', 'maximise_export', 'export_generated')" in MINIMISE_RUNTIME,
+        "Axle overlay is not scoped to all three active optimisation modes")
+require("axle_entity" in MINIMISE_RUNTIME and "sensor.home_energy_manager_axle" in MINIMISE_RUNTIME,
+        "Normal-mode Axle overlay does not consume the package-owned Axle sensor")
+require("event_type != 'export'" in MINIMISE_RUNTIME,
+        "Non-export Axle events are not explicitly rejected")
+require("required_kwh = (float(max_discharge) / 1000.0) * duration_h / discharge_eff" in MINIMISE_RUNTIME,
+        "Axle event SOC requirement is not based on full-rate event discharge")
+require("'kind': 'axle_export'" in MINIMISE_RUNTIME,
+        "Active Axle event does not create a distinct forced-discharge plan")
+require("'target_soc': int(round(reserve))" in MINIMISE_RUNTIME,
+        "Axle active discharge does not preserve configured reserve")
+require("_disabled_discharge(controller, plan, now)" in MINIMISE_RUNTIME,
+        "Upcoming Axle event does not suppress lower-priority forced discharge")
+require("cheap_before_event" in MINIMISE_RUNTIME and "prepare_in_regular_offpeak" in MINIMISE_RUNTIME,
+        "Axle preparation does not prefer the regular cheap window")
+require("peak_prepare_last_resort" in MINIMISE_RUNTIME and "latest_charge_start" in MINIMISE_RUNTIME,
+        "Axle peak charging is not constrained to last-resort preparation")
+require("suspended_for_confirmed_ev_smart_charging" in MINIMISE_RUNTIME,
+        "Confirmed EV Smart Charging does not pre-empt Axle forced export")
+require("restore_snapshot" not in MINIMISE_RUNTIME,
+        "Normal-mode Axle overlay must replan, not restore a stale inverter snapshot")
+require("`forecast_only` remains write-free" in AGENTS,
+        "Forecast-only Axle exclusion is not contractual")
 
 # The next off-peak window itself is supplied by the forecaster/tariff contract.
 require("off=s.get('attributes',{}).get('offpeak')" in APP,
