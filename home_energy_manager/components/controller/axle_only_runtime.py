@@ -2,7 +2,7 @@
 """Axle-only entrypoint with user-owned inverter charge target SOC."""
 import asyncio
 
-import axle_only as base
+import axle_only_core as base
 
 _original_controller_entities = base.AxleOnlyController.controller_entities
 _original_write = base.AxleOnlyController.write
