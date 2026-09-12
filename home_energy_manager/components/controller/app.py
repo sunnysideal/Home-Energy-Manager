@@ -28,6 +28,10 @@ from controller_export_generated import (
     export_generated_guardrail_end as _export_generated_guardrail_end,
     export_generated_topup_need as _export_generated_topup_need,
 )
+from controller_power_down import (
+    power_down_protected_soc as _power_down_protected_soc,
+    power_down_info as _power_down_info,
+)
 
 # Re-export the established core surface for runtime policy layers and tests.
 from controller_legacy_core import *  # noqa: F401,F403
@@ -68,6 +72,16 @@ class Controller(_legacy.Controller):
     def export_generated_topup_need(self, state, export_info, arrival_soc, cap, reserve, discharge_rate_w, window):
         return _export_generated_topup_need(
             self, state, export_info, arrival_soc, cap, reserve, discharge_rate_w, window
+        )
+
+    def power_down_protected_soc(self, state, session_end, next_offpeak_start, cap, reserve):
+        return _power_down_protected_soc(
+            self, state, session_end, next_offpeak_start, cap, reserve
+        )
+
+    async def power_down_info(self, state, window, cap, reserve, discharge_rate_w):
+        return await _power_down_info(
+            self, state, window, cap, reserve, discharge_rate_w
         )
 
 
