@@ -81,9 +81,13 @@ Any person or AI modifying this project MUST read this file before changing cont
 
 ### Calibration
 
-11a. **Minimise Export deep calibration targets reserve shortly after off-peak begins**
+11a. **Minimise Export deep calibration targets reserve shortly after off-peak begins while minimising unpaid export**
     - In `minimise_export`, the default objective is to reach the configured reserve 30 minutes after the regular off-peak window begins.
-    - The controller must calculate the forced-discharge start backwards from that objective using the available discharge rate and expected SOC. The calculated start may be before the regular off-peak boundary when necessary to hit the reserve target on time.
+    - When a deep calibration will become due before the following regular off-peak window, the preceding cheap window is a calibration-preparation window. `PauseDischarge` must be disabled so Eco/self-consumption can use battery energy for genuine house load instead of preserving energy that would later need to be exported unpaid.
+    - Calibration preparation must not weaken Rule 7 or Rule 13: the normal minimise-export overnight charge target remains active and must still be raised when required to avoid forecast peak-rate import and preserve the safety buffer. A required scheduled charge may therefore occur during the same cheap window while Eco discharge is otherwise allowed.
+    - Natural house consumption during the preparation day should reduce the energy that later needs forced discharge; forced export is only for the residual energy required to reach reserve on schedule.
+    - The controller must calculate the forced-discharge start backwards from the reserve objective using the available discharge rate and expected SOC. The calculated start may be before the regular off-peak boundary when necessary to hit the reserve target on time.
+    - While an `awaiting_deep_low` calibration discharge is scheduled, `PauseDischarge` must not block that discharge; Eco/self-consumption remains available before the forced-discharge slot.
     - Pre-off-peak calibration discharge is permitted because battery output first supplies house load and only the excess is exported; the discharge must still target the configured reserve and must not deliberately schedule the reserve point before the configured post-off-peak objective.
     - Once reserve is actually observed, remain at reserve for the configured `reserve_dwell_minutes` before recharging.
     - The subsequent calibration recharge must target 100% and may use any charge rate up to the hardware maximum required to complete within the same regular off-peak window; the normal preferred/max C-rate planning limits must not prevent completion of a calibration recharge.
