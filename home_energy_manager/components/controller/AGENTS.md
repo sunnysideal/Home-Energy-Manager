@@ -85,10 +85,11 @@ Any person or AI modifying this project MUST read this file before changing cont
     - Normal optimisation must preserve the configured safety buffer at the next regular off-peak start unless an explicitly documented higher-priority rule applies.
 
 13. **Avoid peak import before maximising export**
-    - Priority order:
+    - Priority order for normal optimisation:
       1. avoid peak-rate grid import;
       2. preserve required safety/reserve constraints;
       3. maximise genuine surplus export.
+    - A qualifying paid Axle Export event is an explicitly documented exception under the Axle rules below. Peak-rate battery charging is permitted only when it is the last available way to meet the Axle event energy requirement; cheap-rate opportunities must be used first and only the remaining shortfall may be charged at peak rate.
 
 14. **Eco mode**
     - Eco/self-consumption remains the normal battery mode outside explicitly controlled charge/discharge/pause periods.
@@ -123,6 +124,26 @@ Any person or AI modifying this project MUST read this file before changing cont
 20. **Axle active-event discharge preserves reserve**
     - During a qualifying Axle Export event, forced discharge uses the hardware maximum discharge rate and the configured battery reserve as the discharge target.
     - The controller must never lower the reserve target to increase Axle export.
+
+21. **Axle overlays all active optimisation modes**
+    - Qualifying Axle Export events overlay `minimise_export`, `maximise_export`, and `export_generated`.
+    - `forecast_only` remains write-free and is never given an Axle battery-control overlay.
+    - `axle_only` remains the dedicated passive-outside-Axle mode described above.
+
+22. **Normal-mode Axle preparation uses the forecast and preserves the underlying mode**
+    - Preparation must use forecasted battery state/load/PV rather than current SOC alone when deciding whether additional stored energy is required at event start.
+    - A regular off-peak opportunity before the event must be used before any peak-rate top-up.
+    - Normal forced discharge that would jeopardise the Axle event requirement must be suppressed while the event is being protected.
+    - If forecast coverage required to size preparation is incomplete, preparation must fail safe toward additional stored energy rather than assume the event can be met.
+
+23. **Axle is a temporary plan overlay, not a second controller**
+    - Normal modes must not launch or run `axle_only.py` concurrently.
+    - Axle preparation and active-event controls are applied by the normal planner as a temporary higher-priority overlay.
+    - When an event ends or is cancelled, the controller must immediately return to a fresh plan from the selected underlying normal mode; it must not restore a stale snapshot of inverter settings.
+
+24. **Confirmed EV Smart Charging pre-empts Axle export**
+    - A currently confirmed EV Smart Charging settlement half-hour remains a no-forced-export period, including during an Axle event.
+    - Axle forced discharge must resume on the next fresh plan while the Axle event remains active after the confirmed charging half-hour ends.
 
 ## Release checklist
 
