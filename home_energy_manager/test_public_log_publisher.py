@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from launcher import PublicLogFile, _sanitise_public_log_text
+from public_log import PublicLogFile, sanitise_public_log_text
 
 
 def test_public_log_sanitises_common_secrets() -> None:
@@ -12,7 +12,7 @@ def test_public_log_sanitises_common_secrets() -> None:
         "mqtt://alan:swordfish@example.test/topic\n"
     )
 
-    clean = _sanitise_public_log_text(text)
+    clean = sanitise_public_log_text(text)
 
     assert "abc.def.ghi" not in clean
     assert "hunter2" not in clean
