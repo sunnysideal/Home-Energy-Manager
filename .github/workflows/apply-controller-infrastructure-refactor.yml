@@ -10,49 +10,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: refactor/controller-infrastructure
-          fetch-depth: 0
+        with: {ref: refactor/controller-infrastructure, fetch-depth: 0}
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - name: Repair and apply extraction
+        with: {python-version: '3.13'}
+      - name: Apply and diagnose tests
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('home_energy_manager/tools/apply_controller_infrastructure_refactor.py')
-          text=p.read_text()
+          p=Path('home_energy_manager/tools/apply_controller_infrastructure_refactor.py'); text=p.read_text()
           old="DB = '''\"\"\"Controller-owned persistence for Home Energy Manager.\"\"\""
-          new='DB = """# Controller-owned persistence for Home Energy Manager.'
-          assert old in text
-          text=text.replace(old,new,1)
-          ha=text.index('\n\nHA = ')
-          close=text.rfind("'''",0,ha)
-          assert close > text.index('DB = ')
-          text=text[:close]+'"""'+text[close+3:]
-          p.write_text(text)
+          text=text.replace(old,'DB = """# Controller-owned persistence for Home Energy Manager.',1)
+          ha=text.index('\n\nHA = '); close=text.rfind("'''",0,ha)
+          text=text[:close]+'"""'+text[close+3:]; p.write_text(text)
           PY
-          python -m py_compile home_energy_manager/tools/apply_controller_infrastructure_refactor.py
           python home_energy_manager/tools/apply_controller_infrastructure_refactor.py
-      - name: Bump and test
-        run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('home_energy_manager/config.yaml'); text=p.read_text()
-          assert 'version: 0.1.65' in text
-          p.write_text(text.replace('version: 0.1.65','version: 0.1.66',1))
+          p=Path('home_energy_manager/config.yaml'); t=p.read_text(); p.write_text(t.replace('version: 0.1.65','version: 0.1.66',1))
           PY
           cd home_energy_manager
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
-          python -m compileall -q .
-          pytest -q
-      - name: Commit clean refactor
-        run: |
-          rm -f refactor-error.txt home_energy_manager/tools/apply_controller_infrastructure_refactor.py .github/workflows/apply-controller-infrastructure-refactor.yml
+          pip install -q -r requirements.txt pytest
+          set +e
+          python -m compileall -q . > ../refactor-test-error.txt 2>&1
+          echo "compile=$?" >> ../refactor-test-error.txt
+          pytest -q >> ../refactor-test-error.txt 2>&1
+          echo "pytest=$?" >> ../refactor-test-error.txt
+          set -e
+          cd ..
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'Extract controller infrastructure and bump to 0.1.66'
+          git add refactor-test-error.txt
+          git commit -m 'Capture extracted controller test diagnostic'
           git push origin HEAD:refactor/controller-infrastructure
