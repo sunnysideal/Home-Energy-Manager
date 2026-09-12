@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Runtime health policy for optional Home Forecaster capabilities.
 
-The physical forecast remains owned by ``main`` and Axle pricing remains owned by
-the packaged Axle pricing core. This wrapper only classifies health diagnostics:
-an optional feature that is not configured is informational, while a configured
-feature that cannot be read remains a degradation.
+The physical forecast remains owned by ``main``; Axle pricing and battery idle
+standby learning are packaged runtime layers below this one. This wrapper only
+classifies health diagnostics: an optional feature that is not configured is
+informational, while a configured feature that cannot be read remains a
+degradation.
 """
 from __future__ import annotations
 
 from typing import Any
 
-import axle_pricing_core as pricing
+import battery_idle_core as pricing
 
 base = pricing.base
 

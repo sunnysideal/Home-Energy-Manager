@@ -23,9 +23,9 @@ def load_runtime():
         HEALTH_ENTITY="sensor.home_energy_forecast_health",
         LOG=types.SimpleNamespace(warning=lambda *args: None),
     )
-    core = types.ModuleType("axle_pricing_core")
+    core = types.ModuleType("battery_idle_core")
     core.base = base
-    sys.modules["axle_pricing_core"] = core
+    sys.modules["battery_idle_core"] = core
     spec = importlib.util.spec_from_file_location("health_runtime_test", RUNTIME)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -69,5 +69,6 @@ def test_health_runtime_is_packaged_at_existing_launcher_entrypoint():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
     assert "COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_core.py" in dockerfile
+    assert "COPY components/home_forecaster/app/battery_idle_runtime.py /app/runtime/home_forecaster/battery_idle_core.py" in dockerfile
     assert "COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py" in dockerfile
     assert "/app/runtime/home_forecaster/axle_pricing_runner.py" in launcher
