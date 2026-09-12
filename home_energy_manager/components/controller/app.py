@@ -32,6 +32,12 @@ from controller_battery import (
     choose_rate_and_start as _choose_rate_and_start, band_factor as _band_factor,
     dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
 )
+from controller_tariff import (
+    offpeak_from_forecast as _offpeak_from_forecast,
+    persist_offpeak as _persist_offpeak,
+    fallback_offpeak as _fallback_offpeak,
+    current_active_offpeak as _current_active_offpeak,
+)
 from controller_legacy_core import *  # noqa: F401,F403
 
 _legacy.VERSION = os.environ.get('HOME_ENERGY_MANAGER_VERSION', _legacy.VERSION).strip() or _legacy.VERSION
@@ -71,5 +77,9 @@ class Controller(_legacy.Controller):
     def dwell(self):return _dwell(self)
     def charge_minutes(self,soc,target,rate,cap):return _charge_minutes(self,soc,target,rate,cap)
     def choose_rate(self,soc,target,cap,window,hw):return _choose_rate(self,soc,target,cap,window,hw)
+    def offpeak_from_forecast(self,state):return _offpeak_from_forecast(self,state)
+    def persist_offpeak(self,window):return _persist_offpeak(self,window)
+    def fallback_offpeak(self):return _fallback_offpeak(self)
+    def current_active_offpeak(self):return _current_active_offpeak(self)
 
 _legacy.Controller = Controller
