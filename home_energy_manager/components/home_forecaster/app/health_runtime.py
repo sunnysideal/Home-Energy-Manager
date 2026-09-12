@@ -2,15 +2,15 @@
 """Runtime health policy for optional Home Forecaster capabilities.
 
 The physical forecast remains owned by ``main`` and Axle pricing remains owned by
-``axle_pricing_runner``.  This wrapper only classifies health diagnostics: an
-optional feature that is not configured is informational, while a configured
+the packaged Axle pricing core. This wrapper only classifies health diagnostics:
+an optional feature that is not configured is informational, while a configured
 feature that cannot be read remains a degradation.
 """
 from __future__ import annotations
 
 from typing import Any
 
-import axle_pricing_runner as pricing
+import axle_pricing_core as pricing
 
 base = pricing.base
 
@@ -30,21 +30,13 @@ def classify_optional_health(cfg, reasons: list[str]) -> tuple[list[str], dict[s
     tariff = cfg.section("tariff")
     ev = cfg.section("ev")
 
-    export_configured = _configured(
-        tariff,
-        "export_current_rate",
-        "export_current_day_rates",
-        "export_next_day_rates",
-    )
+    export_configured = _configured(tariff, "export_current_rate", "export_current_day_rates", "export_next_day_rates")
     ev_enabled = bool(ev.get("smart_charging_enabled", False))
     ev_dispatch_configured = _configured(ev, "smart_charging_dispatch")
 
     degraded: list[str] = []
     capabilities: dict[str, dict[str, Any]] = {
-        "export_tariff": {
-            "status": "configured" if export_configured else "unconfigured",
-            "required": False,
-        },
+        "export_tariff": {"status": "configured" if export_configured else "unconfigured", "required": False},
         "ev_smart_charging": {
             "status": "configured" if ev_enabled and ev_dispatch_configured else "unconfigured",
             "required": False,
@@ -75,8 +67,6 @@ def make_forecast_with_health_policy(client, store, cfg, now):
 
 
 def publish_health_with_capabilities(client, state, reasons, last_success, duration_s, store, failures):
-    # Keep the established health publisher, then enrich the same MQTT/HA sensor
-    # with optional capability status without changing its state classification.
     _wrapped_publish_health(client, state, reasons, last_success, duration_s, store, failures)
     try:
         current = client.state_optional(base.HEALTH_ENTITY) or {}
