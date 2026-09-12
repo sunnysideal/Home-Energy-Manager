@@ -2,6 +2,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APP = (ROOT / "app.py").read_text(encoding="utf-8")
+MINIMISE_RUNTIME = (ROOT / "minimise_export_runtime.py").read_text(encoding="utf-8")
 AGENTS = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
 def require(cond, message):
@@ -52,13 +53,7 @@ require("target_end,guardrail_end" in APP or "de=min(target_end,guardrail_end)" 
 require("required_depletion_pct=self.planned_discharge_soc_adjustment" in APP,
         "Intelligent export top-up is not based on the same SOC-depletion model")
 
-
-# Regression: Rule-1 Intelligent charging must use the FORECAST ARRIVAL SOC
-# at the tariff-derived next off-peak boundary, not live SOC and not a
-# controller-side re-simulation of intervening winter load.  Scenario:
-# 18:35, confirmed Intelligent cheap half-hour active, forecaster says the
-# battery will arrive at the next tariff-derived cheap start at reserve (4%).
-# With a 20% safety buffer the requested Intelligent top-up is therefore 16pp.
+# Regression: Rule-1 Intelligent charging must use the FORECAST ARRIVAL SOC.
 require("offpeak_arrival_soc=float(start_soc)" in APP,
         "Explicit forecaster arrival-SOC semantic missing")
 require("offpeak_arrival_soc < buffer_soc-0.5" in APP,
@@ -67,6 +62,26 @@ require("buffer_soc-offpeak_arrival_soc" in APP,
         "Intelligent Rule-1 top-up is not the forecast arrival shortfall")
 require("protected_soc_to_offpeak" not in APP,
         "Controller-side duplicate load/PV reverse simulation reintroduced")
+
+# Minimise Export must not rely on arrival SOC alone. If the no-slots battery
+# reaches reserve hours before cheap rate, SOC remains clamped while grid import
+# accumulates. The runtime policy must size tonight's target from the complete
+# cheap-end -> following-cheap load/PV bridge using the established reverse
+# energy model. Missing forecast coverage is deliberately fail-safe (100%).
+require("self.operation_mode() == 'minimise_export'" in MINIMISE_RUNTIME,
+        "Minimise Export peak-protection policy is not mode-scoped")
+require("self.power_down_protected_soc(" in MINIMISE_RUNTIME,
+        "Minimise Export does not use the load/PV reverse energy model")
+require("bridge_start = window['end']" in MINIMISE_RUNTIME,
+        "Minimise Export bridge does not start at regular cheap-rate end")
+require("next_offpeak_start = _shift_local_day(self, window['start'], 1)" in MINIMISE_RUNTIME,
+        "Minimise Export bridge does not extend to the following regular cheap start")
+require("max(configured_floor, protected_soc)" in MINIMISE_RUNTIME,
+        "Configured minimise-export SOC is not retained as a floor")
+require("forecast_coverage_complete" in MINIMISE_RUNTIME,
+        "Minimise Export peak-protection coverage is not exposed diagnostically")
+require("If forecast coverage is incomplete, the target must fail safe to 100%" in AGENTS,
+        "Minimise Export incomplete-forecast fail-safe is not contractual")
 
 # The next off-peak window itself is supplied by the forecaster/tariff contract.
 require("off=s.get('attributes',{}).get('offpeak')" in APP,
@@ -80,14 +95,12 @@ required_delta_pct=max(0.0,buffer_soc-arrival_soc)
 require(abs(required_delta_pct-16.0)<1e-9,
         "18:35 regression: a 4% forecast arrival should request a 16pp Intelligent top-up")
 
-
 require("grid_export_meter_source" in APP,
         "Controller does not consume selected meter-source metadata")
 require("if meter_source=='true_meter':" in APP,
         "True utility-meter export is not used directly")
 require("if str(self.c.get('grid_export_meter_source') or 'battery') == 'true_meter':" in APP,
         "EV-adjusted fallback accounting is not bypassed for true meter export")
-
 
 require("controller_refresh_timeout_seconds" in APP,
         "Controller refresh timeout config missing")
@@ -96,12 +109,10 @@ require("Controller refresh wait timed out" in APP,
 require("waiting_for_controller_refresh_since" in APP,
         "Controller refresh wait timestamp missing")
 
-
 require("MQTTPublisher" in APP,
         "Controller MQTT presentation publisher missing")
 require("if not self.mqtt.publish_sensor(status_entity,self.health,a):" in APP,
         "Controller status does not retain REST fallback when MQTT is unavailable")
-
 
 # Export Generated direct-solar PauseCharge regression guards.
 require("replace(second=0,microsecond=0).strftime('%H:%M:%S')" in APP,
