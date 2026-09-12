@@ -81,6 +81,9 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
     # write-boundary invariants can be enforced without duplicating the planner.
     controller_expected = {
         "components/controller/app.py": "/app/runtime/controller/app_core.py",
+        "components/controller/controller_utils.py": "/app/runtime/controller/controller_utils.py",
+        "components/controller/controller_db.py": "/app/runtime/controller/controller_db.py",
+        "components/controller/controller_ha.py": "/app/runtime/controller/controller_ha.py",
         "components/controller/minimise_export_runtime.py": "/app/runtime/controller/minimise_export_runtime.py",
         "components/controller/active_runtime.py": "/app/runtime/controller/app.py",
         "components/controller/axle_only.py": "/app/runtime/controller/axle_only_core.py",
@@ -147,3 +150,18 @@ def test_axle_boundary_is_hacs_only_and_axle_controller_is_isolated():
     assert "components.controller.app" not in axle_controller
     assert "maximise_export" not in axle_controller
     assert "export_generated" not in axle_controller
+
+
+def test_controller_infrastructure_is_extracted_from_core():
+    controller_dir = ROOT / "components" / "controller"
+    core_text = (controller_dir / "app.py").read_text(encoding="utf-8")
+    core_tree = ast.parse(core_text, filename=str(controller_dir / "app.py"))
+    top_level_classes = {node.name for node in core_tree.body if isinstance(node, ast.ClassDef)}
+    top_level_functions = {node.name for node in core_tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assert "DB" not in top_level_classes
+    assert "HA" not in top_level_classes
+    for name in ("as_float", "parse_dt", "clamp", "iso", "weighted_quantile", "recency_weight"):
+        assert name not in top_level_functions
+    assert "from controller_db import DB" in core_text
+    assert "from controller_ha import HA" in core_text
+    assert "from controller_utils import as_float, parse_dt, clamp, iso, weighted_quantile, recency_weight" in core_text

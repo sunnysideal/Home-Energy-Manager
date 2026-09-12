@@ -46,6 +46,9 @@ COPY components/axle/main.py /app/runtime/axle/main.py
 # Preserve the established runtime entrypoint contract, keep private copies of
 # the controller cores, then overlay policy/write-boundary entrypoints.
 COPY components/controller/app.py /app/runtime/controller/app_core.py
+COPY components/controller/controller_utils.py /app/runtime/controller/controller_utils.py
+COPY components/controller/controller_db.py /app/runtime/controller/controller_db.py
+COPY components/controller/controller_ha.py /app/runtime/controller/controller_ha.py
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_runtime.py
 COPY components/controller/active_runtime.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
