@@ -2,7 +2,7 @@
 #
 # The core controller remains the common implementation. This layer adds:
 #   * minimise_export peak-period energy protection;
-#   * minimise_export deep-calibration timing; and
+#   * minimise_export deep-calibration timing and natural-load preparation; and
 #   * a qualifying Axle Export-event overlay for every active optimisation mode.
 #
 # Axle is deliberately a plan overlay rather than a second controller. When the
@@ -41,6 +41,44 @@ def _current_regular_offpeak(controller, next_window):
     if previous['start'] <= now < previous['end']:
         return previous
     return None
+
+
+def _deep_calibration_due_at(controller):
+    """Return the next deep-calibration due timestamp, if it is knowable."""
+    if not controller.c.get('calibration_enabled', True) or not controller.db.ok:
+        return None
+    if controller.db.get('calibration_low_reached_at'):
+        return None
+    last_deep = core.parse_dt(controller.db.get('last_deep_calibration_at'))
+    if last_deep is None:
+        return None
+    return (last_deep + timedelta(days=int(controller.c.get('deep_cycle_every_days', 60)))).astimezone(controller.tz)
+
+
+def _minimise_calibration_preparation(controller, window):
+    """Identify the cheap window immediately preceding a deep calibration due time."""
+    if controller.calibration_state() in ('awaiting_deep_low', 'deep_recharge', 'disabled'):
+        return None
+    due_at = _deep_calibration_due_at(controller)
+    if due_at is None:
+        return None
+
+    active = _current_regular_offpeak(controller, window)
+    prep_window = active or window
+    following_offpeak_start = window['start'] if active else _shift_local_day(controller, prep_window['start'], 1)
+    now = controller.now()
+    if not (now < due_at < following_offpeak_start):
+        return None
+
+    return {
+        'state': 'pending_deep_low',
+        'strategy': 'natural_load_before_deep_calibration',
+        'deep_calibration_due_at': core.iso(due_at),
+        'preparation_window_start': core.iso(prep_window['start']),
+        'preparation_window_end': core.iso(prep_window['end']),
+        'following_offpeak_start': core.iso(following_offpeak_start),
+        'action': 'allow_eco_discharge',
+    }
 
 
 def _event_from_state(controller, state):
@@ -86,8 +124,9 @@ def _minimise_calibration_discharge(controller, plan, window, capacity, reserve,
     safety_minutes = max(0, int(controller.c.get('charge_safety_margin_minutes', 10)))
     target_floor_time = window['start'] + timedelta(minutes=target_minutes)
 
-    # Use the no-slots forecast SOC at the off-peak boundary as the expected SOC
-    # before calibration. If unavailable, fall back to the planner's initial SOC.
+    # Natural house consumption may already have reduced SOC during the preceding
+    # preparation window/day. Size only the residual forced discharge from the
+    # latest no-slots forecast at the regular off-peak boundary.
     start_soc = core.as_float(forecast.get('attributes', {}).get('overnight_start_soc_no_slots'))
     if start_soc is None:
         start_soc = core.as_float(plan.get('initial_soc'))
@@ -115,6 +154,7 @@ def _minimise_calibration_discharge(controller, plan, window, capacity, reserve,
         'target_reserve_at': core.iso(target_floor_time), 'expected_reserve_at': core.iso(expected_floor),
         'reserve_dwell_minutes': dwell_minutes, 'expected_complete_by': core.iso(expected_complete),
         'offpeak_end': core.iso(window['end']), 'feasible': bool(feasible),
+        'residual_forced_discharge_kwh': round(discharge_kwh, 3),
     }
 
     if not feasible:
@@ -206,6 +246,7 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
 async def _plan_with_policies(self, forecast, soc, window, fallback=False):
     original_floor = self.c.get('minimise_export_min_soc', 25); original_max_c_rate = self.c.get('max_charge_c_rate', 0.4)
     minimise_diagnostics = None; capacity = reserve = max_charge = max_discharge = None; self._calibration_max_charge_w = 0.0
+    calibration_preparation = None
 
     if not fallback and self.operation_mode() == 'minimise_export':
         capacity, _ = await self.num('battery_capacity_entity', 'battery_capacity', True); reserve, _ = await self.num('battery_reserve_entity', 'battery_reserve', True)
@@ -220,6 +261,7 @@ async def _plan_with_policies(self, forecast, soc, window, fallback=False):
             configured_floor = float(original_floor); dynamic_floor = int(round(core.clamp(max(configured_floor, protected_soc), float(reserve), 100.0)))
             self.c['minimise_export_min_soc'] = dynamic_floor
             minimise_diagnostics = {'configured_floor_soc': int(round(configured_floor)), 'required_target_soc': dynamic_floor, 'protected_arrival_soc': int(round(max(float(reserve), float(self.c.get('safety_buffer_soc', 20))))), 'peak_energy_required_kwh': round(float(required_peak_kwh), 3), 'bridge_start': core.iso(bridge_start), 'next_offpeak_start': core.iso(next_offpeak_start), 'forecast_coverage_complete': bool(complete), 'strategy': 'avoid_peak_import_to_next_regular_offpeak'}
+            calibration_preparation = _minimise_calibration_preparation(self, window)
 
             # Deep-recharge calibration is deadline-driven. Let the core charge
             # solver use the physical inverter maximum rather than the normal
@@ -230,6 +272,8 @@ async def _plan_with_policies(self, forecast, soc, window, fallback=False):
                 self._calibration_max_charge_w = float(max_charge)
 
             core.LOG.info('Minimise export overnight protection: configured_floor=%d%% target=%d%% bridge=%s->%s peak_energy=%.2fkWh coverage=%s', int(round(configured_floor)), dynamic_floor, bridge_start.strftime('%Y-%m-%d %H:%M'), next_offpeak_start.strftime('%Y-%m-%d %H:%M'), float(required_peak_kwh), 'complete' if complete else 'incomplete')
+            if calibration_preparation is not None:
+                core.LOG.info('Minimise export calibration preparation: due=%s allow Eco discharge during preceding cheap window; overnight protection target remains %d%%', calibration_preparation['deep_calibration_due_at'], dynamic_floor)
 
     try:
         result = await _ORIGINAL_PLAN(self, forecast, soc, window, fallback=fallback)
@@ -241,10 +285,23 @@ async def _plan_with_policies(self, forecast, soc, window, fallback=False):
     if minimise_diagnostics is not None:
         result['minimise_export'] = minimise_diagnostics
 
+    # In the cheap window immediately preceding a deep calibration, let ordinary
+    # house load consume battery through Eco rather than preserving energy that
+    # would later be exported unpaid. The core charge target is deliberately left
+    # untouched, so scheduled cheap charging still happens when Rule 7 requires it.
+    if calibration_preparation is not None:
+        result['pause'] = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}
+        result['calibration'] = calibration_preparation
+
     if (not fallback and self.operation_mode() == 'minimise_export' and None not in (capacity, reserve, max_charge, max_discharge) and capacity > 0 and max_charge > 0 and max_discharge > 0):
         calibration = _minimise_calibration_discharge(self, result, window, float(capacity), float(reserve), float(max_discharge), forecast)
         if calibration is not None:
             result['calibration'] = calibration
+            # A feasible calibration discharge must not be blocked by the normal
+            # minimise-export PauseDischarge window. Outside the forced slot Eco
+            # remains the normal self-consumption mode.
+            if calibration.get('action') == 'discharge_to_reserve':
+                result['pause'] = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}
 
     if not fallback and self.operation_mode() in ('minimise_export', 'maximise_export', 'export_generated'):
         if capacity is None: capacity, _ = await self.num('battery_capacity_entity', 'battery_capacity', True)
