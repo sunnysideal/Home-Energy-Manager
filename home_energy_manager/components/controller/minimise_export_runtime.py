@@ -10,19 +10,19 @@
 
 import asyncio
 from datetime import datetime, timedelta
+import os
 
 import app_core as core
 
+# Keep the runtime component version aligned with the package image even though
+# the historical core source still carries its old standalone version constant.
+core.VERSION = os.environ.get('HOME_ENERGY_MANAGER_VERSION', core.VERSION).strip() or core.VERSION
 
 _ORIGINAL_PLAN = core.Controller.plan
 
 
 def _shift_local_day(controller, value, days):
-    """Shift a tariff boundary by local calendar days, preserving wall clock.
-
-    Using calendar-day reconstruction rather than timedelta(hours=24) keeps the
-    regular tariff clock time correct across UK DST transitions.
-    """
+    """Shift a tariff boundary by local calendar days, preserving wall clock."""
     local = value.astimezone(controller.tz)
     day = local.date() + timedelta(days=days)
     naive_time = local.timetz().replace(tzinfo=None)
@@ -30,13 +30,7 @@ def _shift_local_day(controller, value, days):
 
 
 def _current_regular_offpeak(controller, next_window):
-    """Return the active regular cheap window when the forecast skipped it.
-
-    Home Energy Forecaster intentionally exposes the *next* regular off-peak
-    window. While already inside today's cheap block that is tomorrow's block,
-    so infer today's matching block by one local calendar day. Prefer the core
-    controller's persisted active window when available.
-    """
+    """Return the active regular cheap window when the forecast skipped it."""
     active = controller.current_active_offpeak()
     now = controller.now()
     if active and active['start'] <= now < active['end']:
@@ -63,16 +57,13 @@ async def _plan_with_minimise_peak_protection(self, forecast, soc, window, fallb
         if capacity is not None and reserve is not None and capacity > 0:
             active = _current_regular_offpeak(self, window)
             if active:
-                # We are charging/preserving energy in the currently active
-                # cheap block. Protect the peak interval from this block's end
-                # until the already tariff-derived next off-peak start.
+                # Already inside cheap rate: protect from this cheap block's end
+                # until the tariff-derived next regular cheap start.
                 bridge_start = active['end']
                 next_offpeak_start = window['start']
             else:
-                # Before the upcoming cheap block, size tonight's target for the
-                # *following* peak period, not the peak period that is already in
-                # progress. The forecast horizon is 48h, so this boundary is
-                # available in normal operation.
+                # Before tonight's cheap rate: size tonight's charge for the
+                # following peak period (cheap end -> following cheap start).
                 bridge_start = window['end']
                 next_offpeak_start = _shift_local_day(self, window['start'], 1)
 
