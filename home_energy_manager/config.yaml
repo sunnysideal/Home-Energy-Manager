@@ -1,5 +1,5 @@
 name: Home Energy Manager
-version: 0.1.62
+version: 0.1.63
 slug: home_energy_manager
 description: ASHP forecasting, whole-home energy forecasting, Axle event integration and battery control in one add-on, with components kept strictly separate.
 arch: [aarch64, amd64, armhf, armv7, i386]
