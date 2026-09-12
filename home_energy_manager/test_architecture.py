@@ -70,13 +70,26 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
         "components/ashp_forecaster/app/runner.py": "/app/runtime/ashp_forecaster/runner.py",
         "components/home_forecaster/app/axle_pricing_runner.py": "/app/runtime/home_forecaster/axle_pricing_runner.py",
         "components/axle/main.py": "/app/runtime/axle/main.py",
-        "components/controller/app.py": "/app/runtime/controller/app.py",
-        "components/controller/axle_only.py": "/app/runtime/controller/axle_only.py",
     }
     for source, runtime in expected.items():
         assert (ROOT / source).is_file(), source
         assert f"COPY {source} {runtime}" in dockerfile
         assert runtime in launcher
+
+    # Controller runtime uses explicit wrappers at the public entrypoints so
+    # write-boundary invariants can be enforced without duplicating the planner.
+    controller_expected = {
+        "components/controller/app.py": "/app/runtime/controller/app_core.py",
+        "components/controller/minimise_export_runtime.py": "/app/runtime/controller/minimise_export_runtime.py",
+        "components/controller/active_runtime.py": "/app/runtime/controller/app.py",
+        "components/controller/axle_only.py": "/app/runtime/controller/axle_only_core.py",
+        "components/controller/axle_only_runtime.py": "/app/runtime/controller/axle_only.py",
+    }
+    for source, runtime in controller_expected.items():
+        assert (ROOT / source).is_file(), source
+        assert f"COPY {source} {runtime}" in dockerfile
+    assert "/app/runtime/controller/app.py" in launcher
+    assert "/app/runtime/controller/axle_only.py" in launcher
     assert "COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py" in dockerfile
 
 
