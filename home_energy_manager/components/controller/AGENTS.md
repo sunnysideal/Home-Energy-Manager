@@ -89,6 +89,8 @@ Any person or AI modifying this project MUST read this file before changing cont
 ### Calibration
 
 11a. **Minimise Export deep calibration targets reserve shortly after off-peak begins while minimising unpaid export**
+    - Any genuine observed battery SOC at or below the configured `deep_cycle_floor_soc` satisfies the low-end calibration requirement and resets the deep-cycle interval, regardless of whether the low SOC was reached naturally, through another operating mode, or through a controller-requested calibration.
+    - A spontaneous/natural low-SOC observation must not by itself enter the `deep_recharge` state or force a calibration recharge. The existing reserve dwell and same-window recharge sequence applies only when the controller was already performing an `awaiting_deep_low` calibration cycle.
     - In `minimise_export`, the default objective is to reach the configured reserve 30 minutes after the regular off-peak window begins.
     - When a deep calibration will become due before the following regular off-peak window, the preceding cheap window is a calibration-preparation window. `PauseDischarge` must be disabled so Eco/self-consumption can use battery energy for genuine house load instead of preserving energy that would later need to be exported unpaid.
     - Calibration preparation must not weaken Rule 7 or Rule 13: the normal minimise-export overnight charge target remains active and must still be raised when required to avoid forecast peak-rate import and preserve the safety buffer. A required scheduled charge may therefore occur during the same cheap window while Eco discharge is otherwise allowed.
