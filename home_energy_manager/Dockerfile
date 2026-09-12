@@ -13,6 +13,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY launcher.py /app/launcher.py
 COPY config_migration.py /app/config_migration.py
+COPY public_log.py /app/public_log.py
+COPY public_log_runner.py /app/public_log_runner.py
 # Copy component entry points explicitly into a stable runtime layout.
 RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/axle /app/runtime/controller
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
