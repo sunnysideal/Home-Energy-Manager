@@ -43,9 +43,11 @@ COPY components/home_forecaster/app/main.py /app/runtime/home_forecaster/main.py
 COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_core.py
 COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/axle/main.py /app/runtime/axle/main.py
-# Preserve the established runtime entrypoint contract, keep private copies of
-# the controller cores, then overlay policy/write-boundary entrypoints.
+# Preserve the established runtime entrypoint contract, keep a compatibility
+# controller core, then compose extracted responsibilities and policy layers.
+COPY components/controller/controller_legacy_core.py /app/runtime/controller/controller_legacy_core.py
 COPY components/controller/app.py /app/runtime/controller/app_core.py
+COPY components/controller/controller_discovery.py /app/runtime/controller/controller_discovery.py
 COPY components/controller/controller_utils.py /app/runtime/controller/controller_utils.py
 COPY components/controller/controller_db.py /app/runtime/controller/controller_db.py
 COPY components/controller/controller_ha.py /app/runtime/controller/controller_ha.py
