@@ -14,22 +14,34 @@ spec.loader.exec_module(launcher)
 
 
 def test_merged_config_keeps_home_assistant_api_permissions_and_canonical_shape():
-    text = (ROOT / "config.yaml").read_text()
-    cfg = yaml.safe_load(text)
+    cfg = yaml.safe_load((ROOT / "config.yaml").read_text())
     assert cfg["homeassistant_api"] is True
     assert cfg["hassio_api"] is True
     assert cfg["hassio_role"] == "default"
 
-    assert isinstance(cfg["options"].get("mqtt"), dict)
-    assert isinstance(cfg["schema"].get("mqtt"), dict)
+    expected_domains = {
+        "battery", "grid", "inverter", "tariff", "solar", "heat_pump",
+        "dhw", "ev", "energy_strategy", "axle", "advanced",
+    }
+    assert set(cfg["options"]) == expected_domains
+    assert set(cfg["schema"]) == expected_domains
 
-    hf = cfg["options"]["home_forecaster"]
-    assert isinstance(hf.get("settings"), dict)
-    assert isinstance(hf.get("solar"), dict)
-    assert isinstance(hf.get("meter"), dict)
-    assert hf["ashp"]["forecast_48h"] == "sensor.ashp_forecast_next_48h"
-    assert hf["ashp"]["ch_energy_total_kwh"] == "sensor.ashp_electrical_energy_ch"
-    assert hf["ashp"]["dhw_energy_total_kwh"] == "sensor.ashp_electrical_energy_dhw"
+    # Package-owned cross-component plumbing is deliberately absent from the UI.
+    text = (ROOT / "config.yaml").read_text()
+    assert "home_energy_forecast_entity:" not in text
+    assert "controller_refresh_request_entity:" not in text
+    assert "status_entity_id:" not in text
+    assert "forecast_48h:" not in text
+
+    # Shared inputs have one public owner.
+    assert "smart_charging_dispatch" in cfg["options"]["ev"]
+    assert "smart_charging_active" in cfg["options"]["ev"]
+    assert "smart_charging_dispatch_entity" not in text
+    assert "ev_smart_charging_dispatch_entity" not in text
+
+    assert cfg["options"]["heat_pump"]["ch_energy_total_kwh"] == "sensor.ashp_electrical_energy_ch"
+    assert cfg["options"]["dhw"]["energy_total_kwh"] == "sensor.ashp_electrical_energy_dhw"
+    assert cfg["options"]["advanced"]["mqtt"]["topic_prefix"] == "home_energy_manager"
 
 
 def test_standalone_home_forecaster_shape_is_normalised_for_merged_runtime():
@@ -56,10 +68,7 @@ def test_standalone_home_forecaster_shape_is_normalised_for_merged_runtime():
             "inverter_import_energy_total_kwh": "sensor.inverter_import",
             "inverter_export_energy_total_kwh": "sensor.inverter_export",
         },
-        "tariff": {
-            "import_rate": "sensor.import_rate",
-            "export_rate": "sensor.export_rate",
-        },
+        "tariff": {"import_rate": "sensor.import_rate", "export_rate": "sensor.export_rate"},
         "ashp": {"forecast_entity": "sensor.ashp_forecast_next_48h"},
         "ev": {},
     }
