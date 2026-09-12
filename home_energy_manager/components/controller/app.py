@@ -10,6 +10,7 @@ from controller_db import DB
 from controller_ha import HA
 from controller_utils import as_float, parse_dt, clamp, iso, weighted_quantile, recency_weight
 from controller_discovery import discover_from_forecast as _discover_from_forecast
+from controller_minimise_offpeak import coordinate_minimise_offpeak as _coordinate_minimise_offpeak
 from controller_export_generated import (
     update_effective_export_accounting as _update_effective_export_accounting,
     effective_export_accounting as _effective_export_accounting,
@@ -26,11 +27,9 @@ from controller_power_down import (
 )
 from controller_battery import (
     soc_at as _soc_at, forecast_battery_kwh_between as _forecast_battery_kwh_between,
-    planned_discharge_soc_adjustment as _planned_discharge_soc_adjustment,
-    projected_charge_start_soc as _projected_charge_start_soc,
-    latest_charge_start_for_rate as _latest_charge_start_for_rate,
-    choose_rate_and_start as _choose_rate_and_start, band_factor as _band_factor,
-    dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
+    planned_discharge_soc_adjustment as _planned_discharge_soc_adjustment, projected_charge_start_soc as _projected_charge_start_soc,
+    latest_charge_start_for_rate as _latest_charge_start_for_rate, choose_rate_and_start as _choose_rate_and_start,
+    band_factor as _band_factor, dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
 )
 from controller_tariff import (
     offpeak_from_forecast as _offpeak_from_forecast, persist_offpeak as _persist_offpeak,
@@ -73,15 +72,14 @@ class Controller(_legacy.Controller):
     def pause_plan(self, window, state=None):
         plan = super().pause_plan(window, state)
         if self.operation_mode() == 'minimise_export' and plan.get('mode') == 'PauseDischarge':
-            plan = dict(plan)
-            plan['mode'] = 'PauseBoth'
+            plan = dict(plan); plan['mode'] = 'PauseBoth'
         return plan
     async def plan(self, state, soc, window, fallback=False):
         plan = await super().plan(state, soc, window, fallback)
+        plan = await _coordinate_minimise_offpeak(self, state, plan, window, fallback)
         if plan and plan.get('intelligent_go', {}).get('confirmed'):
             intelligent = plan['intelligent_go']
-            if intelligent.get('pause_mode') == 'PauseDischarge':
-                intelligent['pause_mode'] = 'PauseBoth'
+            if intelligent.get('pause_mode') == 'PauseDischarge': intelligent['pause_mode'] = 'PauseBoth'
         return plan
     async def apply(self,plan):return await _apply_plan(self,plan,_legacy.LOG)
     async def safe(self,window,cap=None,hw=None):return await _apply_safe_fallback(self,window,cap,hw)

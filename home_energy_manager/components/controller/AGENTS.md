@@ -60,6 +60,9 @@ Any person or AI modifying this project MUST read this file before changing cont
    - In `minimise_export`, the configured `minimise_export_min_soc` is only a floor. The regular overnight target must be raised when necessary to supply the forecast peak-rate interval from the end of that cheap window to the following regular off-peak start and still arrive with the configured safety buffer.
    - The calculation must use the forecaster's no-slots load/PV curve and must account for energy demand hidden after forecast SOC reaches inverter reserve; arrival SOC alone is insufficient because it is clamped at reserve.
    - If forecast coverage is incomplete, the target must fail safe to 100% rather than risk deliberate peak-rate import.
+   - In `minimise_export`, regular cheap-window preservation and charging are one coordinated plan. `PauseBoth` preserves the battery until charging is required; a required regular charge starts when preservation ends and must not overlap `PauseBoth`.
+   - The charge duration must be sized from the SOC that the controller expects `PauseBoth` to preserve (live SOC when already inside the regular cheap window, otherwise forecast SOC at its start), not from a later no-slots SOC that assumes Eco discharge continues during the pause.
+   - If the preserved SOC already meets or exceeds the calculated overnight target, no regular charge is scheduled and `PauseBoth` may continue through the cheap window.
 
 8. **No overnight pre-export of forecast solar**
    - The regular overnight cheap period must not be used to pre-export the current day's forecast solar generation.
