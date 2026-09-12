@@ -4,7 +4,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def test_progressive_write_retry_defaults_and_formula():
-    source = (ROOT / "components/controller/app.py").read_text()
+    source = (ROOT / "components/controller/controller_legacy_core.py").read_text()
     cfg = (ROOT / "config.yaml").read_text()
     component_cfg = (ROOT / "components/controller/standalone-config.yaml").read_text()
 
