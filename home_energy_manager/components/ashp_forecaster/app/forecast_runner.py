@@ -103,17 +103,45 @@ def _select_dhw_with_refresh_wait(client: legacy.HAClient, store: legacy.Store, 
     max_age_minutes = max(25.0, float(cfg.update_minutes) * 2.0)
     deadline = time.monotonic() + THERMAL_REFRESH_WAIT_SECONDS
     last_error: RuntimeError | None = None
+    last_signature: str | None = None
+    attempts = 0
     while True:
+        attempts += 1
         try:
             result = select_dhw_forecast(store.db, starts, legacy_values, client.get_state, max_age_minutes=max_age_minutes)
             if last_error is not None:
-                LOG.info("DHW thermal forecast arrived during refresh wait; using authoritative thermal horizon")
+                LOG.info(
+                    "DHW thermal alignment recovered: attempts=%d requested_start=%s requested_end=%s selected_slots=%d",
+                    attempts,
+                    starts[0].isoformat() if starts else "none",
+                    starts[-1].isoformat() if starts else "none",
+                    len(result.values),
+                )
+            else:
+                LOG.info(
+                    "DHW thermal alignment OK: requested_start=%s requested_end=%s selected_slots=%d",
+                    starts[0].isoformat() if starts else "none",
+                    starts[-1].isoformat() if starts else "none",
+                    len(result.values),
+                )
             return result
         except RuntimeError as exc:
             last_error = exc
+            signature = str(exc)
+            if signature != last_signature:
+                LOG.warning("DHW thermal alignment wait: attempt=%d error=%s", attempts, signature)
+                last_signature = signature
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise RuntimeError(f"DHW thermal production forecast unavailable after {THERMAL_REFRESH_WAIT_SECONDS:.1f}s; no fallback is permitted") from exc
+                LOG.error(
+                    "DHW thermal alignment wait expired: attempts=%d last_error=%s",
+                    attempts,
+                    last_signature or "unknown",
+                )
+                raise RuntimeError(
+                    f"DHW thermal production forecast unavailable after {THERMAL_REFRESH_WAIT_SECONDS:.1f}s; "
+                    f"attempts={attempts}; last_error={last_signature or 'unknown'}; no fallback is permitted"
+                ) from exc
             time.sleep(min(THERMAL_REFRESH_POLL_SECONDS, remaining))
 
 
