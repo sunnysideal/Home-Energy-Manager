@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import main as legacy
 from active_dd_training import build_training as build_active_dd_training
+from common.forecast_slots import production_slot_start
 from dhw_production_selector import SelectionResult, select_dhw_forecast
 from weather_observations import (
     complete_pending_actuals,
@@ -193,6 +194,11 @@ def main() -> None:
     client.weather_observation_db = store.db
     _install_dhw_selector(client, store)
     legacy.build_training = build_active_dd_training
+    # The production ASHP horizon and the independently scheduled DHW thermal
+    # horizon must use the same epoch-selection rule. Keep main.py's public
+    # interface intact while routing its production slot choice through the
+    # shared, DST-safe boundary helper.
+    legacy.ceil_time = production_slot_start
     LOG.info("ASHP Energy Forecaster starting in timezone %s", tz.key)
     LOG.info("CH=%s temperature=%s weather=%s", cfg.ch_energy_entity, cfg.outdoor_temperature_entity, cfg.weather_entity)
     while True:
