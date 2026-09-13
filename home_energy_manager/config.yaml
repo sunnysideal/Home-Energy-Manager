@@ -1,5 +1,5 @@
 name: Home Energy Manager
-version: 0.1.82
+version: 0.1.83
 slug: home_energy_manager
 description: ASHP forecasting, whole-home energy forecasting, Axle event integration and battery control in one add-on, with components kept strictly separate.
 arch: [aarch64, amd64]
@@ -95,6 +95,7 @@ options:
     power_down_export_baseline_entity: ''
     minimise_export_min_soc: 25
     calibration_enabled: true
+    calibration_low_request_entity: ''
     top_full_every_days: 14
     deep_cycle_every_days: 60
     deep_cycle_floor_soc: 4
@@ -254,6 +255,7 @@ schema:
     power_down_export_baseline_entity: str?
     minimise_export_min_soc: int(1,99)
     calibration_enabled: bool
+    calibration_low_request_entity: str?
     top_full_every_days: int(1,365)
     deep_cycle_every_days: int(1,730)
     deep_cycle_floor_soc: int(1,20)

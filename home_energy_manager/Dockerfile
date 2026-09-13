@@ -58,6 +58,8 @@ COPY components/controller/minimise_export_runtime.py /app/runtime/controller/mi
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py
 COPY components/controller/controller_overlay_runtime.py /app/runtime/controller/minimise_export_runtime.py
 COPY components/controller/active_runtime.py /app/runtime/controller/app.py
+COPY components/controller/active_runtime.py /app/runtime/controller/active_runtime.py
+COPY components/controller/manual_low_calibration_runtime.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
 COPY components/controller/axle_only.py /app/runtime/controller/axle_only_core.py
 COPY components/controller/axle_only_runtime.py /app/runtime/controller/axle_only.py
