@@ -6,7 +6,8 @@ existing retry, readback, audit and runtime charge-target suppression semantics
 remain unchanged.
 """
 import asyncio
-from controller_utils import parse_dt, iso
+from datetime import timedelta
+from controller_utils import parse_dt, iso, as_float
 
 
 def repair_disabled_discharge(controller, plan, log):
@@ -18,6 +19,45 @@ def repair_disabled_discharge(controller, plan, log):
     disabled_at=controller.disabled_discharge_time(offpeak)
     log.warning('Correcting invalid disabled discharge slot before apply: start=%s end=%s -> %s-%s',discharge.get('start'),discharge.get('end'),disabled_at.strftime('%H:%M'),disabled_at.strftime('%H:%M'))
     plan['discharge']['start']=iso(disabled_at); plan['discharge']['end']=iso(disabled_at); plan['discharge']['planned_kwh']=0.0
+
+
+async def charge_end_with_live_extension(controller, plan, log, step_minutes=5):
+    """Extend a controller-owned cheap-rate charge in small live-SOC steps.
+
+    The planner remains responsible for the nominal slot. This is only a
+    last-mile correction when the slot is at/near its planned end and observed
+    SOC is still below the plan's logical target. The planning safety margin is
+    deliberately usable as recovery headroom, but the extension never crosses
+    the regular off-peak boundary.
+    """
+    charge=plan.get('charge') or {}
+    offpeak=plan.get('offpeak') or {}
+    start=parse_dt(charge.get('start')); end=parse_dt(charge.get('end')); off_end=parse_dt(offpeak.get('end'))
+    target=as_float(charge.get('target_soc')); rate=as_float(charge.get('rate_w')); planned_kwh=as_float(charge.get('planned_kwh'))
+    if not start or not end or not off_end or target is None or rate is None or rate<=0 or planned_kwh is None or planned_kwh<=0:
+        return end
+    now=controller.now()
+    try:
+        start=start.astimezone(controller.tz); end=end.astimezone(controller.tz); off_end=off_end.astimezone(controller.tz); now=now.astimezone(controller.tz)
+    except Exception:
+        return end
+    if not (start <= now < off_end) or end >= off_end:
+        return end
+    step=timedelta(minutes=max(1,int(step_minutes)))
+    if now < end-step:
+        return end
+    st=await controller.ha.state(controller.c.get('battery_soc_entity',''))
+    soc=as_float(st.get('state')) if st else None
+    if soc is None or soc >= target-0.5:
+        return end
+    extended=min(off_end,max(end+step,now+step))
+    if extended<=end:
+        return end
+    log.info(
+        'Cheap-rate charge last-mile extension: SOC %.1f%% < logical target %.1f%%; end %s -> %s (offpeak_end=%s)',
+        soc,target,end.strftime('%H:%M'),extended.strftime('%H:%M'),off_end.strftime('%H:%M'),
+    )
+    return extended
 
 
 async def desired_inverter_fields(controller, plan, log):
@@ -33,8 +73,9 @@ async def desired_inverter_fields(controller, plan, log):
         else:pause={'mode':'Disabled','start':'00:00:00','end':'00:00:00'}
     pause_start=await controller.preserve_active_slot_start('pause',controller.c['pause_start_entity'],controller.c['pause_end_entity'],pause['start'])
     charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(parse_dt(plan['charge']['start'])))
+    charge_end=await charge_end_with_live_extension(controller,plan,log)
     discharge_start=await controller.preserve_active_slot_start('discharge',controller.c['discharge_slot_1_start_entity'],controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['start'])))
-    fields=[('eco',controller.c['eco_mode_entity'],'on',None),('charge_enable',controller.c['charge_schedule_enable_entity'],'on',None),('discharge_enable',controller.c['discharge_schedule_enable_entity'],'on',None),('pause_mode',controller.c['pause_mode_entity'],pause['mode'],wend),('pause_start',controller.c['pause_start_entity'],pause_start,wend),('pause_end',controller.c['pause_end_entity'],pause['end'],wend),('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,wend),('charge_end',controller.c['charge_slot_1_end_entity'],controller.tstr(parse_dt(plan['charge']['end'])),wend),('charge_target',controller.c['charge_slot_1_target_entity'],plan['charge']['target_soc'],wend),('charge_rate',controller.c['charge_rate_entity'],plan['charge']['rate_w'],wend),('discharge_start',controller.c['discharge_slot_1_start_entity'],discharge_start,parse_dt(plan['offpeak']['start'])),('discharge_end',controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['end'])),parse_dt(plan['offpeak']['start'])),('discharge_rate',controller.c['discharge_rate_entity'],plan['discharge']['rate_w'],parse_dt(plan['offpeak']['start']))]
+    fields=[('eco',controller.c['eco_mode_entity'],'on',None),('charge_enable',controller.c['charge_schedule_enable_entity'],'on',None),('discharge_enable',controller.c['discharge_schedule_enable_entity'],'on',None),('pause_mode',controller.c['pause_mode_entity'],pause['mode'],wend),('pause_start',controller.c['pause_start_entity'],pause_start,wend),('pause_end',controller.c['pause_end_entity'],pause['end'],wend),('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,wend),('charge_end',controller.c['charge_slot_1_end_entity'],controller.tstr(charge_end),wend),('charge_target',controller.c['charge_slot_1_target_entity'],plan['charge']['target_soc'],wend),('charge_rate',controller.c['charge_rate_entity'],plan['charge']['rate_w'],wend),('discharge_start',controller.c['discharge_slot_1_start_entity'],discharge_start,parse_dt(plan['offpeak']['start'])),('discharge_end',controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['end'])),parse_dt(plan['offpeak']['start'])),('discharge_rate',controller.c['discharge_rate_entity'],plan['discharge']['rate_w'],parse_dt(plan['offpeak']['start']))]
     reserve,_=await controller.num('battery_reserve_entity','battery_reserve',False)
     if reserve is not None:fields.append(('discharge_target',controller.c['discharge_slot_1_target_entity'],int(round(reserve)),parse_dt(plan['offpeak']['start'])))
     return fields
