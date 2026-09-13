@@ -1,6 +1,6 @@
 """Battery planning calculations extracted from the controller compatibility core."""
 
-from controller_utils import as_float, clamp
+from controller_utils import as_float, clamp, iso
 
 SOC_BANDS=[(0,10),(10,20),(20,30),(30,40),(40,50),(50,60),(60,70),(70,80),(80,90),(90,95),(95,98),(98,99),(99,100)]
 GENERIC={(0,10):.95,(10,20):.95,(20,30):.95,(30,40):.95,(40,50):.95,(50,60):.95,(60,70):.95,(70,80):.95,(80,90):.93,(90,95):.88,(95,98):.78,(98,99):.58,(99,100):.35}
@@ -45,17 +45,50 @@ def band_factor(c,band):
     return GENERIC[band]*(1-confidence)+r['learned_factor']*confidence
 
 def dwell(c):
-    """Conservative completion allowance for a requested 100% charge.
-
-    Historically this was a fixed generic dwell. The learner now persists an
-    adaptive top-completion allowance. It is deliberately never blended below
-    the generic value: missing 100% is more costly than arriving early, and
-    successful observations are used only to reduce previously-added excess.
-    """
+    """Conservative completion allowance for a requested 100% charge."""
     generic=float(c.c.get('generic_dwell_minutes',15))
     learned=as_float(c.db.get('learned_dwell_minutes')) if c.db.ok else None
     if learned is None:return generic
     return max(generic,learned)
+
+def learn_top_completion(c,n,end_soc,active,target):
+    """Learn extra top-end time from both completed and missed 100% attempts."""
+    if not c.db.ok or not active or target is None or target<100:return
+    planned_end=active.get('end')
+    if planned_end is None:return
+    first100=active.get('first100')
+    generic=float(c.c.get('generic_dwell_minutes',15))
+    current=as_float(c.db.get('learned_dwell_minutes'))
+    if current is None:current=generic
+    attempts=int(c.db.get('top_completion_attempts') or 0)+1
+    successes=int(c.db.get('top_completion_successes') or 0)
+    misses=int(c.db.get('top_completion_misses') or 0)
+    prior=current
+    if first100 is None or end_soc<100:
+        shortfall=max(0.0,100.0-float(end_soc))
+        step=max(10.0,5.0+shortfall*5.0)
+        current=min(90.0,current+step)
+        misses+=1; result='miss'; timing=None
+    else:
+        successes+=1
+        timing=max(0.0,(planned_end-first100).total_seconds()/60.0)
+        if current>generic and timing>=10.0:
+            current=max(generic,current-min(2.0,max(0.0,timing-5.0)*0.10))
+        result='success'
+    confidence=min(1.0,attempts/5.0)
+    c.db.set('learned_dwell_minutes',round(current,2))
+    c.db.set('learned_dwell_confidence',confidence)
+    c.db.set('top_completion_attempts',attempts)
+    c.db.set('top_completion_successes',successes)
+    c.db.set('top_completion_misses',misses)
+    c.db.set('top_completion_last_result',result)
+    c.db.set('top_completion_last_end_soc',float(end_soc))
+    c.db.set('top_completion_last_first_100_at',iso(first100) if first100 else None)
+    c.db.set('top_completion_last_updated_at',iso(n))
+    c.LOG.info(
+        'Top charge learning: result=%s end_soc=%.1f%% first100=%s spare_after_100=%s allowance=%.1f->%.1fmin attempts=%d successes=%d misses=%d confidence=%.2f',
+        result,float(end_soc),iso(first100) if first100 else 'none',
+        'unknown' if timing is None else f'{timing:.1f}min',prior,current,attempts,successes,misses,confidence)
 
 def charge_minutes(c,soc,target,rate,cap):
     if rate<=0 or target<=soc:return 0.0
