@@ -1,6 +1,6 @@
 """Battery planning calculations extracted from the controller compatibility core."""
 
-from controller_utils import as_float, clamp, iso
+from controller_utils import as_float, clamp, iso, parse_dt
 
 SOC_BANDS=[(0,10),(10,20),(20,30),(30,40),(40,50),(50,60),(60,70),(70,80),(80,90),(90,95),(95,98),(98,99),(99,100)]
 GENERIC={(0,10):.95,(10,20):.95,(20,30):.95,(30,40):.95,(40,50):.95,(50,60):.95,(60,70):.95,(70,80):.95,(80,90):.93,(90,95):.88,(95,98):.78,(98,99):.58,(99,100):.35}
@@ -51,12 +51,7 @@ def dwell(c):
     if learned is None:return generic
     return max(generic,learned)
 
-def learn_top_completion(c,n,end_soc,active,target):
-    """Learn extra top-end time from both completed and missed 100% attempts."""
-    if not c.db.ok or not active or target is None or target<100:return
-    planned_end=active.get('end')
-    if planned_end is None:return
-    first100=active.get('first100')
+def _apply_top_completion_observation(c,n,end_soc,first100,planned_end,source):
     generic=float(c.c.get('generic_dwell_minutes',15))
     current=as_float(c.db.get('learned_dwell_minutes'))
     if current is None:current=generic
@@ -86,9 +81,46 @@ def learn_top_completion(c,n,end_soc,active,target):
     c.db.set('top_completion_last_first_100_at',iso(first100) if first100 else None)
     c.db.set('top_completion_last_updated_at',iso(n))
     c.LOG.info(
-        'Top charge learning: result=%s end_soc=%.1f%% first100=%s spare_after_100=%s allowance=%.1f->%.1fmin attempts=%d successes=%d misses=%d confidence=%.2f',
-        result,float(end_soc),iso(first100) if first100 else 'none',
+        'Top charge learning: source=%s result=%s end_soc=%.1f%% first100=%s spare_after_100=%s allowance=%.1f->%.1fmin attempts=%d successes=%d misses=%d confidence=%.2f',
+        source,result,float(end_soc),iso(first100) if first100 else 'none',
         'unknown' if timing is None else f'{timing:.1f}min',prior,current,attempts,successes,misses,confidence)
+
+def learn_top_completion(c,n,end_soc,active,target):
+    """Learn extra top-end time from both completed and missed live 100% attempts."""
+    if not c.db.ok or not active or target is None or target<100:return
+    planned_end=active.get('end')
+    if planned_end is None:return
+    _apply_top_completion_observation(c,n,end_soc,active.get('first100'),planned_end,'live')
+
+def bootstrap_top_completion(c):
+    """Seed the top-completion learner once from trustworthy historic sessions.
+
+    Historic rows pre-date storage of the logical target SOC. Reached-100 rows
+    are unambiguous; end-SOC 99 rows are included as conservative near-full
+    misses because they are the failure mode this learner exists to correct.
+    Lower end SOC values are deliberately excluded rather than guessing that a
+    partial charge was intended to reach 100%.
+    """
+    if not c.db.ok or c.db.get('top_completion_bootstrap_v1'):return
+    rows=c.db.conn.execute(
+        'SELECT * FROM charge_sessions WHERE eligible=1 AND (reached_100=1 OR end_soc>=99) ORDER BY ended_at'
+    ).fetchall()
+    replayed=0
+    for row in rows:
+        end=parse_dt(row['ended_at'])
+        end_soc=as_float(row['end_soc'])
+        if end is None or end_soc is None:continue
+        first100=None
+        dwell_minutes=as_float(row['dwell_minutes'])
+        if bool(row['reached_100']) and dwell_minutes is not None:
+            from datetime import timedelta
+            first100=end-timedelta(minutes=max(0.0,dwell_minutes))
+        _apply_top_completion_observation(c,end,end_soc,first100,end,'history')
+        replayed+=1
+    c.db.set('top_completion_bootstrap_v1',True)
+    c.db.set('top_completion_bootstrap_sessions',replayed)
+    c.db.set('top_completion_bootstrap_completed_at',iso(c.now()))
+    c.LOG.info('Top charge learning bootstrap: replayed=%d allowance=%.1fmin',replayed,dwell(c))
 
 def charge_minutes(c,soc,target,rate,cap):
     if rate<=0 or target<=soc:return 0.0
