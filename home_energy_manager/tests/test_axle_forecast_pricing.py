@@ -27,8 +27,10 @@ def test_partial_overlap_is_weighted_not_whole_slot_reward():
     assert 'normal * (1.0 - overlap_fraction) + reward_rate * overlap_fraction' in text
 
 
-def test_home_forecaster_runs_through_axle_pricing_and_health_wrappers():
+def test_home_forecaster_runs_through_full_wrapper_stack():
     dockerfile = DOCKERFILE.read_text()
     assert '/app/runtime/home_forecaster/axle_pricing_runner.py' in LAUNCHER.read_text()
     assert 'COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_core.py' in dockerfile
-    assert 'COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py' in dockerfile
+    assert 'COPY components/home_forecaster/app/battery_idle_runtime.py /app/runtime/home_forecaster/battery_idle_core.py' in dockerfile
+    assert 'COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/health_runtime.py' in dockerfile
+    assert 'COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py' in dockerfile
