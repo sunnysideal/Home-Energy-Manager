@@ -10,6 +10,10 @@ on:
       - 'home_energy_manager/**'
       - '.github/workflows/home-energy-manager-tests.yml'
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -33,3 +37,53 @@ jobs:
       - name: Run tests
         run: |
           pytest -q
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read add-on version
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/^version:[[:space:]]*//p' home_energy_manager/config.yaml | tr -d '"\047')
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: home_energy_manager
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            BUILD_VERSION=${{ steps.version.outputs.version }}
+            BUILD_ARCH=aarch64|amd64
+          tags: |
+            ghcr.io/sunnysideal/home-energy-manager:${{ steps.version.outputs.version }}
+            ghcr.io/sunnysideal/home-energy-manager:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/sunnysideal/Home-Energy-Manager
+            org.opencontainers.image.description=Home Energy Manager Home Assistant add-on
+            org.opencontainers.image.licenses=MIT
+            io.hass.version=${{ steps.version.outputs.version }}
+            io.hass.type=app
+            io.hass.arch=aarch64|amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
