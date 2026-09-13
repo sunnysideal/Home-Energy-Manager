@@ -30,6 +30,7 @@ from controller_battery import (
     planned_discharge_soc_adjustment as _planned_discharge_soc_adjustment, projected_charge_start_soc as _projected_charge_start_soc,
     latest_charge_start_for_rate as _latest_charge_start_for_rate, choose_rate_and_start as _choose_rate_and_start,
     band_factor as _band_factor, dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
+    learn_top_completion as _learn_top_completion, bootstrap_top_completion as _bootstrap_top_completion,
 )
 from controller_tariff import (
     offpeak_from_forecast as _offpeak_from_forecast, persist_offpeak as _persist_offpeak,
@@ -75,12 +76,18 @@ class Controller(_legacy.Controller):
             plan = dict(plan); plan['mode'] = 'PauseBoth'
         return plan
     async def plan(self, state, soc, window, fallback=False):
+        _bootstrap_top_completion(self)
         plan = await super().plan(state, soc, window, fallback)
         plan = await _coordinate_minimise_offpeak(self, state, plan, window, fallback)
         if plan and plan.get('intelligent_go', {}).get('confirmed'):
             intelligent = plan['intelligent_go']
             if intelligent.get('pause_mode') == 'PauseDischarge': intelligent['pause_mode'] = 'PauseBoth'
         return plan
+    async def finish_session(self,n,end_soc):
+        active=self.active
+        target=as_float((self.confirmed or {}).get('charge_target_soc'))
+        await super().finish_session(n,end_soc)
+        _learn_top_completion(self,n,end_soc,active,target)
     async def apply(self,plan):return await _apply_plan(self,plan,_legacy.LOG)
     async def safe(self,window,cap=None,hw=None):return await _apply_safe_fallback(self,window,cap,hw)
 
