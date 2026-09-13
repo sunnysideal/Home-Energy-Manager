@@ -1,6 +1,7 @@
 import importlib.util
 import sqlite3
 import sys
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,9 +28,24 @@ class Store:
 
 
 def _load_runtime():
-    # Runtime imports health_runtime, whose wrapper stack is safe to import in tests.
+    # Mirror the packaged wrapper chain used by the add-on. health_runtime imports
+    # battery_idle_core, which is a Docker-time alias for battery_idle_runtime.py.
+    # These tests exercise only the shadow model's pure learning/model helpers.
+    base = types.SimpleNamespace(
+        make_forecast=lambda *args: ({"attributes": {}}, []),
+        publish_health=lambda *args: None,
+        main=lambda: None,
+        HEALTH_ENTITY="sensor.home_energy_forecast_health",
+        LOG=types.SimpleNamespace(warning=lambda *args: None),
+    )
+    idle_core = types.ModuleType("battery_idle_core")
+    idle_core.base = base
+    sys.modules["battery_idle_core"] = idle_core
+    sys.modules.pop("health_runtime", None)
+
     spec = importlib.util.spec_from_file_location("battery_model_runtime_test", APP / "battery_model_runtime.py")
     module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
 
