@@ -45,12 +45,17 @@ def band_factor(c,band):
     return GENERIC[band]*(1-confidence)+r['learned_factor']*confidence
 
 def dwell(c):
+    """Conservative completion allowance for a requested 100% charge.
+
+    Historically this was a fixed generic dwell. The learner now persists an
+    adaptive top-completion allowance. It is deliberately never blended below
+    the generic value: missing 100% is more costly than arriving early, and
+    successful observations are used only to reduce previously-added excess.
+    """
     generic=float(c.c.get('generic_dwell_minutes',15))
     learned=as_float(c.db.get('learned_dwell_minutes')) if c.db.ok else None
-    confidence=as_float(c.db.get('learned_dwell_confidence')) if c.db.ok else 0
     if learned is None:return generic
-    confidence=clamp(confidence or 0,0,1)
-    return generic*(1-confidence)+learned*confidence
+    return max(generic,learned)
 
 def charge_minutes(c,soc,target,rate,cap):
     if rate<=0 or target<=soc:return 0.0
