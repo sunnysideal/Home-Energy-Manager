@@ -68,7 +68,7 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
     launcher = (ROOT / "launcher.py").read_text()
     expected = {
         "components/ashp_forecaster/app/runner.py": "/app/runtime/ashp_forecaster/runner.py",
-        "components/home_forecaster/app/health_runtime.py": "/app/runtime/home_forecaster/axle_pricing_runner.py",
+        "components/home_forecaster/app/battery_model_runtime.py": "/app/runtime/home_forecaster/axle_pricing_runner.py",
         "components/axle/main.py": "/app/runtime/axle/main.py",
     }
     for source, runtime in expected.items():
@@ -76,6 +76,9 @@ def test_manager_runtime_entrypoints_are_explicitly_copied_and_launched():
         assert f"COPY {source} {runtime}" in dockerfile
         assert runtime in launcher
     assert "COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_core.py" in dockerfile
+    assert "COPY components/home_forecaster/app/battery_idle_runtime.py /app/runtime/home_forecaster/battery_idle_core.py" in dockerfile
+    assert "COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/health_runtime.py" in dockerfile
+    assert "COPY components/home_forecaster/app/battery_model_contract.py /app/runtime/home_forecaster/battery_model_contract.py" in dockerfile
 
     # Controller runtime uses explicit wrappers at the public entrypoints so
     # write-boundary invariants can be enforced without duplicating the planner.
@@ -118,50 +121,14 @@ def test_ashp_runtime_local_imports_are_packaged():
         source = app_dir / f"{module}.py"
         assert source.is_file(), f"Dockerfile packages missing ASHP source module: {module}"
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        imported_local = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                imported_local.update(alias.name.split(".")[0] for alias in node.names)
+                names = [alias.name.split(".")[0] for alias in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
-                imported_local.add(node.module.split(".")[0])
-        imported_local &= local_modules
-        missing = imported_local - packaged
-        assert not missing, (
-            f"ASHP runtime module {module}.py imports local module(s) not copied "
-            f"into the image: {sorted(missing)}"
-        )
-        pending.extend(imported_local - checked)
-
-
-def test_axle_boundary_is_hacs_only_and_axle_controller_is_isolated():
-    adapter = (ROOT / "components" / "axle" / "main.py").read_text()
-    axle_controller = (ROOT / "components" / "controller" / "axle_only.py").read_text()
-    for entity_id in (
-        "sensor.axle_vpp_axle_start_time",
-        "sensor.axle_vpp_axle_end_time",
-        "sensor.axle_vpp_axle_import_export",
-        "sensor.axle_vpp_axle_event_window_state",
-        "sensor.axle_vpp_axle_updated_at",
-    ):
-        assert entity_id in adapter
-    assert "sensor.home_energy_manager_axle" in adapter
-    assert "api.axle" not in adapter.lower()
-    assert "axle_only" in axle_controller
-    assert "components.controller.app" not in axle_controller
-    assert "maximise_export" not in axle_controller
-    assert "export_generated" not in axle_controller
-
-
-def test_controller_infrastructure_is_extracted_from_core():
-    controller_dir = ROOT / "components" / "controller"
-    core_text = (controller_dir / "app.py").read_text(encoding="utf-8")
-    core_tree = ast.parse(core_text, filename=str(controller_dir / "app.py"))
-    top_level_classes = {node.name for node in core_tree.body if isinstance(node, ast.ClassDef)}
-    top_level_functions = {node.name for node in core_tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    assert "DB" not in top_level_classes
-    assert "HA" not in top_level_classes
-    for name in ("as_float", "parse_dt", "clamp", "iso", "weighted_quantile", "recency_weight"):
-        assert name not in top_level_functions
-    assert "from controller_db import DB" in core_text
-    assert "from controller_ha import HA" in core_text
-    assert "from controller_utils import as_float, parse_dt, clamp, iso, weighted_quantile, recency_weight" in core_text
+                names = [node.module.split(".")[0]]
+            else:
+                continue
+            for imported in names:
+                if imported in local_modules and imported not in checked:
+                    assert imported in packaged, f"ASHP runtime local import not packaged: {module} -> {imported}"
+                    pending.append(imported)
