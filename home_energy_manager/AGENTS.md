@@ -81,11 +81,7 @@ Does not own:
 
 ## Live deployment / debugging
 
-The development Home Energy Manager instance exposes a read-only add-on diagnostic log under:
-
-`/local/home_energy_manager/latest.log`
-
-Do not commit or publish the deployment host/domain in this repository. When runtime log access is needed, ask the user for the current host/domain portion first, then combine it with the path above for that debugging session. Treat the resulting URL as a read-only development/debugging endpoint; do not attempt to modify the running Home Assistant instance through it.
+Use the Home Assistant add-on log or a user-supplied log file for runtime diagnostics. The add-on must not publish its logs through `/config/www` or another unauthenticated web endpoint.
 
 ## GitHub / CI workflow
 
