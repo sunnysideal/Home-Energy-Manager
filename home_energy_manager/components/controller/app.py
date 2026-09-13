@@ -81,6 +81,56 @@ class Controller(_legacy.Controller):
             intelligent = plan['intelligent_go']
             if intelligent.get('pause_mode') == 'PauseDischarge': intelligent['pause_mode'] = 'PauseBoth'
         return plan
+    async def finish_session(self,n,end_soc):
+        """Learn both the SOC curve and whether a requested full charge actually completed."""
+        active=self.active
+        target=as_float((self.confirmed or {}).get('charge_target_soc'))
+        intended_full=bool(active and target is not None and target>=100)
+        first100=active.get('first100') if active else None
+        planned_end=active.get('end') if active else None
+        await super().finish_session(n,end_soc)
+        if not self.db.ok or not intended_full or planned_end is None:return
+
+        generic=float(self.c.get('generic_dwell_minutes',15))
+        current=as_float(self.db.get('learned_dwell_minutes'))
+        if current is None:current=generic
+        attempts=int(self.db.get('top_completion_attempts') or 0)+1
+        successes=int(self.db.get('top_completion_successes') or 0)
+        misses=int(self.db.get('top_completion_misses') or 0)
+        prior=current
+        if first100 is None or end_soc<100:
+            # A miss is censored evidence: we do not know the exact extra time
+            # required, only that the previous allowance was insufficient. Add
+            # a meaningful step immediately; larger SOC shortfalls add more.
+            shortfall=max(0.0,100.0-float(end_soc))
+            step=max(10.0,5.0+shortfall*5.0)
+            current=min(90.0,current+step)
+            misses+=1
+            result='miss'
+            timing=None
+        else:
+            successes+=1
+            timing=max(0.0,(planned_end-first100).total_seconds()/60.0)
+            # Successful early completion proves some of an elevated allowance
+            # can be returned, but decay slowly so one easy charge cannot undo
+            # protection learned from repeated misses.
+            if current>generic and timing>=10.0:
+                current=max(generic,current-min(2.0,max(0.0,timing-5.0)*0.10))
+            result='success'
+        confidence=min(1.0,attempts/5.0)
+        self.db.set('learned_dwell_minutes',round(current,2))
+        self.db.set('learned_dwell_confidence',confidence)
+        self.db.set('top_completion_attempts',attempts)
+        self.db.set('top_completion_successes',successes)
+        self.db.set('top_completion_misses',misses)
+        self.db.set('top_completion_last_result',result)
+        self.db.set('top_completion_last_end_soc',float(end_soc))
+        self.db.set('top_completion_last_first_100_at',iso(first100) if first100 else None)
+        self.db.set('top_completion_last_updated_at',iso(n))
+        self.LOG.info(
+            'Top charge learning: result=%s end_soc=%.1f%% first100=%s spare_after_100=%s allowance=%.1f->%.1fmin attempts=%d successes=%d misses=%d confidence=%.2f',
+            result,float(end_soc),iso(first100) if first100 else 'none',
+            'unknown' if timing is None else f'{timing:.1f}min',prior,current,attempts,successes,misses,confidence)
     async def apply(self,plan):return await _apply_plan(self,plan,_legacy.LOG)
     async def safe(self,window,cap=None,hw=None):return await _apply_safe_fallback(self,window,cap,hw)
 
