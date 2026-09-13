@@ -26,6 +26,9 @@ class FakeDB:
             requested_rate_w REAL, charged_kwh REAL, reached_100 INTEGER NOT NULL,
             dwell_minutes REAL, eligible INTEGER NOT NULL, rejection_reason TEXT,
             processed INTEGER NOT NULL DEFAULT 0)''')
+        self.conn.execute('''CREATE TABLE learned_bands(
+            band_lo REAL NOT NULL, band_hi REAL NOT NULL, learned_factor REAL,
+            confidence REAL NOT NULL DEFAULT 0)''')
 
     def get(self, key):
         return self.values.get(key)
@@ -43,10 +46,6 @@ class FakeController:
 
     def now(self):
         return self._now
-
-    def band_factor(self, band):
-        from components.controller.controller_battery import GENERIC
-        return GENERIC[band]
 
 
 def test_live_99_percent_miss_adds_ten_minutes():
