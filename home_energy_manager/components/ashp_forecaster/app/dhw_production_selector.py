@@ -62,7 +62,7 @@ def _thermal_values(
         published_slots = int(attrs.get("forecast_slots"))
     except (TypeError, ValueError):
         return None, "thermal_horizon_incomplete"
-    if published_slots != len(starts):
+    if published_slots < len(starts):
         return None, "thermal_horizon_incomplete"
 
     updated = _parse_timestamp(attrs.get("last_updated"))
@@ -73,7 +73,7 @@ def _thermal_values(
         return None, "thermal_forecast_stale"
 
     rows = attrs.get("forecast") if isinstance(attrs.get("forecast"), list) else []
-    if len(rows) != len(starts):
+    if len(rows) < len(starts):
         return None, "thermal_horizon_incomplete"
 
     by_start: dict[str, float] = {}
@@ -96,7 +96,14 @@ def _thermal_values(
     for start in starts:
         key = start.astimezone(timezone.utc).isoformat()
         if key not in by_start:
-            return None, "thermal_forecast_incomplete"
+            published_keys = sorted(by_start)
+            first = published_keys[0] if published_keys else "none"
+            last = published_keys[-1] if published_keys else "none"
+            return None, (
+                "thermal_forecast_incomplete:"
+                f"missing={key},published_start={first},published_end={last},"
+                f"published_rows={len(by_start)},requested_rows={len(starts)}"
+            )
         out.append(by_start[key])
     return out, "thermal_ready"
 
