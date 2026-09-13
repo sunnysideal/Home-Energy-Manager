@@ -26,45 +26,32 @@ async def charge_end_with_live_extension(controller, plan, log, step_minutes=5):
 
     The planner remains responsible for the nominal slot. This is only a
     last-mile correction when the slot is at/near its planned end and observed
-    SOC is still below the plan's logical target. The planning safety margin is
-    deliberately usable as recovery headroom, but the extension never crosses
-    the regular off-peak boundary.
+    SOC is still below the plan's logical target. The extension remains inside
+    the regular off-peak window and preserves the configured safety margin.
     """
-    charge=plan.get('charge') or {}
-    offpeak=plan.get('offpeak') or {}
+    charge=plan.get('charge') or {}; offpeak=plan.get('offpeak') or {}
     start=parse_dt(charge.get('start')); end=parse_dt(charge.get('end')); off_end=parse_dt(offpeak.get('end'))
     target=as_float(charge.get('target_soc')); rate=as_float(charge.get('rate_w')); planned_kwh=as_float(charge.get('planned_kwh'))
-    if not start or not end or not off_end or target is None or rate is None or rate<=0 or planned_kwh is None or planned_kwh<=0:
-        return end
+    if not start or not end or not off_end or target is None or rate is None or rate<=0 or planned_kwh is None or planned_kwh<=0:return end
     now=controller.now()
-    try:
-        start=start.astimezone(controller.tz); end=end.astimezone(controller.tz); off_end=off_end.astimezone(controller.tz); now=now.astimezone(controller.tz)
-    except Exception:
-        return end
-    if not (start <= now < off_end) or end >= off_end:
-        return end
+    try:start=start.astimezone(controller.tz); end=end.astimezone(controller.tz); off_end=off_end.astimezone(controller.tz); now=now.astimezone(controller.tz)
+    except Exception:return end
+    safety_end=off_end-timedelta(minutes=max(0,float(controller.c.get('charge_safety_margin_minutes',10))))
+    if not (start<=now<safety_end) or end>=safety_end:return end
     step=timedelta(minutes=max(1,int(step_minutes)))
-    if now < end-step:
-        return end
-    st=await controller.ha.state(controller.c.get('battery_soc_entity',''))
-    soc=as_float(st.get('state')) if st else None
-    if soc is None or soc >= target-0.5:
-        return end
-    extended=min(off_end,max(end+step,now+step))
-    if extended<=end:
-        return end
-    log.info(
-        'Cheap-rate charge last-mile extension: SOC %.1f%% < logical target %.1f%%; end %s -> %s (offpeak_end=%s)',
-        soc,target,end.strftime('%H:%M'),extended.strftime('%H:%M'),off_end.strftime('%H:%M'),
-    )
+    if now<end-step:return end
+    st=await controller.ha.state(controller.c.get('battery_soc_entity','')); soc=as_float(st.get('state')) if st else None
+    if soc is None or soc>=target-0.5:return end
+    extended=min(safety_end,max(end+step,now+step))
+    if extended<=end:return end
+    log.info('Cheap-rate charge last-mile extension: SOC %.1f%% < logical target %.1f%%; end %s -> %s (safety_end=%s offpeak_end=%s)',soc,target,end.strftime('%H:%M'),extended.strftime('%H:%M'),safety_end.strftime('%H:%M'),off_end.strftime('%H:%M'))
     return extended
 
 
 async def desired_inverter_fields(controller, plan, log):
     """Translate a calculated plan to desired inverter fields without writing."""
     repair_disabled_discharge(controller,plan,log)
-    wend=parse_dt(plan['offpeak']['end'])
-    window={'start':parse_dt(plan['offpeak']['start']).astimezone(controller.tz),'end':wend.astimezone(controller.tz),'rate_p':plan['offpeak']['rate_p']}
+    wend=parse_dt(plan['offpeak']['end']); window={'start':parse_dt(plan['offpeak']['start']).astimezone(controller.tz),'end':wend.astimezone(controller.tz),'rate_p':plan['offpeak']['rate_p']}
     pause=plan.get('pause') or controller.pause_plan(window)
     if plan.get('intelligent_go',{}).get('confirmed'):
         ig=plan['intelligent_go']; ia=parse_dt(ig.get('slot_start')); ib=parse_dt(ig.get('slot_end')); mode=ig.get('pause_mode') or 'Disabled'
@@ -82,25 +69,21 @@ async def desired_inverter_fields(controller, plan, log):
 
 
 async def apply_plan(controller, plan, log):
-    apply_started=asyncio.get_running_loop().time(); controller.confirmed_writes_this_apply=0
-    fields=await desired_inverter_fields(controller,plan,log); results=[]
+    apply_started=asyncio.get_running_loop().time(); controller.confirmed_writes_this_apply=0; fields=await desired_inverter_fields(controller,plan,log); results=[]
     for item in fields:
         field_started=asyncio.get_running_loop().time(); result=await controller.ensure(*item); results.append(result); elapsed=asyncio.get_running_loop().time()-field_started
         if elapsed>=1.0:log.info('Apply timing: field=%s elapsed=%.3fs result=%s',item[0],elapsed,'ok' if result else 'failed')
-    log.info('Apply timing: total=%.3fs fields=%d writes_confirmed=%d success=%s',asyncio.get_running_loop().time()-apply_started,len(fields),controller.confirmed_writes_this_apply,'yes' if all(results) else 'no')
-    return all(results)
+    log.info('Apply timing: total=%.3fs fields=%d writes_confirmed=%d success=%s',asyncio.get_running_loop().time()-apply_started,len(fields),controller.confirmed_writes_this_apply,'yes' if all(results) else 'no'); return all(results)
 
 
 async def apply_safe_fallback(controller, window, cap=None, hardware_max_charge_w=None):
     """Apply the existing conservative fallback through the write boundary."""
     now=controller.now(); export_start=controller.export_start(window) if window else now.replace(second=0,microsecond=0); pause=controller.pause_plan(window)
-    pause_start=await controller.preserve_active_slot_start('pause',controller.c['pause_start_entity'],controller.c['pause_end_entity'],pause['start'])
-    discharge_start=await controller.preserve_active_slot_start('discharge',controller.c['discharge_slot_1_start_entity'],controller.c['discharge_slot_1_end_entity'],controller.tstr(export_start))
+    pause_start=await controller.preserve_active_slot_start('pause',controller.c['pause_start_entity'],controller.c['pause_end_entity'],pause['start']); discharge_start=await controller.preserve_active_slot_start('discharge',controller.c['discharge_slot_1_start_entity'],controller.c['discharge_slot_1_end_entity'],controller.tstr(export_start))
     fields=[('eco',controller.c['eco_mode_entity'],'on',None),('charge_enable',controller.c['charge_schedule_enable_entity'],'on',None),('discharge_enable',controller.c['discharge_schedule_enable_entity'],'on',None),('pause_mode',controller.c['pause_mode_entity'],pause['mode'],window['end'] if window else None),('pause_start',controller.c['pause_start_entity'],pause_start,window['end'] if window else None),('pause_end',controller.c['pause_end_entity'],pause['end'],window['end'] if window else None),('discharge_start',controller.c['discharge_slot_1_start_entity'],discharge_start,window['end'] if window else None),('discharge_end',controller.c['discharge_slot_1_end_entity'],controller.tstr(export_start),window['end'] if window else None)]
     reserve,_=await controller.num('battery_reserve_entity','battery_reserve',False)
     if reserve is not None:fields.append(('discharge_target',controller.c['discharge_slot_1_target_entity'],int(round(reserve)),window['end'] if window else None))
     if window and cap:
-        charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(window['start']))
-        rate=cap*1000*float(controller.c.get('preferred_charge_c_rate',.25)); rate=min(rate,hardware_max_charge_w) if hardware_max_charge_w else rate
+        charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(window['start'])); rate=cap*1000*float(controller.c.get('preferred_charge_c_rate',.25)); rate=min(rate,hardware_max_charge_w) if hardware_max_charge_w else rate
         fields += [('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,window['end']),('charge_end',controller.c['charge_slot_1_end_entity'],controller.tstr(window['end']),window['end']),('charge_target',controller.c['charge_slot_1_target_entity'],100,window['end']),('charge_rate',controller.c['charge_rate_entity'],int(round(rate)),window['end'])]
     return all([await controller.ensure(*item) for item in fields])
