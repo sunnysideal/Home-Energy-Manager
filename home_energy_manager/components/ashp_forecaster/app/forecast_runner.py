@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Production ASHP forecaster entrypoint with guaranteed configured horizon.
 
-The learned thermal DHW forecast is authoritative for production. Legacy DHW remains
-available internally as a validation comparator, but is never used as a production
-fallback. If the thermal horizon is unavailable or invalid, the forecast run fails
-rather than publishing a contradictory DHW estimate.
+The learned thermal DHW forecast is the only DHW production path. If its horizon is
+unavailable or invalid, the ASHP forecast run fails rather than publishing a substitute.
 """
 from __future__ import annotations
 
@@ -99,7 +97,7 @@ class HorizonHAClient(legacy.HAClient):
         return extended
 
 
-def _select_dhw_with_refresh_wait(client: legacy.HAClient, store: legacy.Store, cfg, starts, legacy_values: list[float]) -> SelectionResult:
+def _select_dhw_with_refresh_wait(client: legacy.HAClient, store: legacy.Store, cfg, starts) -> SelectionResult:
     max_age_minutes = max(25.0, float(cfg.update_minutes) * 2.0)
     deadline = time.monotonic() + THERMAL_REFRESH_WAIT_SECONDS
     last_error: RuntimeError | None = None
@@ -108,20 +106,20 @@ def _select_dhw_with_refresh_wait(client: legacy.HAClient, store: legacy.Store, 
     while True:
         attempts += 1
         try:
-            result = select_dhw_forecast(store.db, starts, legacy_values, client.get_state, max_age_minutes=max_age_minutes)
+            result = select_dhw_forecast(store.db, starts, client.get_state, max_age_minutes=max_age_minutes)
             if last_error is not None:
                 LOG.info(
                     "DHW thermal alignment recovered: attempts=%d requested_start=%s requested_end=%s selected_slots=%d",
                     attempts,
-                    starts[0].isoformat() if starts else "none",
-                    starts[-1].isoformat() if starts else "none",
+                    starts[0].isoformat() if starts and hasattr(starts[0], "isoformat") else (str(starts[0]) if starts else "none"),
+                    starts[-1].isoformat() if starts and hasattr(starts[-1], "isoformat") else (str(starts[-1]) if starts else "none"),
                     len(result.values),
                 )
             else:
                 LOG.info(
                     "DHW thermal alignment OK: requested_start=%s requested_end=%s selected_slots=%d",
-                    starts[0].isoformat() if starts else "none",
-                    starts[-1].isoformat() if starts else "none",
+                    starts[0].isoformat() if starts and hasattr(starts[0], "isoformat") else (str(starts[0]) if starts else "none"),
+                    starts[-1].isoformat() if starts and hasattr(starts[-1], "isoformat") else (str(starts[-1]) if starts else "none"),
                     len(result.values),
                 )
             return result
@@ -133,39 +131,49 @@ def _select_dhw_with_refresh_wait(client: legacy.HAClient, store: legacy.Store, 
                 last_signature = signature
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                LOG.error(
-                    "DHW thermal alignment wait expired: attempts=%d last_error=%s",
-                    attempts,
-                    last_signature or "unknown",
-                )
+                LOG.error("DHW thermal alignment wait expired: attempts=%d last_error=%s", attempts, last_signature or "unknown")
                 raise RuntimeError(
                     f"DHW thermal production forecast unavailable after {THERMAL_REFRESH_WAIT_SECONDS:.1f}s; "
-                    f"attempts={attempts}; last_error={last_signature or 'unknown'}; no fallback is permitted"
+                    f"attempts={attempts}; last_error={last_signature or 'unknown'}"
                 ) from exc
             time.sleep(min(THERMAL_REFRESH_POLL_SECONDS, remaining))
 
 
 def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
-    legacy_builder = legacy.build_dhw_forecast
     last_logged: tuple[str, str] | None = None
-    def selected_builder(client_arg, store_arg, cfg_arg, starts):
+
+    def thermal_builder(client_arg, store_arg, cfg_arg, starts):
+        del client_arg, store_arg
         nonlocal last_logged
-        legacy_values = legacy_builder(client_arg, store_arg, cfg_arg, starts)
-        result = _select_dhw_with_refresh_wait(client, store, cfg_arg, starts, legacy_values)
+        result = _select_dhw_with_refresh_wait(client, store, cfg_arg, starts)
         marker = (result.source, result.reason)
         if marker != last_logged:
             LOG.info("DHW production forecast source=%s reason=%s", result.source, result.reason)
             last_logged = marker
         try:
-            client.set_sensor(SOURCE_ENTITY, result.source, {"friendly_name": "ASHP DHW Production Forecast Source", "source": result.source, "reason": result.reason, "thermal_selected": True, "fallback_allowed": False, "last_updated": datetime.now(client.tz).isoformat() if hasattr(client, "tz") else datetime.now().isoformat()})
+            client.set_sensor(
+                SOURCE_ENTITY,
+                result.source,
+                {
+                    "friendly_name": "ASHP DHW Production Forecast Source",
+                    "source": result.source,
+                    "reason": result.reason,
+                    "thermal_selected": True,
+                    "fallback_available": False,
+                    "last_updated": datetime.now(client.tz).isoformat() if hasattr(client, "tz") else datetime.now().isoformat(),
+                },
+            )
         except Exception as exc:
             LOG.debug("Could not publish DHW production source diagnostic: %s", exc)
         return result.values
-    legacy.build_dhw_forecast = selected_builder
+
+    legacy.build_dhw_forecast = thermal_builder
+    # main.py still contains the pre-thermal historical DHW learner for migration
+    # compatibility, but it is no longer part of runtime production.
+    legacy.build_dhw_training = lambda *args, **kwargs: 0
 
 
 def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: ZoneInfo) -> None:
-    """Publish Phase 2 raw-weather baseline diagnostics; never alter forecasting."""
     try:
         scores = raw_forecast_scores(store.db)
         overall = scores["overall"]
@@ -222,10 +230,6 @@ def main() -> None:
     client.weather_observation_db = store.db
     _install_dhw_selector(client, store)
     legacy.build_training = build_active_dd_training
-    # The production ASHP horizon and the independently scheduled DHW thermal
-    # horizon must use the same epoch-selection rule. Keep main.py's public
-    # interface intact while routing its production slot choice through the
-    # shared, DST-safe boundary helper.
     legacy.ceil_time = production_slot_start
     LOG.info("ASHP Energy Forecaster starting in timezone %s", tz.key)
     LOG.info("CH=%s temperature=%s weather=%s", cfg.ch_energy_entity, cfg.outdoor_temperature_entity, cfg.weather_entity)
