@@ -65,10 +65,11 @@ def test_other_forecast_warnings_are_never_suppressed():
     assert degraded == ["Solcast forecast stale"]
 
 
-def test_health_runtime_is_packaged_at_existing_launcher_entrypoint():
+def test_health_runtime_remains_in_packaged_wrapper_stack():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
     assert "COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_forecaster/axle_pricing_core.py" in dockerfile
     assert "COPY components/home_forecaster/app/battery_idle_runtime.py /app/runtime/home_forecaster/battery_idle_core.py" in dockerfile
-    assert "COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py" in dockerfile
+    assert "COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/health_runtime.py" in dockerfile
+    assert "COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py" in dockerfile
     assert "/app/runtime/home_forecaster/axle_pricing_runner.py" in launcher
