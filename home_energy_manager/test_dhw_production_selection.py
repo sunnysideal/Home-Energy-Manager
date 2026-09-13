@@ -53,10 +53,7 @@ def _fresh_state(starts: list[datetime], values: list[float], *, complete: bool 
             "horizon_complete": complete,
             "forecast_slots": len(starts),
             "last_updated": datetime.now(timezone.utc).isoformat(),
-            "forecast": [
-                {"start": start.isoformat(), "dhw_kwh": value}
-                for start, value in zip(starts, values)
-            ],
+            "forecast": [{"start": start.isoformat(), "dhw_kwh": value} for start, value in zip(starts, values)],
         },
     }
 
@@ -72,138 +69,86 @@ def test_selector_rejects_non_96_production_contract() -> None:
     db = _db()
     start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     with pytest.raises(RuntimeError, match="requires 96 aligned slots"):
-        select_dhw_forecast(db, [start], [0.5], lambda _: {})
+        select_dhw_forecast(db, [start], lambda _: {})
     assert _source(db) == "invalid"
 
 
 def test_selector_uses_fresh_complete_thermal_even_when_readiness_flag_is_stale() -> None:
-    db = _db()
-    _param(db, "dhw_trial_ready", 0.0)
-    starts = _starts()
-    thermal = [0.8] * len(starts)
-    state = _fresh_state(starts, thermal)
-
-    result = select_dhw_forecast(db, starts, [0.5] * len(starts), lambda _: state)
-
-    assert result.source == "thermal"
-    assert result.values == thermal
-    assert result.reason == "thermal_authoritative"
+    db = _db(); _param(db, "dhw_trial_ready", 0.0); starts = _starts(); thermal = [0.8] * len(starts)
+    result = select_dhw_forecast(db, starts, lambda _: _fresh_state(starts, thermal))
+    assert result.source == "thermal" and result.values == thermal and result.reason == "thermal_authoritative"
     assert _source(db) == "thermal"
 
 
 def test_selector_uses_authoritative_thermal_when_trial_ready() -> None:
-    db = _db()
-    _param(db, "dhw_trial_ready", 1.0)
-    starts = _starts()
+    db = _db(); _param(db, "dhw_trial_ready", 1.0); starts = _starts()
     thermal = [0.4 if i % 2 == 0 else 0.8 for i in range(len(starts))]
-    state = _fresh_state(starts, thermal)
-    legacy = [0.1] * len(starts)
-
-    result = select_dhw_forecast(db, starts, legacy, lambda _: state)
-
-    assert result.source == "thermal"
-    assert result.values == thermal
-    assert result.reason == "thermal_authoritative"
+    result = select_dhw_forecast(db, starts, lambda _: _fresh_state(starts, thermal))
+    assert result.source == "thermal" and result.values == thermal and result.reason == "thermal_authoritative"
     assert _source(db) == "thermal"
 
 
-def test_selector_rejects_stale_thermal_forecast_without_legacy_fallback() -> None:
-    db = _db()
-    starts = _starts()
-    stale = _fresh_state(starts, [0.9] * len(starts))
+def test_selector_rejects_stale_thermal_forecast() -> None:
+    db = _db(); starts = _starts(); stale = _fresh_state(starts, [0.9] * len(starts))
     stale["attributes"]["last_updated"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
     with pytest.raises(RuntimeError, match="thermal_forecast_stale"):
-        select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: stale)
+        select_dhw_forecast(db, starts, lambda _: stale)
     assert _source(db) == "invalid"
 
 
-def test_selector_rejects_horizon_marked_incomplete_without_fallback() -> None:
-    db = _db()
-    starts = _starts()
-    state = _fresh_state(starts, [0.9] * len(starts), complete=False)
+def test_selector_rejects_horizon_marked_incomplete() -> None:
+    db = _db(); starts = _starts(); state = _fresh_state(starts, [0.9] * len(starts), complete=False)
     with pytest.raises(RuntimeError, match="thermal_horizon_incomplete"):
-        select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
+        select_dhw_forecast(db, starts, lambda _: state)
     assert _source(db) == "invalid"
 
 
-def test_selector_rejects_missing_requested_slot_without_fallback() -> None:
-    db = _db()
-    starts = _starts()
-    state = _fresh_state(starts, [0.9] * len(starts))
+def test_selector_rejects_missing_requested_slot() -> None:
+    db = _db(); starts = _starts(); state = _fresh_state(starts, [0.9] * len(starts))
     state["attributes"]["forecast"] = state["attributes"]["forecast"][:-1]
     state["attributes"]["forecast_slots"] = len(starts)
     with pytest.raises(RuntimeError, match="thermal_horizon_incomplete"):
-        select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
+        select_dhw_forecast(db, starts, lambda _: state)
     assert _source(db) == "invalid"
 
 
-def test_selector_rejects_shifted_96_slot_forecast_without_fallback() -> None:
-    db = _db()
-    starts = _starts()
-    shifted = [start + timedelta(minutes=30) for start in starts]
+def test_selector_rejects_shifted_96_slot_forecast() -> None:
+    db = _db(); starts = _starts(); shifted = [start + timedelta(minutes=30) for start in starts]
     state = _fresh_state(shifted, [0.7] * len(shifted))
     with pytest.raises(RuntimeError, match="thermal_forecast_incomplete"):
-        select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
+        select_dhw_forecast(db, starts, lambda _: state)
     assert _source(db) == "invalid"
 
 
 def test_selector_accepts_buffered_thermal_horizon_after_half_hour_boundary() -> None:
-    db = _db()
-    starts = _starts()
-    thermal_starts = [starts[0] - timedelta(minutes=30), *starts]
-    thermal = [0.3] + [0.7] * len(starts)
-    state = _fresh_state(thermal_starts, thermal)
-
-    result = select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
-
-    assert result.source == "thermal"
-    assert result.values == [0.7] * len(starts)
-    assert result.reason == "thermal_authoritative"
-    assert _source(db) == "thermal"
+    db = _db(); starts = _starts(); thermal_starts = [starts[0] - timedelta(minutes=30), *starts]
+    state = _fresh_state(thermal_starts, [0.3] + [0.7] * len(starts))
+    result = select_dhw_forecast(db, starts, lambda _: state)
+    assert result.source == "thermal" and result.values == [0.7] * len(starts)
+    assert result.reason == "thermal_authoritative" and _source(db) == "thermal"
 
 
 def test_selector_reports_missing_slot_and_published_horizon() -> None:
-    db = _db()
-    starts = _starts()
-    shifted = [start + timedelta(minutes=30) for start in starts]
+    db = _db(); starts = _starts(); shifted = [start + timedelta(minutes=30) for start in starts]
     state = _fresh_state(shifted, [0.7] * len(shifted))
     with pytest.raises(RuntimeError) as excinfo:
-        select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
+        select_dhw_forecast(db, starts, lambda _: state)
     message = str(excinfo.value)
-    assert "thermal_forecast_incomplete" in message
-    assert "missing=" in message
-    assert "published_start=" in message
-    assert "published_end=" in message
-    assert "published_rows=96" in message
-    assert "requested_rows=96" in message
+    for text in ("thermal_forecast_incomplete", "missing=", "published_start=", "published_end=", "published_rows=96", "requested_rows=96"):
+        assert text in message
     assert _source(db) == "invalid"
 
 
 def test_performance_diagnostic_does_not_demote_authoritative_thermal() -> None:
-    db = _db()
-    _param(db, "dhw_performance_bad", 1.0)
-    starts = _starts()
-    thermal = [0.7] * len(starts)
+    db = _db(); _param(db, "dhw_performance_bad", 1.0); starts = _starts(); thermal = [0.7] * len(starts)
     state = _fresh_state(starts, thermal)
-
-    first = select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
-    second = select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
-
-    assert first.source == "thermal"
-    assert second.source == "thermal"
+    first = select_dhw_forecast(db, starts, lambda _: state); second = select_dhw_forecast(db, starts, lambda _: state)
+    assert first.source == second.source == "thermal"
     assert first.reason == second.reason == "thermal_authoritative"
     assert first.values == second.values == thermal
 
 
 def test_promotion_diagnostic_does_not_gate_authoritative_thermal() -> None:
-    db = _db()
-    _param(db, "dhw_promotion_ready", 0.0)
-    starts = _starts()
-    thermal = [0.7] * len(starts)
-    state = _fresh_state(starts, thermal)
-
-    result = select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
-
-    assert result.source == "thermal"
-    assert result.reason == "thermal_authoritative"
-    assert result.values == thermal
+    db = _db(); _param(db, "dhw_promotion_ready", 0.0); starts = _starts(); thermal = [0.7] * len(starts)
+    result = select_dhw_forecast(db, starts, lambda _: _fresh_state(starts, thermal))
+    assert result.source == "thermal" and result.reason == "thermal_authoritative" and result.values == thermal
