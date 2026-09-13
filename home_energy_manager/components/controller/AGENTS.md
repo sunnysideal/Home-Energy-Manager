@@ -91,85 +91,88 @@ Any person or AI modifying this project MUST read this file before changing cont
 
 ### Calibration
 
-11a. **Minimise Export deep calibration targets reserve shortly after off-peak begins while minimising unpaid export**
+11a. **Minimise Export deep calibration reaches reserve as late as practical while preserving same-window recharge**
     - Any genuine observed battery SOC at or below the configured `deep_cycle_floor_soc` satisfies the low-end calibration requirement and resets the deep-cycle interval, regardless of whether the low SOC was reached naturally, through another operating mode, or through a controller-requested calibration.
     - A spontaneous/natural low-SOC observation must not by itself enter the `deep_recharge` state or force a calibration recharge. The existing reserve dwell and same-window recharge sequence applies only when the controller was already performing an `awaiting_deep_low` calibration cycle.
-    - In `minimise_export`, the default objective is to reach the configured reserve 30 minutes after the regular off-peak window begins.
+    - In `minimise_export`, the reserve objective must be scheduled as late as practical within the regular off-peak window while still leaving enough time for the configured reserve dwell, recharge from reserve to 100% at the available hardware charge rate, and the configured charge safety margin before off-peak ends.
+    - The controller must not deliberately reach reserve materially earlier than that latest safe reserve point merely because an earlier forced discharge is possible.
     - When a deep calibration will become due before the following regular off-peak window, the preceding cheap window is a calibration-preparation window. `PauseDischarge` must be disabled so Eco/self-consumption can use battery energy for genuine house load instead of preserving energy that would later need to be exported unpaid.
     - Calibration preparation must not weaken Rule 7 or Rule 13: the normal minimise-export overnight charge target remains active and must still be raised when required to avoid forecast peak-rate import and preserve the safety buffer. A required scheduled charge may therefore occur during the same cheap window while Eco discharge is otherwise allowed.
-    - Natural house consumption during the preparation day should reduce the energy that later needs forced discharge; forced export is only for the residual energy required to reach reserve on schedule.
-    - The controller must calculate the forced-discharge start backwards from the reserve objective using the available discharge rate and expected SOC. The calculated start may be before the regular off-peak boundary when necessary to hit the reserve target on time.
-    - While an `awaiting_deep_low` calibration discharge is scheduled, `PauseDischarge` must not block that discharge; Eco/self-consumption remains available before the forced-discharge slot.
-    - Pre-off-peak calibration discharge is permitted because battery output first supplies house load and only the excess is exported; the discharge must still target the configured reserve and must not deliberately schedule the reserve point before the configured post-offpeak objective.
+    - For an active `awaiting_deep_low` calibration, the planner must evaluate the Home Forecaster no-slots SOC at the latest safe reserve point with preservation removed. Natural house consumption and PV effects up to that point are the preferred depletion path.
+    - If natural depletion is forecast to reach the configured reserve by the latest safe reserve point, no forced export is scheduled; `PauseBoth`/`PauseDischarge` must not prevent the natural depletion required for calibration.
+    - If natural depletion is forecast to get only partway to reserve, forced discharge/export must be limited to the residual SOC/energy shortfall after that forecast natural depletion. Full forced discharge is only the fallback when natural depletion contributes nothing useful or forecast coverage is unavailable.
+    - The controller must calculate any residual forced-discharge start backwards from the latest safe reserve objective using the available discharge rate and expected SOC. Battery output first supplies house load and only the excess is exported.
+    - Replanning must reduce or remove future forced discharge when updated SOC/forecast shows more natural depletion than previously expected, without rewriting the start of an already-active slot.
+    - While an `awaiting_deep_low` calibration is using natural depletion or a residual forced-discharge slot, preservation pauses must not block that depletion; Eco/self-consumption remains available outside any forced-discharge slot.
     - Once reserve is actually observed, remain at reserve for the configured `reserve_dwell_minutes` before recharging.
     - The subsequent calibration recharge must target 100% and may use any charge rate up to the hardware maximum required to complete within the same regular off-peak window; the normal preferred/max C-rate planning limits must not prevent completion of a calibration recharge.
-    - If the regular off-peak time remaining after the target reserve point is insufficient for the reserve dwell, recharge to 100%, and configured charge safety margin, postpone the deep calibration rather than extend the recharge into peak-rate time.
+    - If there is insufficient regular off-peak time for the reserve dwell, recharge to 100%, and configured charge safety margin, postpone the deep calibration rather than extend the recharge into peak-rate time.
 
 ### Safety and priorities
 
 12. **Safety buffer is protected**
-    - Normal optimisation must preserve the configured safety buffer at the next regular off-peak start unless an explicitly documented higher-priority rule applies.
+   - Normal optimisation must preserve the configured safety buffer at the next regular off-peak start unless an explicitly documented higher-priority rule applies.
 
 13. **Avoid peak import before maximising export**
-    - Priority order for normal optimisation:
+   - Priority order for normal optimisation:
       1. avoid peak-rate grid import;
       2. preserve required safety/reserve constraints;
       3. maximise genuine surplus export.
-    - A qualifying paid Axle Export event is an explicitly documented exception under the Axle rules below. Peak-rate battery charging is permitted only when it is the last available way to meet the Axle event energy requirement; cheap-rate opportunities must be used first and only the remaining shortfall may be charged at peak rate.
+   - A qualifying paid Axle Export event is an explicitly documented exception under the Axle rules below. Peak-rate battery charging is permitted only when it is the last available way to meet the Axle event energy requirement; cheap-rate opportunities must be used first and only the remaining shortfall may be charged at peak rate.
 
 14. **Eco mode**
-    - Eco/self-consumption remains the normal battery mode outside explicitly controlled charge/discharge/pause periods.
+   - Eco/self-consumption remains the normal battery mode outside explicitly controlled charge/discharge/pause periods.
 
 ### Power Down
 
 15. **Power Down is a separate higher-priority paid export event**
-    - Power Down may override normal export timing where specifically implemented.
-    - Power Down behaviour must still preserve its own documented battery-protection rules.
-    - Planned Intelligent dispatches do not block Power Down; a confirmed Intelligent slot may pre-empt forced export while active.
+   - Power Down may override normal export timing where specifically implemented.
+   - Power Down behaviour must still preserve its own documented battery-protection rules.
+   - Planned Intelligent dispatches do not block Power Down; a confirmed Intelligent slot may pre-empt forced export while active.
 
 ### Axle
 
 16. **Axle event data comes from the HACS Axle integration**
-    - Home Energy Manager must not authenticate with or call Axle directly.
-    - The Axle component normalises the installed HACS Axle integration into `sensor.home_energy_manager_axle`; the controller consumes only that package-owned interface.
+   - Home Energy Manager must not authenticate with or call Axle directly.
+   - The Axle component normalises the installed HACS Axle integration into `sensor.home_energy_manager_axle`; the controller consumes only that package-owned interface.
 
 17. **`axle_only` is passive outside necessary Axle intervention**
-    - The normal optimisation planner is not loaded in `axle_only` mode.
-    - Outside preparation for a qualifying Export event and the event itself, Home Energy Manager must not modify inverter/battery settings.
-    - Any settings temporarily changed for Axle must be restored after the event, cancellation, or controller shutdown.
+   - The normal optimisation planner is not loaded in `axle_only` mode.
+   - Outside preparation for a qualifying Export event and the event itself, Home Energy Manager must not modify inverter/battery settings.
+   - Any settings temporarily changed for Axle must be restored after the event, cancellation, or controller shutdown.
 
 18. **Only Axle Export events cause battery action**
-    - Import events may be reported but do not cause charging, discharging, or other inverter writes in the initial implementation.
-    - Missing/invalid HACS-derived event data must never invent an Axle event.
+   - Import events may be reported but do not cause charging, discharging, or other inverter writes in the initial implementation.
+   - Missing/invalid HACS-derived event data must never invent an Axle event.
 
 19. **Axle preparation targets full-rate battery discharge for the whole event**
-    - Required event-start stored energy is based on configured reserve, event duration, hardware maximum discharge rate, battery capacity and discharge efficiency.
-    - House load must not be added on top of hardware maximum battery discharge: it consumes part of that battery output and therefore reduces grid export rather than increasing possible inverter output.
-    - If a full event at maximum discharge is physically impossible, target 100% SOC and report that limitation.
+   - Required event-start stored energy is based on configured reserve, event duration, hardware maximum discharge rate, battery capacity and discharge efficiency.
+   - House load must not be added on top of hardware maximum battery discharge: it consumes part of that battery output and therefore reduces grid export rather than increasing possible inverter output.
+   - If a full event at maximum discharge is physically impossible, target 100% SOC and report that limitation.
 
 20. **Axle active-event discharge preserves reserve**
-    - During a qualifying Axle Export event, forced discharge uses the hardware maximum discharge rate and the configured battery reserve as the discharge target.
-    - The controller must never lower the reserve target to increase Axle export.
+   - During a qualifying Axle Export event, forced discharge uses the hardware maximum discharge rate and the configured battery reserve as the discharge target.
+   - The controller must never lower the reserve target to increase Axle export.
 
 21. **Axle overlays all active optimisation modes**
-    - Qualifying Axle Export events overlay `minimise_export`, `maximise_export`, and `export_generated`.
-    - `forecast_only` remains write-free and is never given an Axle battery-control overlay.
-    - `axle_only` remains the dedicated passive-outside-Axle mode described above.
+   - Qualifying Axle Export events overlay `minimise_export`, `maximise_export`, and `export_generated`.
+   - `forecast_only` remains write-free and is never given an Axle battery-control overlay.
+   - `axle_only` remains the dedicated passive-outside-Axle mode described above.
 
 22. **Normal-mode Axle preparation uses the forecast and preserves the underlying mode**
-    - Preparation must use forecasted battery state/load/PV rather than current SOC alone when deciding whether additional stored energy is required at event start.
-    - A regular off-peak opportunity before the event must be used before any peak-rate top-up.
-    - Normal forced discharge that would jeopardise the Axle event requirement must be suppressed while the event is being protected.
-    - If forecast coverage required to size preparation is incomplete, preparation must fail safe toward additional stored energy rather than assume the event can be met.
+   - Preparation must use forecasted battery state/load/PV rather than current SOC alone when deciding whether additional stored energy is required at event start.
+   - A regular off-peak opportunity before the event must be used before any peak-rate top-up.
+   - Normal forced discharge that would jeopardise the Axle event requirement must be suppressed while the event is being protected.
+   - If forecast coverage required to size preparation is incomplete, preparation must fail safe toward additional stored energy rather than assume the event can be met.
 
 23. **Axle is a temporary plan overlay, not a second controller**
-    - Normal modes must not launch or run `axle_only.py` concurrently.
-    - Axle preparation and active-event controls are applied by the normal planner as a temporary higher-priority overlay.
-    - When an event ends or is cancelled, the controller must immediately return to a fresh plan from the selected underlying normal mode; it must not restore a stale snapshot of inverter settings.
+   - Normal modes must not launch or run `axle_only.py` concurrently.
+   - Axle preparation and active-event controls are applied by the normal planner as a temporary higher-priority overlay.
+   - When an event ends or is cancelled, the controller must immediately return to a fresh plan from the selected underlying normal mode; it must not restore a stale snapshot of inverter settings.
 
 24. **Confirmed EV Smart Charging pre-empts Axle export**
-    - A currently confirmed EV Smart Charging settlement half-hour remains a no-forced-export period, including during an Axle event.
-    - Axle forced discharge must resume on the next fresh plan while the Axle event remains active after the confirmed charging half-hour ends.
+   - A currently confirmed EV Smart Charging settlement half-hour remains a no-forced-export period, including during an Axle event.
+   - Axle forced discharge must resume on the next fresh plan while the Axle event remains active after the confirmed charging half-hour ends.
 
 ## Release checklist
 
