@@ -45,6 +45,69 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return None
 
 
+def _contract_diagnostics(state: dict[str, Any] | None, starts: list[datetime]) -> str:
+    attrs = state.get("attributes") if state and isinstance(state.get("attributes"), dict) else {}
+    requested = [s.astimezone(timezone.utc).isoformat() for s in starts]
+    requested_set = set(requested)
+    rows = attrs.get("forecast") if isinstance(attrs.get("forecast"), list) else []
+
+    published: list[str] = []
+    duplicates: list[str] = []
+    malformed = 0
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            malformed += 1
+            continue
+        ts = _parse_timestamp(row.get("start"))
+        if ts is None:
+            malformed += 1
+            continue
+        key = ts.isoformat()
+        if key in seen:
+            duplicates.append(key)
+        else:
+            seen.add(key)
+            published.append(key)
+
+    published.sort()
+    published_set = set(published)
+    missing = [key for key in requested if key not in published_set]
+    extras = [key for key in published if key not in requested_set]
+
+    updated = _parse_timestamp(attrs.get("last_updated"))
+    age_seconds = None
+    if updated is not None:
+        age_seconds = round((datetime.now(timezone.utc) - updated).total_seconds(), 1)
+
+    def _first(values: list[str]) -> str:
+        return values[0] if values else "none"
+
+    def _last(values: list[str]) -> str:
+        return values[-1] if values else "none"
+
+    def _sample(values: list[str], limit: int = 5) -> str:
+        if not values:
+            return "[]"
+        body = ",".join(values[:limit])
+        suffix = f",+{len(values) - limit}more" if len(values) > limit else ""
+        return f"[{body}{suffix}]"
+
+    return (
+        f"requested_start={_first(requested)},requested_end={_last(requested)},requested_rows={len(requested)},"
+        f"published_start={_first(published)},published_end={_last(published)},published_rows={len(published)},"
+        f"forecast_slots_attr={attrs.get('forecast_slots')},expected_slots_attr={attrs.get('expected_forecast_slots')},"
+        f"coverage_slots_attr={attrs.get('coverage_forecast_slots')},horizon_complete={attrs.get('horizon_complete')},"
+        f"production_start_attr={attrs.get('production_start')},production_end_attr={attrs.get('production_end')},"
+        f"last_updated={attrs.get('last_updated')},age_seconds={age_seconds},status={attrs.get('status')},"
+        f"missing={_sample(missing)},extras={_sample(extras)},duplicates={_sample(duplicates)},malformed_rows={malformed}"
+    )
+
+
+def _failure(reason: str, state: dict[str, Any] | None, starts: list[datetime]) -> tuple[None, str]:
+    return None, f"{reason};{_contract_diagnostics(state, starts)}"
+
+
 def _thermal_values(
     state: dict[str, Any] | None,
     starts: list[datetime],
@@ -52,29 +115,29 @@ def _thermal_values(
     max_age_minutes: float,
 ) -> tuple[list[float] | None, str]:
     if not state:
-        return None, "thermal_entity_unavailable"
+        return _failure("thermal_entity_unavailable", state, starts)
     attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
     if attrs.get("status") != "published_shadow":
-        return None, "thermal_forecast_not_published"
+        return _failure("thermal_forecast_not_published", state, starts)
     if attrs.get("horizon_complete") is not True:
-        return None, "thermal_horizon_incomplete"
+        return _failure("thermal_horizon_incomplete", state, starts)
     try:
         published_slots = int(attrs.get("forecast_slots"))
     except (TypeError, ValueError):
-        return None, "thermal_horizon_incomplete"
-    if published_slots != len(starts):
-        return None, "thermal_horizon_incomplete"
+        return _failure("thermal_horizon_incomplete", state, starts)
+    if published_slots < len(starts):
+        return _failure("thermal_horizon_incomplete", state, starts)
 
     updated = _parse_timestamp(attrs.get("last_updated"))
     if updated is None:
-        return None, "thermal_forecast_missing_timestamp"
+        return _failure("thermal_forecast_missing_timestamp", state, starts)
     age = datetime.now(timezone.utc) - updated
     if age < timedelta(minutes=-2) or age > timedelta(minutes=max_age_minutes):
-        return None, "thermal_forecast_stale"
+        return _failure("thermal_forecast_stale", state, starts)
 
     rows = attrs.get("forecast") if isinstance(attrs.get("forecast"), list) else []
-    if len(rows) != len(starts):
-        return None, "thermal_horizon_incomplete"
+    if len(rows) < len(starts):
+        return _failure("thermal_horizon_incomplete", state, starts)
 
     by_start: dict[str, float] = {}
     for row in rows:
@@ -89,14 +152,14 @@ def _thermal_values(
             continue
         key = ts.isoformat()
         if key in by_start:
-            return None, "thermal_forecast_duplicate_slot"
+            return _failure("thermal_forecast_duplicate_slot", state, starts)
         by_start[key] = value
 
     out: list[float] = []
     for start in starts:
         key = start.astimezone(timezone.utc).isoformat()
         if key not in by_start:
-            return None, "thermal_forecast_incomplete"
+            return _failure("thermal_forecast_incomplete", state, starts)
         out.append(by_start[key])
     return out, "thermal_ready"
 

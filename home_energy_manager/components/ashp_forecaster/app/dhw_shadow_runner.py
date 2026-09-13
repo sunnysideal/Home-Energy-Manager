@@ -32,6 +32,7 @@ PRODUCTION_SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
 PRODUCTION_INTERVAL_MINUTES = 30
 PRODUCTION_HOURS = 48
 PRODUCTION_SLOTS = PRODUCTION_HOURS * 60 // PRODUCTION_INTERVAL_MINUTES
+PRODUCTION_COVERAGE_SLOTS = PRODUCTION_SLOTS + 1
 THERMAL_STEP_MINUTES = 5
 DRAW_REFRESH_POLL_SECONDS = 5.0
 
@@ -174,7 +175,7 @@ def _ceil_local(dt: datetime, minutes: int) -> datetime:
 
 def _production_starts(now: datetime) -> list[datetime]:
     start = _ceil_local(now, PRODUCTION_INTERVAL_MINUTES)
-    return [start + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES * i) for i in range(PRODUCTION_SLOTS)]
+    return [start + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES * i) for i in range(PRODUCTION_COVERAGE_SLOTS)]
 
 
 def _required_simulation_hours(simulation_start: datetime, production_starts: list[datetime]) -> float:
@@ -204,7 +205,7 @@ def _published_half_hours(slots: list, production_starts: list[datetime], *, ste
             "predicted_draw_kwh": round(draw_kwh, 4), "upper_temperature_c": round(float(endpoint.upper_temp_c), 2),
             "lower_temperature_c": round(float(endpoint.lower_temp_c), 2),
         })
-    return rows, len(rows) == len(production_starts) == PRODUCTION_SLOTS
+    return rows, len(rows) == len(production_starts) and len(rows) >= PRODUCTION_SLOTS
 
 
 def _publish_not_ready(publisher: Publisher, reason: str) -> None:
@@ -279,13 +280,13 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
         LOG.info("DHW legacy comparison deferred: production forecast not yet published")
     checkpoints = persist_shadow_validation(db, slots, forecast_ts=forecast_ts, legacy_dhw_by_start=legacy if legacy_available else {})
     published, horizon_complete = _published_half_hours(slots, production_starts)
-    total_dhw = sum(float(row["dhw_kwh"]) for row in published)
+    total_dhw = sum(float(row["dhw_kwh"]) for row in published[:PRODUCTION_SLOTS])
     production_source = (_state_text(token, PRODUCTION_SOURCE_ENTITY) or "legacy").strip().lower()
     if production_source not in {"legacy", "thermal"}:
         production_source = "legacy"
     thermal_authoritative = production_source == "thermal"
     production_start = production_starts[0].isoformat() if production_starts else None
-    production_end = production_starts[-1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES) if production_starts else None
+    production_end = production_starts[PRODUCTION_SLOTS - 1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES) if len(production_starts) >= PRODUCTION_SLOTS else None
 
     if publisher is not None:
         now = forecast_ts.isoformat()
@@ -293,6 +294,7 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
             "friendly_name": "ASHP DHW Thermal Forecast Next 48h", "unit_of_measurement": "kWh", "device_class": "energy",
             "model": "two_zone_thermal_shadow", "status": "published_shadow", "authoritative": thermal_authoritative,
             "forecast": published, "forecast_slots": len(published), "expected_forecast_slots": PRODUCTION_SLOTS,
+            "coverage_forecast_slots": PRODUCTION_COVERAGE_SLOTS,
             "horizon_complete": horizon_complete, "production_start": production_start,
             "production_end": production_end.isoformat() if production_end else None, "simulation_start": simulation_start.isoformat(),
             "simulation_slots": len(slots), "start_upper_temperature_c": round(upper, 2), "start_lower_temperature_c": round(lower, 2),

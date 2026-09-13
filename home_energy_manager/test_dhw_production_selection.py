@@ -147,6 +147,38 @@ def test_selector_rejects_shifted_96_slot_forecast_without_fallback() -> None:
     assert _source(db) == "invalid"
 
 
+def test_selector_accepts_buffered_thermal_horizon_after_half_hour_boundary() -> None:
+    db = _db()
+    starts = _starts()
+    thermal_starts = [starts[0] - timedelta(minutes=30), *starts]
+    thermal = [0.3] + [0.7] * len(starts)
+    state = _fresh_state(thermal_starts, thermal)
+
+    result = select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
+
+    assert result.source == "thermal"
+    assert result.values == [0.7] * len(starts)
+    assert result.reason == "thermal_authoritative"
+    assert _source(db) == "thermal"
+
+
+def test_selector_reports_missing_slot_and_published_horizon() -> None:
+    db = _db()
+    starts = _starts()
+    shifted = [start + timedelta(minutes=30) for start in starts]
+    state = _fresh_state(shifted, [0.7] * len(shifted))
+    with pytest.raises(RuntimeError) as excinfo:
+        select_dhw_forecast(db, starts, [0.2] * len(starts), lambda _: state)
+    message = str(excinfo.value)
+    assert "thermal_forecast_incomplete" in message
+    assert "missing=" in message
+    assert "published_start=" in message
+    assert "published_end=" in message
+    assert "published_rows=96" in message
+    assert "requested_rows=96" in message
+    assert _source(db) == "invalid"
+
+
 def test_performance_diagnostic_does_not_demote_authoritative_thermal() -> None:
     db = _db()
     _param(db, "dhw_performance_bad", 1.0)

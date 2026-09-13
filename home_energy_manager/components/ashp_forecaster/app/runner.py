@@ -79,8 +79,21 @@ def main() -> None:
     children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "dhw_startup_learning.py")], env=passive_env
     ))
+    # Route the independently scheduled DHW thermal publisher through the same
+    # deterministic 30-minute production epoch rule as forecast_runner.py. The
+    # 5-minute thermal simulation still uses its own native step alignment.
     children.append(subprocess.Popen(
-        [sys.executable, "-u", str(ROOT / "dhw_shadow_runner.py")], env=passive_env
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "import dhw_shadow_runner as d; "
+            "from common.forecast_slots import production_slot_start; "
+            "d._production_starts=lambda now: [production_slot_start(now, d.PRODUCTION_INTERVAL_MINUTES) + d.timedelta(minutes=d.PRODUCTION_INTERVAL_MINUTES*i) for i in range(d.PRODUCTION_COVERAGE_SLOTS)]; "
+            "d.main()",
+        ],
+        env=passive_env,
+        cwd=str(ROOT),
     ))
     children.append(subprocess.Popen(
         [sys.executable, "-u", str(ROOT / "dhw_validation_runner.py")], env=passive_env
