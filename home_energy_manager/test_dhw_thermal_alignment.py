@@ -14,6 +14,7 @@ if str(APP) not in sys.path:
     sys.path.insert(0, str(APP))
 
 from dhw_shadow_runner import (
+    PRODUCTION_COVERAGE_SLOTS,
     PRODUCTION_SLOTS,
     THERMAL_STEP_MINUTES,
     _production_starts,
@@ -49,8 +50,10 @@ def _assert_complete(now: datetime) -> None:
     production, raw = _raw_slots(now)
     published, complete = _published_half_hours(raw, production)
     assert complete is True
-    assert len(production) == PRODUCTION_SLOTS == 96
-    assert len(published) == 96
+    assert PRODUCTION_SLOTS == 96
+    assert PRODUCTION_COVERAGE_SLOTS == 97
+    assert len(production) == PRODUCTION_COVERAGE_SLOTS
+    assert len(published) == PRODUCTION_COVERAGE_SLOTS
     # ISO strings preserve the exact offset selected for each local production slot,
     # including the repeated hour at the Europe/London autumn DST transition.
     assert [row["start"] for row in published] == [item.isoformat() for item in production]
