@@ -37,6 +37,7 @@ COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_for
 COPY components/home_forecaster/app/battery_idle_runtime.py /app/runtime/home_forecaster/battery_idle_core.py
 COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/health_runtime.py
 COPY components/home_forecaster/app/battery_model_contract.py /app/runtime/home_forecaster/battery_model_contract.py
+COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/battery_model_core.py
 COPY components/home_forecaster/app/battery_model_forecast_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/axle/main.py /app/runtime/axle/main.py
