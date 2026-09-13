@@ -33,8 +33,6 @@ def test_mqtt_button_command_is_non_retained_and_thread_safe():
     assert 'event.set' in RUNTIME
     assert 'event.clear()' in RUNTIME
     assert '_latch_request(self)' in RUNTIME
-    # Discovery is retained; commands are only received on the subscribed
-    # command topic and this code never publishes/retains a command payload.
     assert '_publish_raw(discovery_topic' in MQTT_BUTTON
 
 
@@ -53,14 +51,10 @@ def test_request_only_clears_after_observed_low_soc():
 
 def test_manual_request_diagnostics_are_exposed_on_existing_controller_sensor():
     for field in (
-        'low_calibration_requested',
-        'low_calibration_request_button',
-        'low_calibration_request_button_available',
-        'low_calibration_requested_at',
-        'low_calibration_request_state',
-        'low_calibration_request_reason',
-        'low_calibration_request_target_soc',
-        'low_calibration_request_completed_at',
+        'low_calibration_requested', 'low_calibration_request_button',
+        'low_calibration_request_button_available', 'low_calibration_requested_at',
+        'low_calibration_request_state', 'low_calibration_request_reason',
+        'low_calibration_request_target_soc', 'low_calibration_request_completed_at',
         'low_calibration_request_last_result',
     ):
         assert field in RUNTIME
@@ -76,3 +70,43 @@ def test_runtime_is_packaged_above_existing_active_controller():
 def test_hard_rule_allows_controller_requested_low_observation_to_reset_interval():
     assert 'through a controller-requested calibration' in AGENTS
     assert 'resets the deep-cycle interval' in AGENTS
+
+
+def test_low_point_is_latest_safe_point_not_fixed_minutes_after_cheap_start():
+    assert 'latest_safe_reserve = window[\'end\'] - timedelta(' in RUNTIME
+    assert 'hours=recharge_hours, minutes=dwell_minutes + safety_minutes' in RUNTIME
+    assert 'as late as practical within the regular off-peak window' in AGENTS
+    assert '30 minutes after the regular off-peak window begins' not in AGENTS
+
+
+def test_natural_depletion_is_evaluated_at_latest_safe_reserve_point():
+    assert "controller.soc_at(forecast, latest_safe_reserve, 'forecast_no_slots')" in RUNTIME
+    assert "strategy = 'natural_discharge'" in RUNTIME
+    assert "strategy = 'natural_plus_forced'" in RUNTIME
+    assert "strategy = 'forced_discharge'" in RUNTIME
+    assert "'projected_soc_with_pause'" in RUNTIME
+    assert "'projected_soc_without_pause'" in RUNTIME
+    assert "'predicted_natural_depletion_soc'" in RUNTIME
+
+
+def test_forced_discharge_is_only_residual_after_natural_depletion():
+    assert 'residual_soc = max(0.0, projected_without_pause - float(reserve))' in RUNTIME
+    assert 'residual_kwh = float(capacity) * residual_soc / 100.0' in RUNTIME
+    assert "'residual_forced_discharge_kwh': round(residual_kwh, 3)" in RUNTIME
+    assert "'planned_kwh': round(residual_kwh, 3)" in RUNTIME
+
+
+def test_natural_calibration_disables_preservation_and_schedules_no_export():
+    assert "plan['pause'] = {'mode': 'Disabled'" in RUNTIME
+    assert "plan['discharge']['kind'] = 'calibration_natural_depletion'" in RUNTIME
+    assert "diagnostics['action'] = 'allow_natural_discharge'" in RUNTIME
+
+
+def test_small_forecast_noise_has_bounded_margin():
+    assert '_NATURAL_MARGIN_SOC = 0.5' in RUNTIME
+    assert 'if residual_soc <= _NATURAL_MARGIN_SOC and coverage_complete:' in RUNTIME
+
+
+def test_automatic_and_manual_low_calibration_share_strategy_function():
+    assert '_legacy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge' in RUNTIME
+    assert "if controller.calibration_state() != 'awaiting_deep_low':" in RUNTIME
