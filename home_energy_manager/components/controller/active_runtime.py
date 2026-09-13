@@ -3,7 +3,7 @@
 import asyncio
 import json
 from collections import deque
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import minimise_export_runtime as runtime
@@ -12,6 +12,7 @@ core = runtime.core
 _original_ensure = core.Controller.ensure
 _original_publish = core.Controller.publish
 _original_sample = core.Controller.sample
+_original_calibration_attrs = core.Controller.calibration_attrs
 
 _SOC_WINDOW_HALF_SECONDS = 5 * 60
 _SOC_HISTORY_SECONDS = 7 * 60
@@ -96,6 +97,113 @@ def _valid_counter_delta(end_value, start_value):
     return delta if delta >= 0 else None
 
 
+def _age_days(now, value):
+    observed = core.parse_dt(value)
+    if observed is None:
+        return None
+    try:
+        return max(0.0, (now.astimezone(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds() / 86400.0)
+    except Exception:
+        return None
+
+
+def _calibration_reason(state):
+    return {
+        'disabled': 'calibration_disabled',
+        'top_due': 'full_charge_age',
+        'awaiting_deep_low': 'deep_cycle_age',
+        'deep_recharge': 'low_endpoint_pending_recharge',
+        'normal': 'within_intervals',
+    }.get(state, 'unknown')
+
+
+def _calibration_diagnostics(controller, now=None):
+    now = now or controller.now()
+    enabled = bool(controller.c.get('calibration_enabled', True))
+    top_days = int(controller.c.get('top_full_every_days', 14))
+    deep_days = int(controller.c.get('deep_cycle_every_days', 60))
+    floor = float(controller.c.get('deep_cycle_floor_soc', 4))
+    if controller.db.ok:
+        last_full = controller.db.get('last_full_soc_at')
+        last_deep = controller.db.get('last_deep_calibration_at')
+        low_reached = controller.db.get('calibration_low_reached_at')
+        below_40 = controller.db.get('last_below_40_soc_at')
+        below_20 = controller.db.get('last_below_20_soc_at')
+        last_low = controller.db.get('last_low_soc_at')
+        soc = core.as_float(controller.db.get('calibration_previous_soc'))
+    else:
+        last_full = last_deep = low_reached = below_40 = below_20 = last_low = None
+        soc = None
+    top_age = _age_days(now, last_full)
+    deep_age = _age_days(now, last_deep)
+    top_due = bool(enabled and top_age is not None and top_age >= top_days)
+    deep_due = bool(enabled and deep_age is not None and deep_age >= deep_days)
+    state = controller.calibration_state()
+    return {
+        'state': state,
+        'reason': _calibration_reason(state),
+        'enabled': enabled,
+        'soc': soc,
+        'top_full_every_days': top_days,
+        'last_full_soc_at': last_full,
+        'top_full_age_days': top_age,
+        'top_full_due': top_due,
+        'top_full_due_in_days': None if top_age is None else max(0.0, top_days - top_age),
+        'top_full_overdue_days': None if top_age is None else max(0.0, top_age - top_days),
+        'deep_cycle_every_days': deep_days,
+        'last_deep_calibration_at': last_deep,
+        'deep_cycle_age_days': deep_age,
+        'deep_cycle_due': deep_due,
+        'deep_cycle_due_in_days': None if deep_age is None else max(0.0, deep_days - deep_age),
+        'deep_cycle_overdue_days': None if deep_age is None else max(0.0, deep_age - deep_days),
+        'deep_cycle_floor_soc': floor,
+        'low_reached_at': low_reached,
+        'last_below_40_soc_at': below_40,
+        'last_below_20_soc_at': below_20,
+        'last_low_soc_at': last_low,
+    }
+
+
+def _fmt_days(value):
+    return 'unknown' if value is None else f'{value:.3f}d'
+
+
+def _log_calibration_status(controller):
+    d = _calibration_diagnostics(controller)
+    core.LOG.info(
+        'Calibration status: state=%s reason=%s soc=%s top_last=%s top_age=%s top_interval=%dd top_due=%s top_due_in=%s top_overdue=%s deep_last=%s deep_age=%s deep_interval=%dd deep_due=%s deep_due_in=%s deep_overdue=%s floor=%.1f%% low_reached=%s below40=%s below20=%s last_low=%s',
+        d['state'], d['reason'], 'unknown' if d['soc'] is None else f"{d['soc']:.1f}%",
+        d['last_full_soc_at'] or 'unknown', _fmt_days(d['top_full_age_days']), d['top_full_every_days'],
+        'yes' if d['top_full_due'] else 'no', _fmt_days(d['top_full_due_in_days']), _fmt_days(d['top_full_overdue_days']),
+        d['last_deep_calibration_at'] or 'unknown', _fmt_days(d['deep_cycle_age_days']), d['deep_cycle_every_days'],
+        'yes' if d['deep_cycle_due'] else 'no', _fmt_days(d['deep_cycle_due_in_days']), _fmt_days(d['deep_cycle_overdue_days']),
+        d['deep_cycle_floor_soc'], d['low_reached_at'] or 'none', d['last_below_40_soc_at'] or 'unknown',
+        d['last_below_20_soc_at'] or 'unknown', d['last_low_soc_at'] or 'unknown',
+    )
+    previous = controller.db.get('calibration_last_logged_state') if controller.db.ok else getattr(controller, '_calibration_last_logged_state', None)
+    if previous != d['state']:
+        if previous is None:
+            core.LOG.info('Calibration state initial: state=%s reason=%s', d['state'], d['reason'])
+        else:
+            core.LOG.info(
+                'Calibration state change: %s -> %s reason=%s last_full=%s top_age=%s top_interval=%dd last_deep=%s deep_age=%s deep_interval=%dd low_reached=%s',
+                previous, d['state'], d['reason'], d['last_full_soc_at'] or 'unknown', _fmt_days(d['top_full_age_days']),
+                d['top_full_every_days'], d['last_deep_calibration_at'] or 'unknown', _fmt_days(d['deep_cycle_age_days']),
+                d['deep_cycle_every_days'], d['low_reached_at'] or 'none',
+            )
+        if controller.db.ok:
+            controller.db.set('calibration_last_logged_state', d['state'])
+        else:
+            controller._calibration_last_logged_state = d['state']
+    return d
+
+
+def _calibration_attrs_with_diagnostics(self):
+    attrs = _original_calibration_attrs(self)
+    attrs.update(_calibration_diagnostics(self))
+    return attrs
+
+
 def _complete_energy_window(controller, pending, sample, capacity_kwh):
     key_prefix = str(pending.get('key_prefix') or '')
     start = pending.get('start') if isinstance(pending.get('start'), dict) else None
@@ -158,6 +266,10 @@ async def _ensure_without_charge_target(self, field, entity, desired, window_end
 
 
 async def _sample_with_soc_calibration_observation(self):
+    before_full = self.db.get('last_full_soc_at') if self.db.ok else None
+    before_deep = self.db.get('last_deep_calibration_at') if self.db.ok else None
+    before_low_reached = self.db.get('calibration_low_reached_at') if self.db.ok else None
+    previous_soc = core.as_float(self.db.get('calibration_previous_soc')) if self.db.ok else None
     await _original_sample(self)
     if not self.db.ok or not self.discovery_ready or not self.c.get('calibration_enabled', True):
         return
@@ -173,12 +285,19 @@ async def _sample_with_soc_calibration_observation(self):
     capacity_kwh = await _entity_float(self, self.c.get('battery_capacity_entity', ''))
     current_sample = {'at': now, 'soc': soc, 'charge_kwh': charge_kwh, 'discharge_kwh': discharge_kwh}
 
-    previous_soc = core.as_float(self.db.get('calibration_previous_soc'))
     previous_at = core.parse_dt(self.db.get('calibration_previous_soc_at'))
     elapsed_seconds = None
     if previous_at is not None:
         try: elapsed_seconds = max(0.0, (now - previous_at.astimezone(now.tzinfo)).total_seconds())
         except Exception: pass
+
+    after_full = self.db.get('last_full_soc_at')
+    after_deep = self.db.get('last_deep_calibration_at')
+    after_low_reached = self.db.get('calibration_low_reached_at')
+    if soc >= 100 and after_full != before_full and (previous_soc is None or previous_soc < 100):
+        core.LOG.info('Calibration event: full SOC observed soc=%.1f%% last_full_soc_at=%s; top-calibration interval reset', soc, after_full or now_iso)
+    if before_low_reached and not after_low_reached and after_deep != before_deep:
+        core.LOG.info('Calibration event: deep calibration completed last_deep_calibration_at=%s last_full_soc_at=%s', after_deep or 'unknown', after_full or 'unknown')
 
     if previous_soc is not None and soc < previous_soc:
         for threshold, key_prefix in ((40.0, 'soc_crossing_40'), (20.0, 'soc_crossing_20')):
@@ -220,13 +339,15 @@ async def _sample_with_soc_calibration_observation(self):
 
 
 async def _publish_with_calibration_sensors(self, plan=None):
+    diagnostics = _log_calibration_status(self)
     await _original_publish(self, plan)
     floor_soc = float(self.c.get('deep_cycle_floor_soc', 4))
     charge_entity, discharge_entity = _battery_energy_entities(self)
     for entity_id, key, friendly_name, icon, fixed_soc, crossing_prefix in _CALIBRATION_SENSORS:
         value = self.db.get(key) if self.db.ok else None
         threshold = floor_soc if key in ('last_deep_calibration_at', 'last_low_soc_at') else fixed_soc
-        attrs = {'friendly_name': friendly_name, 'device_class': 'timestamp', 'icon': icon, 'calibration_key': key, 'calibration_soc': threshold, 'battery_soc_entity': self.c.get('battery_soc_entity') or None}
+        attrs = {'friendly_name': friendly_name, 'device_class': 'timestamp', 'icon': icon, 'calibration_key': key, 'calibration_soc': threshold, 'battery_soc_entity': self.c.get('battery_soc_entity') or None,
+                 'calibration_state': diagnostics['state'], 'calibration_reason': diagnostics['reason']}
         if crossing_prefix and self.db.ok:
             attrs.update({
                 'soc_before': core.as_float(self.db.get(f'{crossing_prefix}_soc_before')),
@@ -259,6 +380,7 @@ async def _publish_with_calibration_sensors(self, plan=None):
 
 core.Controller.ensure = _ensure_without_charge_target
 core.Controller.sample = _sample_with_soc_calibration_observation
+core.Controller.calibration_attrs = _calibration_attrs_with_diagnostics
 core.Controller.publish = _publish_with_calibration_sensors
 
 if __name__ == '__main__':
