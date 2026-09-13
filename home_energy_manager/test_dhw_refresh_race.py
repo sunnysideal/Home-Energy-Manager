@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,11 @@ class FakeClient:
         return {}
 
 
+def _starts():
+    start = datetime(2026, 9, 13, 21, 30, tzinfo=timezone.utc)
+    return [start + timedelta(minutes=30 * i) for i in range(96)]
+
+
 def test_transient_incomplete_thermal_horizon_is_retried_until_thermal_arrives(monkeypatch):
     calls = []
     thermal_values = [0.0] * 96
@@ -40,7 +46,7 @@ def test_transient_incomplete_thermal_horizon_is_retried_until_thermal_arrives(m
     monkeypatch.setattr(forecast_runner, "THERMAL_REFRESH_POLL_SECONDS", 0.001)
 
     cfg = SimpleNamespace(update_minutes=5)
-    starts = list(range(96))
+    starts = _starts()
     result = forecast_runner._select_dhw_with_refresh_wait(
         FakeClient(), FakeStore(), cfg, starts, [0.0] * 96
     )
@@ -67,7 +73,7 @@ def test_persistent_thermal_failure_expires_wait_without_returning_legacy(monkey
     cfg = SimpleNamespace(update_minutes=5)
     with pytest.raises(RuntimeError, match="no fallback is permitted"):
         forecast_runner._select_dhw_with_refresh_wait(
-            FakeClient(), FakeStore(), cfg, list(range(96)), [0.2] * 96
+            FakeClient(), FakeStore(), cfg, _starts(), [0.2] * 96
         )
 
     assert len(calls) >= 1
