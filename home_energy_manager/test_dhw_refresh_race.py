@@ -38,7 +38,7 @@ def test_transient_incomplete_thermal_horizon_is_retried_until_thermal_arrives(m
     def fake_select(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            raise RuntimeError("DHW thermal forecast unavailable (thermal_forecast_incomplete); legacy fallback is disabled")
+            raise RuntimeError("DHW thermal forecast unavailable (thermal_forecast_incomplete)")
         return SelectionResult(thermal_values, "thermal", "thermal_authoritative")
 
     monkeypatch.setattr(forecast_runner, "select_dhw_forecast", fake_select)
@@ -47,9 +47,7 @@ def test_transient_incomplete_thermal_horizon_is_retried_until_thermal_arrives(m
 
     cfg = SimpleNamespace(update_minutes=5)
     starts = _starts()
-    result = forecast_runner._select_dhw_with_refresh_wait(
-        FakeClient(), FakeStore(), cfg, starts, [0.0] * 96
-    )
+    result = forecast_runner._select_dhw_with_refresh_wait(FakeClient(), FakeStore(), cfg, starts)
 
     assert len(calls) >= 2
     assert result.source == "thermal"
@@ -57,12 +55,12 @@ def test_transient_incomplete_thermal_horizon_is_retried_until_thermal_arrives(m
     assert result.values[13] == 1.25
 
 
-def test_persistent_thermal_failure_expires_wait_without_returning_legacy(monkeypatch):
+def test_persistent_thermal_failure_expires_wait(monkeypatch):
     calls = []
 
     def fake_select(*args, **kwargs):
         calls.append(1)
-        raise RuntimeError("DHW thermal model is not structurally ready; legacy fallback is disabled")
+        raise RuntimeError("DHW thermal model is not structurally ready")
 
     monotonic_values = iter([0.0, 0.0, 0.1])
     monkeypatch.setattr(forecast_runner, "select_dhw_forecast", fake_select)
@@ -71,9 +69,7 @@ def test_persistent_thermal_failure_expires_wait_without_returning_legacy(monkey
     monkeypatch.setattr(forecast_runner.time, "sleep", lambda _: None)
 
     cfg = SimpleNamespace(update_minutes=5)
-    with pytest.raises(RuntimeError, match="no fallback is permitted"):
-        forecast_runner._select_dhw_with_refresh_wait(
-            FakeClient(), FakeStore(), cfg, _starts(), [0.2] * 96
-        )
+    with pytest.raises(RuntimeError, match="thermal production forecast unavailable"):
+        forecast_runner._select_dhw_with_refresh_wait(FakeClient(), FakeStore(), cfg, _starts())
 
     assert len(calls) >= 1
