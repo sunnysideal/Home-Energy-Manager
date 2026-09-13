@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """ASHP component process supervisor.
 
-Runs the authoritative legacy forecast model through the horizon-preserving entrypoint
-together with passive DHW sampling/learning, shadow forecasting, validation and
-diagnostics processes. The production forecaster receives only the configuration fields
-its legacy dataclass understands; passive helpers receive the full ASHP configuration.
+Runs CH forecasting together with the authoritative thermal DHW sampling, learning,
+forecasting, validation and diagnostics processes.
 """
 from __future__ import annotations
 
@@ -17,7 +15,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-LEGACY_OPTIONS = Path("/data/options_ashp_forecaster_legacy.json")
+CORE_OPTIONS = Path("/data/options_ashp_forecaster_core.json")
 THERMAL_ONLY_KEYS = {
     "dhw_tank_upper_temperature_entity",
     "dhw_tank_lower_temperature_entity",
@@ -51,11 +49,11 @@ def stop_all(signum=None, frame=None) -> None:
     raise SystemExit(0 if signum is not None else 1)
 
 
-def _legacy_options_path(full_options_path: Path) -> Path:
+def _core_options_path(full_options_path: Path) -> Path:
     raw = json.loads(full_options_path.read_text())
-    legacy = {key: value for key, value in raw.items() if key not in THERMAL_ONLY_KEYS}
-    LEGACY_OPTIONS.write_text(json.dumps(legacy, separators=(",", ":")))
-    return LEGACY_OPTIONS
+    core = {key: value for key, value in raw.items() if key not in THERMAL_ONLY_KEYS}
+    CORE_OPTIONS.write_text(json.dumps(core, separators=(",", ":")))
+    return CORE_OPTIONS
 
 
 def main() -> None:
@@ -63,44 +61,17 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop_all)
 
     full_options_path = Path(os.environ.get("OPTIONS_PATH", "/data/options_ashp_forecaster.json"))
-    legacy_options_path = _legacy_options_path(full_options_path)
+    core_options_path = _core_options_path(full_options_path)
 
-    forecast_env = os.environ.copy()
-    forecast_env["OPTIONS_PATH"] = str(legacy_options_path)
-    passive_env = os.environ.copy()
-    passive_env["OPTIONS_PATH"] = str(full_options_path)
+    forecast_env = os.environ.copy(); forecast_env["OPTIONS_PATH"] = str(core_options_path)
+    thermal_env = os.environ.copy(); thermal_env["OPTIONS_PATH"] = str(full_options_path)
 
-    children.append(subprocess.Popen(
-        [sys.executable, "-u", str(ROOT / "forecast_runner.py")], env=forecast_env
-    ))
-    children.append(subprocess.Popen(
-        [sys.executable, "-u", str(ROOT / "dhw_collector.py")], env=passive_env
-    ))
-    children.append(subprocess.Popen(
-        [sys.executable, "-u", str(ROOT / "dhw_startup_learning.py")], env=passive_env
-    ))
-    # Route the independently scheduled DHW thermal publisher through the same
-    # deterministic 30-minute production epoch rule as forecast_runner.py. The
-    # 5-minute thermal simulation still uses its own native step alignment.
-    children.append(subprocess.Popen(
-        [
-            sys.executable,
-            "-u",
-            "-c",
-            "import dhw_shadow_runner as d; "
-            "from common.forecast_slots import production_slot_start; "
-            "d._production_starts=lambda now: [production_slot_start(now, d.PRODUCTION_INTERVAL_MINUTES) + d.timedelta(minutes=d.PRODUCTION_INTERVAL_MINUTES*i) for i in range(d.PRODUCTION_COVERAGE_SLOTS)]; "
-            "d.main()",
-        ],
-        env=passive_env,
-        cwd=str(ROOT),
-    ))
-    children.append(subprocess.Popen(
-        [sys.executable, "-u", str(ROOT / "dhw_validation_runner.py")], env=passive_env
-    ))
-    children.append(subprocess.Popen(
-        [sys.executable, "-u", str(ROOT / "dhw_diagnostics_runner.py")], env=passive_env
-    ))
+    children.append(subprocess.Popen([sys.executable, "-u", str(ROOT / "forecast_runner.py")], env=forecast_env))
+    children.append(subprocess.Popen([sys.executable, "-u", str(ROOT / "dhw_collector.py")], env=thermal_env))
+    children.append(subprocess.Popen([sys.executable, "-u", str(ROOT / "dhw_startup_learning.py")], env=thermal_env))
+    children.append(subprocess.Popen([sys.executable, "-u", str(ROOT / "dhw_shadow_runner.py")], env=thermal_env))
+    children.append(subprocess.Popen([sys.executable, "-u", str(ROOT / "dhw_validation_runner.py")], env=thermal_env))
+    children.append(subprocess.Popen([sys.executable, "-u", str(ROOT / "dhw_diagnostics_runner.py")], env=thermal_env))
 
     while True:
         for proc in children:

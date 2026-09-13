@@ -43,7 +43,7 @@ def test_public_ashp_forecast_slot_contract_is_unchanged():
     assert _forecast_slot_dict_keys() == EXPECTED_SLOT_KEYS
 
 
-def test_legacy_forecaster_does_not_import_shadow_thermal_modules():
+def test_core_forecaster_does_not_import_thermal_model_modules():
     source = MAIN.read_text()
     forbidden = (
         "dhw_shadow_forecast",
@@ -57,7 +57,7 @@ def test_legacy_forecaster_does_not_import_shadow_thermal_modules():
         assert module not in source
 
 
-def test_runner_filters_new_thermal_options_before_starting_legacy_main():
+def test_runner_filters_thermal_only_options_before_starting_core_forecaster():
     source = RUNNER.read_text()
     for option in (
         "dhw_tank_upper_temperature_entity",
@@ -68,10 +68,10 @@ def test_runner_filters_new_thermal_options_before_starting_legacy_main():
         "dhw_thermal_sample_minutes",
     ):
         assert option in source
-    assert 'forecast_env["OPTIONS_PATH"] = str(legacy_options_path)' in source
+    assert 'forecast_env["OPTIONS_PATH"] = str(core_options_path)' in source
 
 
-def test_thermal_promotion_is_not_enabled_by_current_runtime_path():
+def test_thermal_production_is_owned_by_forecast_runner_not_main_module():
     source = MAIN.read_text()
-    assert "dhw_promotion_ready" not in source
-    assert "thermal_shadow" not in source
+    assert "dhw_production_selector" not in source
+    assert "sensor.ashp_dhw_thermal_forecast_next_48h" not in source

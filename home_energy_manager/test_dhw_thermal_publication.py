@@ -68,7 +68,7 @@ def test_publication_preserves_temperature_and_energy_fields():
     assert row["lower_temperature_c"] == 46.5
 
 
-def test_shadow_publication_does_not_replace_legacy_entity():
-    assert module.THERMAL_FORECAST_ENTITY != module.LEGACY_FORECAST_ENTITY
+def test_thermal_publication_is_the_dhw_model_entity():
     assert module.THERMAL_FORECAST_ENTITY == "sensor.ashp_dhw_thermal_forecast_next_48h"
-    assert module.LEGACY_FORECAST_ENTITY == "sensor.ashp_forecast_next_48h"
+    assert not hasattr(module, "LEGACY_FORECAST_ENTITY")
+    assert not hasattr(module, "COMPARISON_ENTITY")

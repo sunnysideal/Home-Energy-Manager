@@ -1,10 +1,4 @@
-"""Thermal-only production selection for the DHW forecast.
-
-Legacy DHW values may continue to be calculated and scored as a comparator, but they
-are never substituted into production. A fresh, complete, correctly aligned thermal
-horizon is the production-readiness contract; learned readiness/confidence flags remain
-diagnostics and must not veto a forecast the thermal publisher has successfully built.
-"""
+"""Select the authoritative thermal DHW production forecast."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -167,27 +161,15 @@ def _thermal_values(
 def select_dhw_forecast(
     db: sqlite3.Connection,
     starts: list[datetime],
-    legacy_values: list[float],
     get_state: Callable[[str], dict[str, Any]],
     *,
     max_age_minutes: float = 25.0,
-    retry_successes: int = 3,
-    demotion_failures: int = 2,
 ) -> SelectionResult:
-    """Return the aligned thermal DHW production forecast, with no legacy fallback.
+    """Return the aligned thermal DHW production forecast.
 
-    ``legacy_values`` is deliberately retained in the interface so the existing legacy
-    calculation can continue to feed validation/comparison without changing the public
-    ASHP component boundary. It is never selected for production.
-
-    Production readiness is proven by the published thermal horizon itself. Persisted
-    model confidence/readiness flags are diagnostic state and can temporarily lag live
-    sensor recovery or a freshly published forecast, so they must not block production.
+    There is no secondary production forecast and no fallback path. A fresh, complete,
+    exactly aligned thermal horizon is required before ASHP production can publish.
     """
-    del retry_successes, demotion_failures
-    if len(starts) != len(legacy_values):
-        _persist_source(db, "invalid")
-        raise RuntimeError("DHW comparator length does not match production horizon")
     if len(starts) != EXPECTED_PRODUCTION_SLOTS:
         _persist_source(db, "invalid")
         raise RuntimeError(
@@ -198,12 +180,12 @@ def select_dhw_forecast(
         state = get_state(THERMAL_FORECAST_ENTITY)
     except Exception as exc:
         _persist_source(db, "invalid")
-        raise RuntimeError("DHW thermal forecast entity could not be read; legacy fallback is disabled") from exc
+        raise RuntimeError("DHW thermal forecast entity could not be read") from exc
 
     thermal, reason = _thermal_values(state, starts, max_age_minutes=max_age_minutes)
     if thermal is None:
         _persist_source(db, "invalid")
-        raise RuntimeError(f"DHW thermal forecast unavailable ({reason}); legacy fallback is disabled")
+        raise RuntimeError(f"DHW thermal forecast unavailable ({reason})")
 
     _persist_source(db, "thermal")
     return SelectionResult(thermal, "thermal", "thermal_authoritative")

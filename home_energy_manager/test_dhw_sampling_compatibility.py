@@ -14,10 +14,10 @@ assert spec.loader is not None
 spec.loader.exec_module(runner)
 
 
-def test_thermal_only_keys_are_not_forwarded_to_legacy_forecaster(tmp_path, monkeypatch):
+def test_thermal_only_keys_are_not_forwarded_to_core_forecaster(tmp_path, monkeypatch):
     full = tmp_path / "full.json"
-    legacy = tmp_path / "legacy.json"
-    monkeypatch.setattr(runner, "LEGACY_OPTIONS", legacy)
+    core = tmp_path / "core.json"
+    monkeypatch.setattr(runner, "CORE_OPTIONS", core)
     full.write_text(json.dumps({
         "ch_energy_entity": "sensor.ch",
         "dhw_tank_temperature_entity": "sensor.old",
@@ -29,7 +29,7 @@ def test_thermal_only_keys_are_not_forwarded_to_legacy_forecaster(tmp_path, monk
         "dhw_thermal_sample_minutes": 5,
     }))
 
-    result = runner._legacy_options_path(full)
+    result = runner._core_options_path(full)
     raw = json.loads(result.read_text())
 
     assert raw["ch_energy_entity"] == "sensor.ch"
