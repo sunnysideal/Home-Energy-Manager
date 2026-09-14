@@ -1,4 +1,110 @@
 configuration:
+  energy_strategy:
+    name: Energy strategy
+    description: Battery-control mode, safety limits, calibration policy and controller timing settings.
+    fields:
+      operation_mode:
+        name: Operation mode
+        description: Choose how the controller operates. Use forecast_only for a safe first installation because it forecasts without changing inverter settings.
+      safety_buffer_soc:
+        name: Safety buffer SOC
+        description: Minimum SOC percentage the controller aims to retain for normal operation to reduce the risk of peak-rate grid import.
+      axle_entity:
+        name: Axle event entity
+        description: Package-owned Axle event entity used by the controller. Normally leave this at the default.
+      axle_discharge_efficiency:
+        name: Axle discharge efficiency
+        description: Battery discharge-efficiency factor used when calculating how much stored energy is needed for an Axle export event.
+      axle_charge_margin_minutes:
+        name: Axle charge margin
+        description: Extra minutes allowed before an Axle event when preparing the required battery SOC.
+      power_down_enabled:
+        name: Enable Power Down events
+        description: Enable Power Down event handling. Turn this off if you do not use Power Down events.
+      power_down_events_entity:
+        name: Power Down events
+        description: Optional entity containing Power Down event windows. Leave blank when Power Down is disabled.
+      power_down_import_baseline_entity:
+        name: Power Down import baseline
+        description: Optional entity providing the Power Down import baseline used for event accounting.
+      power_down_export_baseline_entity:
+        name: Power Down export baseline
+        description: Optional entity providing the Power Down export baseline used for event accounting.
+      minimise_export_min_soc:
+        name: Minimum SOC in minimise export
+        description: Minimum battery SOC percentage maintained by minimise_export operation before additional charging is planned.
+      calibration_enabled:
+        name: Automatic calibration
+        description: Enable automatic battery calibration planning. Turn this off to stop scheduled top/full and deep-cycle calibration requests.
+      top_full_every_days:
+        name: Top calibration interval
+        description: Maximum number of days between planned full/top battery calibrations when automatic calibration is enabled.
+      deep_cycle_every_days:
+        name: Deep calibration interval
+        description: Maximum number of days between planned low/deep battery calibrations when automatic calibration is enabled.
+      deep_cycle_floor_soc:
+        name: Deep calibration floor SOC
+        description: Target SOC percentage for a planned low/deep calibration.
+      reserve_dwell_minutes:
+        name: Low-SOC dwell time
+        description: Minutes the battery must remain at the low calibration level before the low endpoint is considered complete.
+      export_start:
+        name: Preferred export start
+        description: Preferred local clock time for evening export planning in modes that schedule generated-energy export.
+      preferred_charge_c_rate:
+        name: Preferred charge C-rate
+        description: Preferred battery charging rate expressed as a fraction of battery capacity per hour.
+      max_charge_c_rate:
+        name: Maximum charge C-rate
+        description: Maximum battery charging C-rate the controller may request when calculating charge power.
+      discharge_rate_w:
+        name: Controller discharge rate
+        description: Requested discharge power in watts for controller-planned export/discharge. A value of 0 allows the controller or inverter default where supported.
+      charge_safety_margin_minutes:
+        name: Charge safety margin
+        description: Extra charging time added to controller calculations so the requested target is reached before the required deadline.
+      generic_dwell_minutes:
+        name: Generic dwell allowance
+        description: Additional dwell allowance in minutes used when no more specific battery completion allowance is available.
+      forecast_stale_minutes:
+        name: Forecast stale limit
+        description: Maximum forecast age in minutes accepted by the controller before it treats the forecast as stale.
+      future_tolerance_minutes:
+        name: Future-time tolerance
+        description: Minutes of tolerance allowed when comparing forecast and controller timestamps around the current time.
+      time_deadband_minutes:
+        name: Schedule time deadband
+        description: Do not rewrite inverter schedule times when the requested change is within this many minutes of the current setting.
+      rate_deadband_w:
+        name: Power-rate deadband
+        description: Do not rewrite inverter charge/discharge rates when the requested change is within this many watts.
+      energy_deadband_kwh:
+        name: Energy deadband
+        description: Ignore very small forecast energy differences below this kWh threshold when deciding whether a plan needs to change.
+      charge_variance_threshold_kwh:
+        name: Charge variance threshold
+        description: kWh threshold used when deciding whether actual charging differs enough from the plan to require replanning.
+      export_variance_threshold_kwh:
+        name: Export variance threshold
+        description: kWh threshold used when deciding whether actual export differs enough from the plan to require replanning.
+      write_retry_attempts:
+        name: Write retry attempts
+        description: Number of attempts made when an inverter setting write does not verify successfully.
+      write_retry_delay_seconds:
+        name: Write retry delay
+        description: Seconds between retries after an inverter setting write fails verification.
+      sample_interval_seconds:
+        name: Controller sample interval
+        description: Seconds between controller observations used for tracking battery behaviour and calibration progress.
+      rate_match_tolerance_pct:
+        name: Rate match tolerance percent
+        description: Percentage tolerance used when comparing requested and observed battery charge/discharge power.
+      rate_match_tolerance_w:
+        name: Rate match tolerance watts
+        description: Absolute watt tolerance used alongside the percentage tolerance when matching observed battery power.
+      controller_refresh_timeout_seconds:
+        name: Forecast refresh timeout
+        description: Maximum seconds the controller waits for a fresh Home Energy Forecast after changing inverter settings.
   battery:
     name: Battery
     description: Battery state and energy measurements used by forecasting, calibration and efficiency learning.
@@ -211,112 +317,7 @@ configuration:
       smart_charging_enabled:
         name: Enable EV Smart Charging
         description: Enable use of EV Smart Charging inputs. Turn this off if you do not use supplier-controlled EV charging.
-  energy_strategy:
-    name: Energy strategy
-    description: Battery-control mode, safety limits, calibration policy and controller timing settings.
-    fields:
-      operation_mode:
-        name: Operation mode
-        description: Choose how the controller operates. Use forecast_only for a safe first installation because it forecasts without changing inverter settings.
-      safety_buffer_soc:
-        name: Safety buffer SOC
-        description: Minimum SOC percentage the controller aims to retain for normal operation to reduce the risk of peak-rate grid import.
-      axle_entity:
-        name: Axle event entity
-        description: Package-owned Axle event entity used by the controller. Normally leave this at the default.
-      axle_discharge_efficiency:
-        name: Axle discharge efficiency
-        description: Battery discharge-efficiency factor used when calculating how much stored energy is needed for an Axle export event.
-      axle_charge_margin_minutes:
-        name: Axle charge margin
-        description: Extra minutes allowed before an Axle event when preparing the required battery SOC.
-      power_down_enabled:
-        name: Enable Power Down events
-        description: Enable Power Down event handling. Turn this off if you do not use Power Down events.
-      power_down_events_entity:
-        name: Power Down events
-        description: Optional entity containing Power Down event windows. Leave blank when Power Down is disabled.
-      power_down_import_baseline_entity:
-        name: Power Down import baseline
-        description: Optional entity providing the Power Down import baseline used for event accounting.
-      power_down_export_baseline_entity:
-        name: Power Down export baseline
-        description: Optional entity providing the Power Down export baseline used for event accounting.
-      minimise_export_min_soc:
-        name: Minimum SOC in minimise export
-        description: Minimum battery SOC percentage maintained by minimise_export operation before additional charging is planned.
-      calibration_enabled:
-        name: Automatic calibration
-        description: Enable automatic battery calibration planning. Turn this off to stop scheduled top/full and deep-cycle calibration requests.
-      top_full_every_days:
-        name: Top calibration interval
-        description: Maximum number of days between planned full/top battery calibrations when automatic calibration is enabled.
-      deep_cycle_every_days:
-        name: Deep calibration interval
-        description: Maximum number of days between planned low/deep battery calibrations when automatic calibration is enabled.
-      deep_cycle_floor_soc:
-        name: Deep calibration floor SOC
-        description: Target SOC percentage for a planned low/deep calibration.
-      reserve_dwell_minutes:
-        name: Low-SOC dwell time
-        description: Minutes the battery must remain at the low calibration level before the low endpoint is considered complete.
-      export_start:
-        name: Preferred export start
-        description: Preferred local clock time for evening export planning in modes that schedule generated-energy export.
-      preferred_charge_c_rate:
-        name: Preferred charge C-rate
-        description: Preferred battery charging rate expressed as a fraction of battery capacity per hour.
-      max_charge_c_rate:
-        name: Maximum charge C-rate
-        description: Maximum battery charging C-rate the controller may request when calculating charge power.
-      discharge_rate_w:
-        name: Controller discharge rate
-        description: Requested discharge power in watts for controller-planned export/discharge. A value of 0 allows the controller or inverter default where supported.
-      charge_safety_margin_minutes:
-        name: Charge safety margin
-        description: Extra charging time added to controller calculations so the requested target is reached before the required deadline.
-      generic_dwell_minutes:
-        name: Generic dwell allowance
-        description: Additional dwell allowance in minutes used when no more specific battery completion allowance is available.
-      forecast_stale_minutes:
-        name: Forecast stale limit
-        description: Maximum forecast age in minutes accepted by the controller before it treats the forecast as stale.
-      future_tolerance_minutes:
-        name: Future-time tolerance
-        description: Minutes of tolerance allowed when comparing forecast and controller timestamps around the current time.
-      time_deadband_minutes:
-        name: Schedule time deadband
-        description: Do not rewrite inverter schedule times when the requested change is within this many minutes of the current setting.
-      rate_deadband_w:
-        name: Power-rate deadband
-        description: Do not rewrite inverter charge/discharge rates when the requested change is within this many watts.
-      energy_deadband_kwh:
-        name: Energy deadband
-        description: Ignore very small forecast energy differences below this kWh threshold when deciding whether a plan needs to change.
-      charge_variance_threshold_kwh:
-        name: Charge variance threshold
-        description: kWh threshold used when deciding whether actual charging differs enough from the plan to require replanning.
-      export_variance_threshold_kwh:
-        name: Export variance threshold
-        description: kWh threshold used when deciding whether actual export differs enough from the plan to require replanning.
-      write_retry_attempts:
-        name: Write retry attempts
-        description: Number of attempts made when an inverter setting write does not verify successfully.
-      write_retry_delay_seconds:
-        name: Write retry delay
-        description: Seconds between retries after an inverter setting write fails verification.
-      sample_interval_seconds:
-        name: Controller sample interval
-        description: Seconds between controller observations used for tracking battery behaviour and calibration progress.
-      rate_match_tolerance_pct:
-        name: Rate match tolerance percent
-        description: Percentage tolerance used when comparing requested and observed battery charge/discharge power.
-      rate_match_tolerance_w:
-        name: Rate match tolerance watts
-        description: Absolute watt tolerance used alongside the percentage tolerance when matching observed battery power.
-      controller_refresh_timeout_seconds:
-        name: Forecast refresh timeout
-        description: Maximum seconds the controller waits for a fresh Home Energy Forecast after changing inverter settings.
+
   axle:
     name: Axle VPP
     description: Optional Axle event adapter. Disable this section if you do not use the Axle VPP Home Assistant integration.
