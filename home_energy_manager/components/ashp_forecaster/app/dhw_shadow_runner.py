@@ -148,6 +148,24 @@ def _production_starts(now: datetime) -> list[datetime]:
     return [start + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES * i) for i in range(PRODUCTION_COVERAGE_SLOTS)]
 
 
+def _simulation_start(now: datetime, production_starts: list[datetime]) -> datetime:
+    """Return a thermal-step start that always covers the first production slot.
+
+    During the shared post-boundary grace window, production_slot_start() may select
+    the half-hour boundary that has just begun while a normal 5-minute ceil would
+    move the simulation to the next thermal step. In that case start exactly at the
+    selected production boundary so the first production half-hour is constructible.
+    Outside that grace case retain the normal next-5-minute simulation start.
+    """
+    thermal_start = _ceil_local(now, THERMAL_STEP_MINUTES)
+    if not production_starts:
+        return thermal_start
+    first_production = production_starts[0]
+    if first_production.timestamp() < thermal_start.timestamp():
+        return first_production
+    return thermal_start
+
+
 def _required_simulation_hours(simulation_start: datetime, production_starts: list[datetime]) -> float:
     if not production_starts:
         return float(PRODUCTION_HOURS)
@@ -217,8 +235,8 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
     schedule = _schedule_bits(token, prefix) if prefix else {}
     tz = ZoneInfo(timezone_name)
     now_local = datetime.now(tz)
-    simulation_start = _ceil_local(now_local, THERMAL_STEP_MINUTES)
     production_starts = _production_starts(now_local)
+    simulation_start = _simulation_start(now_local, production_starts)
     simulation_hours = _required_simulation_hours(simulation_start, production_starts)
     slots = build_shadow_forecast(
         start=simulation_start, initial_upper_c=upper, initial_lower_c=lower,
@@ -235,11 +253,12 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
     total_dhw = sum(float(row["dhw_kwh"]) for row in published[:PRODUCTION_SLOTS])
     production_start = production_starts[0].isoformat() if production_starts else None
     production_end = production_starts[PRODUCTION_SLOTS - 1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES) if len(production_starts) >= PRODUCTION_SLOTS else None
+    publication_status = "published_shadow" if horizon_complete else "incomplete"
 
     if publisher is not None:
-        publisher.sensor(THERMAL_FORECAST_ENTITY, round(total_dhw, 3), {
+        attributes = {
             "friendly_name": "ASHP DHW Thermal Forecast Next 48h", "unit_of_measurement": "kWh", "device_class": "energy",
-            "model": "two_zone_thermal", "status": "published_shadow", "authoritative": True,
+            "model": "two_zone_thermal", "status": publication_status, "authoritative": True,
             "forecast": published, "forecast_slots": len(published), "expected_forecast_slots": PRODUCTION_SLOTS,
             "coverage_forecast_slots": PRODUCTION_COVERAGE_SLOTS, "horizon_complete": horizon_complete,
             "production_start": production_start, "production_end": production_end.isoformat() if production_end else None,
@@ -248,13 +267,17 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
             "target_temperature_c": round(target, 2), "target_sensor": target_sensor,
             "target_sensor_entity": str(cfg.get("dhw_tank_temperature_entity") or ""), "mode": mode,
             "trigger": trigger, "last_updated": forecast_ts.isoformat(),
-        })
+        }
+        if not horizon_complete:
+            attributes["reason"] = "thermal_horizon_incomplete"
+        publisher.sensor(THERMAL_FORECAST_ENTITY, round(total_dhw, 3), attributes)
 
-    LOG.info(
-        "DHW thermal forecast published: trigger=%s simulation_slots=%d published_slots=%d horizon_complete=%s "
-        "checkpoints=%d next_48h=%.2fkWh production_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC target_sensor=%s mode=%s",
-        trigger, len(slots), len(published), horizon_complete, checkpoints, total_dhw,
-        production_start, upper, lower, target, target_sensor, mode,
+    log = LOG.info if horizon_complete else LOG.warning
+    log(
+        "DHW thermal forecast %s: trigger=%s simulation_slots=%d published_slots=%d horizon_complete=%s "
+        "checkpoints=%d next_48h=%.2fkWh production_start=%s simulation_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC target_sensor=%s mode=%s",
+        publication_status, trigger, len(slots), len(published), horizon_complete, checkpoints, total_dhw,
+        production_start, simulation_start.isoformat(), upper, lower, target, target_sensor, mode,
     )
     return checkpoints
 
