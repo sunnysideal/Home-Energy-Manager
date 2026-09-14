@@ -1,694 +1,491 @@
 configuration:
-  ashp_forecaster:
-    name: ASHP forecaster
-    description: Configures the separate ASHP model that learns central-heating and domestic-hot-water electrical demand from
-      Home Assistant history, then publishes the forward heat-pump forecast consumed by the whole-home model.
+  energy_strategy:
+    name: Energy strategy
+    description: Battery-control mode, safety limits, calibration policy and controller timing settings.
     fields:
-      ch_energy_entity:
-        name: CH energy total
-        description: Select a cumulative energy sensor, in kWh, that measures only the heat pump electrical energy used for
-          central/space heating (CH). It should increase over time, for example sensor.ashp_electrical_energy_ch. This is
-          the primary historical input used to learn how much electrical energy the heating system needs for a given outdoor
-          temperature, so it is required for CH learning.
-      outdoor_temperature_entity:
-        name: Outdoor temperature
-        description: Select the outdoor-air temperature sensor that best represents the temperature seen by the building,
-          ideally the heat pump’s own shaded external sensor rather than an indoor sensor. The ASHP forecaster combines this
-          history with CH energy to learn heating demand and also uses the current value when deciding whether the system
-          is in winter or summer mode.
-      weather_entity:
-        name: Weather forecast
-        description: Select a Home Assistant weather entity that provides forecast outdoor temperatures, for example weather.forecast_home.
-          Future temperatures from this entity are converted into heating degree days and therefore drive the forward CH energy
-          forecast. This is required if you want temperature-driven ASHP forecasting.
-      base_temperature_c:
-        name: Degree-day base temperature
-        description: Heating-degree-day base temperature in °C. Below this temperature the model assumes the home needs space
-          heating; above it, no heating demand is attributed to temperature. Set this to the balance-point temperature appropriate
-          for your home. The default 15.5 °C is a common UK starting point, but it should normally align with how your heating
-          actually behaves.
-      summer_mode_off_entity:
-        name: Summer-mode off threshold entity
-        description: Select the heat-pump/controller entity that contains the temperature threshold below which summer mode
-          is cancelled and heating/winter mode becomes active. A number entity is typical. The forecaster reads historical
-          values so it can reproduce the controller’s real seasonal switching; equal off/on thresholds are valid and are treated
-          as zero-width hysteresis.
-      summer_mode_on_entity:
-        name: Summer-mode on threshold entity
-        description: Select the heat-pump/controller entity that contains the temperature threshold above which summer mode
-          becomes active and normal space heating is suppressed. A number entity is typical. The forecaster reads historical
-          values so it can reproduce the controller’s real seasonal switching; equal off/on thresholds are valid and are treated
-          as zero-width hysteresis.
-      winter_mode_below_c:
-        name: Fallback winter threshold
-        description: Fallback winter-mode threshold in °C, used only when the configured summer-mode threshold entities cannot
-          be read. At temperatures below this value, the forecaster assumes heating/winter mode. Keep it consistent with the
-          real controller setting so forecasts remain sensible during entity outages.
-      summer_mode_above_c:
-        name: Fallback summer threshold
-        description: Fallback summer-mode threshold in °C, used only when the configured summer-mode threshold entities cannot
-          be read. At temperatures above this value, the forecaster assumes summer mode. Keep it consistent with the real
-          controller setting; values between the winter and summer thresholds retain the previous seasonal state.
-      initial_kwh_per_degree_day:
-        name: Initial kWh per degree day
-        description: Starting estimate of central-heating electrical energy per heating degree day, in kWh/DD. This is used
-          only until enough valid history has been learned. If you already know the approximate seasonal relationship for
-          your home, enter it here; otherwise the default provides a reasonable seed and the model will replace it with learned
-          data.
-      training_days:
-        name: CH training days
-        description: Maximum number of recent historical days examined when learning the CH kWh-per-degree-day relationship
-          and time-of-day profile. More days make the model steadier but slower to react to changes in heating behaviour;
-          fewer days react faster but can be noisier.
-      minimum_daily_degree_days:
-        name: Minimum daily degree days
-        description: Minimum heating-degree-day total required for a day to be accepted for CH coefficient training. Days
-          milder than this are ignored because very small heating demand makes the kWh/DD ratio unstable and overly sensitive
-          to incidental loads.
-      minimum_daily_ch_kwh:
-        name: Minimum daily CH energy
-        description: Minimum measured CH electrical energy, in kWh, required for a historical day to be accepted as a genuine
-          heating day. Raise this if short or accidental heating runs are polluting the model; lower it if legitimate low-load
-          heating days are being excluded.
-      forecast_hours:
-        name: Forecast horizon
-        description: How far ahead the ASHP forecaster publishes CH and DHW demand, in hours. The whole-home forecaster needs
-          enough horizon to cover its own planning period; 48 hours is normally appropriate for today/tomorrow battery planning.
-      forecast_interval_minutes:
-        name: ASHP forecast interval
-        description: Duration of each ASHP forecast slot, in minutes. A 30-minute interval aligns naturally with most UK electricity
-          tariff periods and keeps the forecast compact. Changing this affects the granularity of the published ASHP forecast
-          rather than the heat pump itself.
-      update_minutes:
-        name: ASHP update interval
-        description: How often the ASHP forecast is recalculated, in minutes. The recalculation reads current conditions and
-          refreshed weather data but does not control the heat pump. A shorter interval reacts sooner to changing forecasts
-          at the cost of more Home Assistant queries.
-      dhw_energy_entity:
-        name: DHW energy total
-        description: Select a cumulative energy sensor, in kWh, that measures only the heat pump electrical energy used for
-          domestic hot water (DHW), for example sensor.ashp_electrical_energy_dhw. The forecaster uses historical increments
-          from this sensor to learn the typical size and timing of hot-water heating cycles.
-      dhw_mode_entity:
-        name: DHW mode
-        description: Select the entity that reports the heat pump DHW operating mode, typically a select such as Off, On or
-          Schedule. The forecaster uses it to distinguish periods when DHW heating is allowed from periods when it is deliberately
-          disabled, which prevents impossible DHW forecasts.
-      dhw_tank_temperature_entity:
-        name: DHW tank temperature
-        description: Select the sensor reporting the current hot-water cylinder/tank temperature in °C. Together with the
-          target and hysteresis settings, this lets the forecaster judge whether a scheduled DHW window is likely to require
-          reheating rather than assuming every window consumes energy.
-      dhw_target_temperature_entity:
-        name: DHW target temperature
-        description: Select the number or sensor containing the configured DHW target temperature in °C. The forecaster compares
-          the tank temperature with this target and the hysteresis setting to estimate whether the heat pump will need to
-          run during a DHW opportunity.
-      dhw_hysteresis_entity:
-        name: DHW hysteresis
-        description: Select the number or sensor containing the DHW reheating hysteresis in °C. If the tank temperature falls
-          sufficiently below the target, the forecaster treats a scheduled DHW period as requiring heat. This should be the
-          controller’s actual DHW hysteresis setting.
-      dhw_schedule_prefix:
-        name: DHW schedule entity prefix
-        description: Enter the common entity-ID prefix used by your DHW schedule number entities. The forecaster appends its
-          expected weekday and AM/PM suffixes to this prefix, so this is not a single entity ID. For the default naming scheme,
-          a prefix such as number.dhw_dhw_schedule_ allows entities like number.dhw_dhw_schedule_monday_am to be found automatically.
-      dhw_history_days:
-        name: DHW history days
-        description: Number of recent days used to learn typical DHW energy per heating event and schedule period. A longer
-          history smooths occasional unusually large or small hot-water draws; a shorter history adapts faster when household
-          DHW usage changes.
-      dhw_activity_threshold_kwh:
-        name: DHW activity threshold
-        description: Minimum DHW energy increase, in kWh per analysis interval, that counts as a real hot-water heating event.
-          Smaller changes are treated as meter noise or insignificant activity. Set this below the energy used by the smallest
-          genuine DHW run you want the model to learn.
-  home_forecaster:
-    name: Home energy forecaster
-    description: Configures the whole-home simulator. It combines learned household load, ASHP demand, PV, battery schedules,
-      tariff rates, true grid meters and EV Smart Charging into the forecast used by the controller.
-    fields:
-      settings:
-        name: General forecast settings
-        description: Core timing, history, fallback battery-efficiency and logging settings. Most users should configure the
-          timezone and leave the internal refresh entity at its default.
-        fields:
-          timezone:
-            name: Timezone
-            description: IANA timezone used for all forecast timestamps, tariff periods and inverter schedules, for example
-              Europe/London. This must match the local timezone of the Home Assistant installation and energy tariff; an incorrect
-              timezone can move charging and tariff windows to the wrong clock time.
-          history_days:
-            name: Home-load history days
-            description: Number of recent days used to learn the normal non-ASHP, non-EV household load profile. The model
-              compares consumption at similar times of day across this window. More history smooths unusual days; less history
-              adapts faster to lasting changes in household behaviour.
-          day_of_week_weighting:
-            name: Weight matching weekdays
-            description: When enabled, historical days matching the weekday being forecast receive extra weight. This is useful
-              when weekday and weekend consumption patterns differ. Disable it if your household load has little day-of-week
-              pattern or if the additional weighting makes the forecast too sparse.
-          same_weekday_weight:
-            name: Same-weekday weight
-            description: Multiplier applied to historical samples from the same weekday when day-of-week weighting is enabled.
-              For example 1.5 means a matching Monday contributes 50% more weight than a non-Monday. Values close to 1 reduce
-              the effect; larger values make weekday matching more influential.
-          forecast_interval_minutes:
-            name: Home forecast interval
-            description: Length of each whole-home simulation slot in minutes. The default 5-minute resolution is used internally
-              for battery, tariff, PV and EV calculations and is later suitable for aggregation into 30-minute table rows.
-              Smaller intervals increase detail and processing cost.
-          controller_refresh_request_entity:
-            name: Controller refresh request entity
-            description: Internal Home Assistant sensor used as a handshake between the controller and forecaster after inverter
-              settings are changed. The controller publishes a refresh request and waits for a forecast generated from the
-              new plan. Leave this at the default unless you deliberately change the corresponding controller implementation;
-              it is not a physical sensor you need to create.
-          charge_efficiency:
-            name: Fallback charge efficiency
-            description: Fallback battery charging efficiency as a fraction from 0 to 1, for example 0.95 for 95%. It is used
-              when learned charge-curve data is unavailable or insufficient. This represents energy retained in the battery
-              versus AC energy drawn for charging; learned efficiency takes precedence when available.
-          discharge_efficiency:
-            name: Fallback discharge efficiency
-            description: Fallback battery discharging efficiency as a fraction from 0 to 1, for example 0.95 for 95%. It is
-              used when learned discharge information is unavailable or insufficient. This represents AC energy delivered
-              versus energy removed from the battery; learned efficiency takes precedence when available.
-          minimum_baseline_w:
-            name: Minimum baseline load
-            description: Minimum ordinary household electrical load, in watts, enforced in the learned baseline after excluding
-              ASHP and EV consumption. Use this to prevent sparse meter history from producing unrealistically low overnight/background
-              demand. Set it near the lowest genuine base load of the property.
-          log_level:
-            name: Log level
-            description: Logging detail for Home Energy Forecaster. Use INFO for normal operation. Use DEBUG temporarily when
-              diagnosing data, entity or forecast problems because it produces substantially more log output.
-      battery:
-        name: Battery entities
-        description: Input entities describing the battery/inverter state and its two charge/discharge schedules. These are
-          readings/settings from your inverter integration; they allow the forecast to simulate exactly what the battery is
-          currently configured to do.
-        fields:
-          soc:
-            name: Battery state of charge
-            description: 'Select the battery state-of-charge sensor reported by the inverter integration. It must represent
-              the current battery charge as a percentage from 0 to 100. This is required: every battery simulation starts
-              from this value and an incorrect entity will make all SOC, import and export forecasts unreliable.'
-          capacity_kwh:
-            name: Battery capacity
-            description: Select the entity containing the battery’s usable or configured capacity in kWh. A number or sensor
-              is acceptable as long as its state is the capacity value, not stored energy at this moment. The forecaster converts
-              SOC percentages into kWh using this value, so it is required for correct battery modelling.
-          reserve_soc:
-            name: Battery reserve SOC
-            description: Select the inverter entity containing the minimum battery reserve as a percentage. The forecaster
-              will not simulate normal discharge below this reserve unless a specific calibration/plan explicitly targets
-              the allowed floor. Use the same reserve setting that the inverter itself enforces.
-          inverter_max_rate_w:
-            name: Inverter maximum rate
-            description: Select the entity reporting the inverter’s maximum supported battery charge/discharge power in watts.
-              This is a hardware/setting limit, not the current battery power. The forecaster uses it to cap simulated charge
-              and discharge rates so the plan cannot assume physically impossible power.
-          charge_rate_w:
-            name: Battery charge rate
-            description: Select the inverter entity containing the currently configured scheduled battery charge rate in watts.
-              The forecaster reads this to model existing charge slots and controller-written plans. Do not use a live battery
-              power sensor here; this field is the configured rate/limit.
-          discharge_rate_w:
-            name: Battery discharge rate
-            description: Select the inverter entity containing the currently configured scheduled battery discharge rate in
-              watts. The forecaster reads this to model existing discharge slots and controller-written plans. Do not use
-              a live battery power sensor here; this field is the configured rate/limit.
-          eco_mode:
-            name: Eco mode
-            description: Select the switch/select/sensor that reports whether the inverter’s normal eco/self-consumption mode
-              is enabled. The forecaster needs this to understand whether the battery may freely charge/discharge outside
-              explicit schedule slots. Use the entity that reflects the inverter setting, not a derived dashboard helper.
-          charge_schedule_enabled:
-            name: Charge schedule enabled
-            description: Select the switch or status entity that reports whether scheduled battery charging is enabled. When
-              off, configured charge-slot times should not be treated as active. This must reflect the inverter’s actual schedule-enable
-              setting.
-          discharge_schedule_enabled:
-            name: Discharge schedule enabled
-            description: Select the switch or status entity that reports whether scheduled battery discharging is enabled.
-              When off, configured discharge-slot times should not be treated as active. This must reflect the inverter’s
-              actual schedule-enable setting.
-          pause_mode:
-            name: Pause mode
-            description: Select the inverter entity reporting the current pause mode, for example PauseCharge, PauseDischarge
-              or Disabled depending on the integration. The forecaster uses this together with pause start/end to model periods
-              where normal battery behaviour is intentionally suspended.
-          pause_start:
-            name: Pause start
-            description: Select the inverter entity containing the start time of the active pause window. This is normally
-              a time/select entity. The forecaster only uses the pause interval when the configured pause mode makes it relevant.
-          pause_end:
-            name: Pause end
-            description: Select the inverter entity containing the end time of the active pause window. This is normally a
-              time/select entity. Together with pause mode and pause start it defines when charging or discharging is intentionally
-              paused.
-          charge_start_1:
-            name: Charge slot 1 start
-            description: Select the inverter time/select entity that contains the start time of battery charging slot 1. The
-              forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller may
-              also update the corresponding inverter setting when planning.
-          charge_end_1:
-            name: Charge slot 1 end
-            description: Select the inverter time/select entity that contains the end time of battery charging slot 1. It
-              must be the partner of slot 1 start. The forecaster uses the interval only when the relevant schedule is enabled,
-              and the controller may update it when applying a plan.
-          charge_target_1:
-            name: Charge slot 1 target SOC
-            description: Select the inverter number/select entity containing the target SOC percentage for battery charging
-              slot 1. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which
-              forced discharge stops. Use the actual inverter target entity for slot 1.
-          charge_start_2:
-            name: Charge slot 2 start
-            description: Select the inverter time/select entity that contains the start time of battery charging slot 2. The
-              forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller may
-              also update the corresponding inverter setting when planning.
-          charge_end_2:
-            name: Charge slot 2 end
-            description: Select the inverter time/select entity that contains the end time of battery charging slot 2. It
-              must be the partner of slot 2 start. The forecaster uses the interval only when the relevant schedule is enabled,
-              and the controller may update it when applying a plan.
-          charge_target_2:
-            name: Charge slot 2 target SOC
-            description: Select the inverter number/select entity containing the target SOC percentage for battery charging
-              slot 2. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which
-              forced discharge stops. Use the actual inverter target entity for slot 2.
-          discharge_start_1:
-            name: Discharge slot 1 start
-            description: Select the inverter time/select entity that contains the start time of battery discharging slot 1.
-              The forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller
-              may also update the corresponding inverter setting when planning.
-          discharge_end_1:
-            name: Discharge slot 1 end
-            description: Select the inverter time/select entity that contains the end time of battery discharging slot 1.
-              It must be the partner of slot 1 start. The forecaster uses the interval only when the relevant schedule is
-              enabled, and the controller may update it when applying a plan.
-          discharge_target_1:
-            name: Discharge slot 1 target SOC
-            description: Select the inverter number/select entity containing the target SOC percentage for battery discharging
-              slot 1. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which
-              forced discharge stops. Use the actual inverter target entity for slot 1.
-          discharge_start_2:
-            name: Discharge slot 2 start
-            description: Select the inverter time/select entity that contains the start time of battery discharging slot 2.
-              The forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller
-              may also update the corresponding inverter setting when planning.
-          discharge_end_2:
-            name: Discharge slot 2 end
-            description: Select the inverter time/select entity that contains the end time of battery discharging slot 2.
-              It must be the partner of slot 2 start. The forecaster uses the interval only when the relevant schedule is
-              enabled, and the controller may update it when applying a plan.
-          discharge_target_2:
-            name: Discharge slot 2 target SOC
-            description: Select the inverter number/select entity containing the target SOC percentage for battery discharging
-              slot 2. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which
-              forced discharge stops. Use the actual inverter target entity for slot 2.
-      load:
-        name: House load
-        description: Historical whole-home load input used to learn the ordinary household baseline. Choose the cumulative
-          load-energy total at the battery/inverter measurement boundary.
-        fields:
-          energy_total_kwh:
-            name: House-load energy total
-            description: Select a cumulative kWh sensor representing whole-home load as measured on the battery/inverter side
-              of the installation, excluding any EV charger that sits outside that measurement boundary. The forecaster differences
-              this total over time to learn ordinary household demand after separating ASHP and EV components. It should be
-              a monotonically increasing energy total, not an instantaneous watt sensor.
-      solar:
-        name: Solar PV
-        description: Actual PV generation and Solcast forecast inputs. The cumulative actual-energy sensor is used for history,
-          while Solcast supplies future generation.
-        fields:
-          energy_total_kwh:
-            name: Solar generation energy total
-            description: Select the cumulative kWh sensor for actual solar/PV generation. The forecaster uses historical increments
-              for actual generation and for model/forecast comparisons. Use total PV generation rather than grid export, because
-              self-consumed solar must also be counted.
-          solcast_today:
-            name: Solcast today
-            description: Select the Solcast entity containing today’s PV forecast. The entity is expected to expose Solcast
-              forecast detail/attributes as provided by the Home Assistant Solcast integration, not merely a single instantaneous
-              power value. This is the primary source for forecast PV during the current day.
-          solcast_tomorrow:
-            name: Solcast tomorrow
-            description: Select the Solcast entity containing tomorrow’s PV forecast. It should be the matching tomorrow entity
-              from the same Solcast integration used for today. The forecaster joins it to today’s data so battery planning
-              can extend across midnight.
-          solcast_day_3:
-            name: Solcast day 3
-            description: Optional Solcast entity containing the third forecast day. Configure this when your planning horizon
-              can extend far enough to need day-three PV data; otherwise it may be left blank. It should come from the same
-              Solcast installation and have the same forecast attribute format as today/tomorrow.
-      tariff:
-        name: Tariff and inverter meter inputs
-        description: Tariff and inverter-boundary grid energy inputs. Use the rate entities from your electricity-tariff integration
-          and the import/export totals measured at the battery/inverter grid point.
-        fields:
-          import_energy_total_kwh:
-            name: Inverter-side import energy
-            description: Select the cumulative import-energy total seen at the battery/inverter grid meter, in kWh. This is
-              used for historical energy reconciliation around the inverter boundary. If loads such as the EV charger are
-              upstream of the inverter meter, this is intentionally different from the optional true-grid meter configured
-              below.
-          export_energy_total_kwh:
-            name: Inverter-side export energy
-            description: Select the cumulative export-energy total seen at the battery/inverter grid meter, in kWh. This is
-              used for historical energy reconciliation around the inverter boundary. Do not substitute the whole-property
-              smart-meter export here when an EV or other load exists between the two measurement points.
-          import_current_rate:
-            name: Current import rate
-            description: Select the tariff entity whose current state is the present import price, normally in p/kWh or the
-              units supplied by your tariff integration. The forecaster uses it as the authoritative current rate and as a
-              fallback when detailed rate tables are unavailable.
-          export_current_rate:
-            name: Current export rate
-            description: Select the tariff entity whose current state is the present export payment rate. The forecaster uses
-              it to value forecast export and as a fallback when detailed export rate tables are unavailable. Use the actual
-              export tariff, not the import tariff entity.
-          import_current_day_rates:
-            name: Import rates today
-            description: Select the tariff entity whose attributes contain the full set of import rates/periods for today.
-              Kraken/Octopus-style integrations commonly expose a structured rate list. The forecaster uses the timestamped
-              periods to price every forecast slot and to identify cheap/off-peak windows.
-          import_next_day_rates:
-            name: Import rates tomorrow
-            description: Select the tariff entity whose attributes contain the full set of import rates/periods for tomorrow.
-              It should have the same structured format as the current-day rate entity so the forecast can price slots after
-              midnight. Required for accurate next-day planning on time-varying tariffs.
-          export_current_day_rates:
-            name: Export rates today
-            description: Select the tariff entity whose attributes contain today’s timestamped export rates. Configure this
-              when export value varies by time; if your export tariff is flat, the current export-rate entity may be sufficient
-              depending on the integration data available.
-          export_next_day_rates:
-            name: Export rates tomorrow
-            description: Select the tariff entity whose attributes contain tomorrow’s timestamped export rates. It should
-              use the same format as the current-day export-rate entity. Configure it for accurate export-value calculations
-              across midnight when the export tariff is time-varying.
-      ashp:
-        name: ASHP forecast inputs
-        description: Links the ASHP forecaster output and actual CH/DHW energy totals into the whole-home model so heat-pump
-          demand is forecast separately instead of being hidden inside ordinary house load.
-        fields:
-          forecast_48h:
-            name: ASHP 48-hour forecast
-            description: Select the ASHP Forecaster entity containing the detailed forward CH/DHW forecast, normally the Home
-              Energy Manager ASHP 48-hour forecast sensor. The whole-home forecaster reads its forecast attributes and adds
-              ASHP demand to the household simulation. Use the forecast entity, not one of the summary kWh sensors.
-          ch_energy_total_kwh:
-            name: ASHP CH energy total
-            description: Select the cumulative central-heating electrical energy sensor used by the ASHP forecaster. The whole-home
-              model uses this actual CH energy history to remove heating consumption from learned baseline house load, avoiding
-              double-counting when CH is added back from the ASHP forecast.
-          dhw_energy_total_kwh:
-            name: ASHP DHW energy total
-            description: Select the cumulative domestic-hot-water electrical energy sensor used by the ASHP forecaster. The
-              whole-home model uses this actual DHW history to separate hot-water consumption from ordinary house load before
-              adding forecast DHW demand back into future slots.
-      meter:
-        name: True whole-property grid meters
-        description: Optional true whole-property smart-meter totals. Configure these when the inverter grid meter does not
-          see every load—for example an EV charger connected between the smart meter and the battery grid CT.
-        fields:
-          import_energy_total_kwh:
-            name: True grid import energy
-            description: Optional cumulative kWh import sensor at the true whole-property grid boundary, normally the smart
-              meter. Use this when the inverter/battery grid meter does not see every load, such as an EV charger connected
-              upstream. When supplied, this is preferred for actual grid-import accounting and export-generated logic.
-          export_energy_total_kwh:
-            name: True grid export energy
-            description: Optional cumulative kWh export sensor at the true whole-property grid boundary, normally the smart
-              meter. Use this when the inverter/battery grid meter is not at the same electrical boundary. When supplied,
-              this is preferred for actual grid-export accounting and export-generated credit calculations.
-      ev:
-        name: EV charging
-        description: EV-specific measurements and supplier-independent smart-charging inputs. The cumulative EV energy sensor
-          teaches the model charging power; planned dispatches decide when future ev_kwh appears.
-        fields:
-          energy_total_kwh:
-            name: EV energy total
-            description: Select the cumulative kWh sensor measuring energy consumed by the EV charger, for example an energy
-              sensor derived from a CT clamp around the Hypervolt supply. The value should only increase with EV charging.
-              Home Energy Manager differences this history to learn the EV’s typical charging power; leave blank only if EV
-              forecasting is not required.
-          smart_charging_dispatch_entity:
-            name: EV Smart Charging dispatches
-            description: 'Select the supplier/integration entity whose attributes contain planned EV smart-charging dispatches
-              with start/end times, such as Kraken-based smart-charging slots from Octopus or EDF. The field is intentionally
-              supplier-independent: when you change supplier, point it at the equivalent planned-dispatch entity. These slots
-              determine when future ev_kwh is inserted into the forecast.'
-          smart_charging_active_entity:
-            name: EV Smart Charging active
-            description: Optional entity indicating that an EV smart-charging slot is active now, typically a binary_sensor.
-              It is used to confirm the current interval when the planned-dispatch list is late or incomplete. Leave blank
-              if your supplier integration does not provide a reliable active-slot indicator.
-  controller:
-    name: Controller
-    description: Battery-control policy and safeguards. These settings determine how Home Energy Manager converts the latest
-      forecast into inverter charge, discharge and pause schedules; change them only when you understand the operational effect.
-    fields:
-      status_entity_id:
-        name: Controller status entity
-        description: Requested entity ID for the controller status sensor published by Home Energy Manager. This sensor contains
-          controller health, plan details and diagnostics. Normally leave the default; changing it does not select an input
-          entity and may break dashboards or automations that expect the standard name.
-      home_energy_forecast_entity:
-        name: Home energy forecast entity
-        description: 'Whole-home forecast sensor consumed by the controller. Normally leave the default sensor.home_energy_forecast:
-          the controller can discover the MQTT-created Home Energy Manager forecast entity when Home Assistant assigns a longer
-          registry ID. Change this only if you deliberately publish the forecast under a different entity.'
-      safety_buffer_soc:
-        name: Safety buffer SOC
-        description: General battery SOC guardrail, in percent, used to protect against forecast error and unexpected load.
-          The controller plans to preserve this additional margin where appropriate rather than running the battery exactly
-          to reserve. Higher values are more conservative but may increase grid import or reduce export opportunity.
       operation_mode:
         name: Operation mode
-        description: Select the battery strategy. maximise_export prioritises using/exporting energy according to tariff opportunity;
-          minimise_export tries to avoid unnecessary grid export while preserving sufficient SOC; export_generated aims to
-          export no more than the amount of solar generated, including a later forced export if required. This setting directly
-          changes controller behaviour.
+        description: Choose how the controller operates. Use forecast_only for a safe first installation because it forecasts without changing inverter settings.
+      safety_buffer_soc:
+        name: Safety buffer SOC
+        description: Minimum SOC percentage the controller aims to retain for normal operation to reduce the risk of peak-rate grid import.
+      axle_entity:
+        name: Axle event entity
+        description: Package-owned Axle event entity used by the controller. Normally leave this at the default.
+      axle_discharge_efficiency:
+        name: Axle discharge efficiency
+        description: Battery discharge-efficiency factor used when calculating how much stored energy is needed for an Axle export event.
+      axle_charge_margin_minutes:
+        name: Axle charge margin
+        description: Extra minutes allowed before an Axle event when preparing the required battery SOC.
       power_down_enabled:
-        name: Power-down handling
-        description: Enable support for supplier power-down/grid-event periods when the corresponding event and baseline entities
-          are configured. Turn this off if you do not participate in such events or do not provide the required entities;
-          normal battery planning continues without the feature.
+        name: Enable Power Down events
+        description: Enable Power Down event handling. Turn this off if you do not use Power Down events.
       power_down_events_entity:
-        name: Power-down events entity
-        description: Optional event/entity containing upcoming supplier power-down windows in the format expected by the controller.
-          Historically this was intended for Octopus Power Down event data. Leave blank if you do not use this feature; enabling
-          power-down handling without usable event data has no benefit.
+        name: Power Down events
+        description: Optional entity containing Power Down event windows. Leave blank when Power Down is disabled.
       power_down_import_baseline_entity:
-        name: Power-down import baseline
-        description: Optional entity containing the supplier-provided/import baseline used to assess a power-down event. Configure
-          only if your event integration exposes the baseline the controller expects; otherwise leave blank. This is not the
-          normal household import meter.
+        name: Power Down import baseline
+        description: Optional entity providing the Power Down import baseline used for event accounting.
       power_down_export_baseline_entity:
-        name: Power-down export baseline
-        description: Optional entity containing the supplier-provided/export baseline used to assess a power-down event. Configure
-          only if your event integration exposes a separate export baseline; otherwise leave blank. This is not the normal
-          smart-meter export total.
+        name: Power Down export baseline
+        description: Optional entity providing the Power Down export baseline used for event accounting.
       minimise_export_min_soc:
-        name: Minimise-export minimum SOC
-        description: Minimum battery SOC, in percent, that minimise_export mode tries to maintain while suppressing export.
-          Set this above the inverter reserve if you want a working buffer for later household demand. It applies specifically
-          to minimise_export behaviour rather than changing the inverter’s own reserve setting.
+        name: Minimum SOC in minimise export
+        description: Minimum battery SOC percentage maintained by minimise_export operation before additional charging is planned.
       calibration_enabled:
-        name: Battery calibration
-        description: 'Allow the controller to schedule periodic battery calibration behaviour: occasional charges to 100%
-          and, less frequently, discharges toward the configured deep-cycle floor. Disable this if you prefer to manage BMS/SOC
-          calibration manually.'
+        name: Automatic calibration
+        description: Enable automatic battery calibration planning. Turn this off to stop scheduled top/full and deep-cycle calibration requests.
       top_full_every_days:
-        name: Full-charge interval
-        description: Maximum number of days between controller-requested charges to 100% when calibration is enabled. Reaching
-          full charge periodically can help the battery management system maintain top-end SOC calibration. A smaller number
-          performs this more often; a larger number reduces calibration frequency.
+        name: Top calibration interval
+        description: Maximum number of days between planned full/top battery calibrations when automatic calibration is enabled.
       deep_cycle_every_days:
-        name: Deep-cycle interval
-        description: Maximum number of days between controller-requested deep calibration cycles when calibration is enabled.
-          A deep cycle deliberately allows the battery to approach the configured floor so the BMS can observe the lower end
-          of its SOC range. This should normally be much less frequent than a top-end full charge.
+        name: Deep calibration interval
+        description: Maximum number of days between planned low/deep battery calibrations when automatic calibration is enabled.
       deep_cycle_floor_soc:
-        name: Deep-cycle floor SOC
-        description: Target SOC percentage for the low point of a calibration deep cycle. This should not be below the safe
-          reserve supported by your inverter/battery. The controller relies on the BMS/inverter to stop discharge at the configured
-          limit.
+        name: Deep calibration floor SOC
+        description: Target SOC percentage for a planned low/deep calibration.
       reserve_dwell_minutes:
-        name: Reserve dwell time
-        description: Minimum time, in minutes, to leave the battery at or near reserve during an applicable deep-cycle calibration.
-          This gives the BMS a stable low-SOC period rather than immediately charging again. Set to 0 if no deliberate dwell
-          is wanted.
+        name: Low-SOC dwell time
+        description: Minutes the battery must remain at the low calibration level before the low endpoint is considered complete.
       export_start:
         name: Preferred export start
-        description: Preferred earliest local clock time, HH:MM, for deliberate scheduled battery export. In export-related
-          modes the controller tries to place forced export at or after this time, subject to tariff/plan constraints. This
-          is a planning preference, not an inverter entity.
-      export_generated_solar_threshold_w:
-        name: Export-generated solar threshold
-        description: Optional PV power threshold in watts used by export_generated mode to decide when solar generation is
-          meaningfully active for pause-charge behaviour. Leave unset to use the built-in default. Increase it if tiny/noisy
-          PV readings are falsely triggering solar-active behaviour; decrease it if low genuine generation should count.
+        description: Preferred local clock time for evening export planning in modes that schedule generated-energy export.
       preferred_charge_c_rate:
         name: Preferred charge C-rate
-        description: Preferred battery charging C-rate used when choosing a charge power. A value of 0.25 means charging at
-          power equal to 25% of battery capacity per hour (for example about 3.45 kW for 13.8 kWh). The controller prefers
-          this gentler rate when there is enough time, subject to inverter and deadline limits.
+        description: Preferred battery charging rate expressed as a fraction of battery capacity per hour.
       max_charge_c_rate:
         name: Maximum charge C-rate
-        description: Maximum C-rate the controller is allowed to request for scheduled charging. This caps the calculated
-          charge power even if a faster rate would meet the target sooner. It should reflect a rate you are comfortable using
-          and must not exceed battery/inverter capability.
+        description: Maximum battery charging C-rate the controller may request when calculating charge power.
       discharge_rate_w:
         name: Controller discharge rate
-        description: Requested power in watts for deliberate scheduled discharge/export. Set 0 to let the controller use the
-          inverter’s available/normal maximum where supported; otherwise enter the explicit export/discharge power you want
-          the controller to request. This affects forced export duration calculations.
+        description: Requested discharge power in watts for controller-planned export/discharge. A value of 0 allows the controller or inverter default where supported.
       charge_safety_margin_minutes:
         name: Charge safety margin
-        description: Extra charging time added to a calculated charge window so the target SOC is reached despite modelling
-          error, tapering or small efficiency differences. Larger values start charging earlier and are more conservative;
-          too large a margin can buy more cheap energy than necessary.
+        description: Extra charging time added to controller calculations so the requested target is reached before the required deadline.
       generic_dwell_minutes:
-        name: Generic dwell time
-        description: Minimum dwell/stability period used by controller planning to avoid immediately reversing or changing
-          a recently selected operating action. This is a general anti-chatter setting; increase it if plans oscillate too
-          frequently, but large values make the controller slower to react.
+        name: Generic dwell allowance
+        description: Additional dwell allowance in minutes used when no more specific battery completion allowance is available.
       forecast_stale_minutes:
-        name: Forecast stale threshold
-        description: Maximum age, in minutes, of a forecast the controller will trust for making changes. Older forecasts
-          are treated as stale and control is withheld/degraded until a fresh one arrives. Set this comfortably above the
-          normal forecast update interval.
+        name: Forecast stale limit
+        description: Maximum forecast age in minutes accepted by the controller before it treats the forecast as stale.
       future_tolerance_minutes:
-        name: Future timestamp tolerance
-        description: Tolerance, in minutes, for a forecast timestamp that appears slightly in the future because component
-          clocks or publication timing do not align perfectly. Forecasts further into the future than this are rejected as
-          suspicious rather than acted on.
+        name: Future-time tolerance
+        description: Minutes of tolerance allowed when comparing forecast and controller timestamps around the current time.
       time_deadband_minutes:
         name: Schedule time deadband
-        description: Schedule-time deadband in minutes. If a newly calculated inverter start/end time differs from the currently
-          configured time by no more than this amount, the controller leaves it unchanged. This prevents repetitive one-minute
-          writes caused by small forecast changes.
+        description: Do not rewrite inverter schedule times when the requested change is within this many minutes of the current setting.
       rate_deadband_w:
         name: Power-rate deadband
-        description: Charge/discharge-rate deadband in watts. If a newly calculated rate differs from the current inverter
-          setting by less than this amount, the controller avoids rewriting it. Increase this to reduce rate-setting chatter;
-          decrease it if small power changes matter.
+        description: Do not rewrite inverter charge/discharge rates when the requested change is within this many watts.
       energy_deadband_kwh:
         name: Energy deadband
-        description: Minimum forecast energy difference, in kWh, considered material when comparing plans. Changes smaller
-          than this are treated as noise and do not by themselves justify rewriting inverter settings.
+        description: Ignore very small forecast energy differences below this kWh threshold when deciding whether a plan needs to change.
       charge_variance_threshold_kwh:
         name: Charge variance threshold
-        description: Amount of charge-energy difference, in kWh, required before the controller considers a revised charging
-          requirement significant. This helps prevent small forecast fluctuations from constantly moving the overnight charge
-          plan.
+        description: kWh threshold used when deciding whether actual charging differs enough from the plan to require replanning.
       export_variance_threshold_kwh:
         name: Export variance threshold
-        description: Amount of export-energy difference, in kWh, required before a revised export requirement is considered
-          significant. This is especially relevant to export-generated planning, where the remaining export target changes
-          as actual generation/export accumulates.
+        description: kWh threshold used when deciding whether actual export differs enough from the plan to require replanning.
       write_retry_attempts:
         name: Write retry attempts
-        description: Maximum number of attempts when writing an inverter setting if the requested value is not confirmed by
-          a subsequent Home Assistant read. Increase only if the integration is occasionally slow; excessive retries can delay
-          a controller cycle when an entity is genuinely unavailable.
+        description: Number of attempts made when an inverter setting write does not verify successfully.
       write_retry_delay_seconds:
         name: Write retry delay
-        description: Seconds to wait between failed inverter write/confirmation attempts. This gives integrations such as
-          GivTCP time to propagate a setting before trying again. Longer delays reduce pressure on a slow integration but
-          make failures take longer to resolve.
+        description: Seconds between retries after an inverter setting write fails verification.
       sample_interval_seconds:
-        name: Learning sample interval
-        description: Interval, in seconds, between controller observations used for battery charge/discharge session and efficiency
-          learning. Shorter intervals capture the curve in more detail but create more Home Assistant reads and database samples.
+        name: Controller sample interval
+        description: Seconds between controller observations used for tracking battery behaviour and calibration progress.
       rate_match_tolerance_pct:
-        name: Rate match tolerance (%)
-        description: Percentage tolerance used when deciding whether observed battery power matches the commanded charge/discharge
-          rate closely enough for a sample to be valid for learning. It is combined with the absolute watt tolerance; the
-          comparison is intended to reject periods where other control effects distort the requested rate.
+        name: Rate match tolerance percent
+        description: Percentage tolerance used when comparing requested and observed battery charge/discharge power.
       rate_match_tolerance_w:
-        name: Rate match tolerance (W)
-        description: Absolute watt tolerance used alongside the percentage tolerance when deciding whether battery power matches
-          the requested rate for learning. This prevents very small percentage bands from becoming unrealistically strict
-          at lower powers.
+        name: Rate match tolerance watts
+        description: Absolute watt tolerance used alongside the percentage tolerance when matching observed battery power.
       controller_refresh_timeout_seconds:
         name: Forecast refresh timeout
-        description: Maximum time, in seconds, the controller waits after changing inverter settings for the forecaster to
-          publish a controller-refresh forecast based on the new plan. During this wait scheduled control is blocked to avoid
-          a race with stale plan data. If the timeout expires, normal processing can resume with diagnostics.
-      ev_smart_charging_enabled:
-        name: EV Smart Charging awareness
-        description: Enable supplier-independent EV Smart Charging awareness in controller planning. When enabled, confirmed/planned
-          smart-charge periods can be treated as cheap charging opportunities and are accounted for when deciding whether
-          the battery must preserve energy for later peak periods. Disable if no smart EV tariff/integration is in use.
-      ev_smart_charging_dispatch_entity:
-        name: EV Smart Charging dispatches
-        description: Select the supplier/integration entity whose attributes contain planned EV smart-charging dispatches.
-          Kraken-based services from Octopus and EDF expose similar slot data but under different entity names, so point this
-          generic setting at whichever planned-dispatch entity your current supplier provides. Leave blank if no planned-slot
-          data is available.
-      ev_smart_charging_active_entity:
-        name: EV Smart Charging active
-        description: Select the binary/status entity that indicates a smart EV charging slot is active right now. This is
-          used as a real-time confirmation in addition to planned dispatches. Replace the old Octopus default with the equivalent
-          EDF/Kraken entity when you change supplier, or leave blank if your integration has no reliable active indicator.
-  mqtt:
-    name: MQTT publishing
-    description: MQTT Discovery and state-publishing settings. For a normal Home Assistant installation with the Mosquitto
-      broker/app, keep MQTT enabled and automatic broker discovery enabled; manual host/credentials are only for an external
-      broker.
+        description: Maximum seconds the controller waits for a fresh Home Energy Forecast after changing inverter settings.
+  battery:
+    name: Battery
+    description: Battery state and energy measurements used by forecasting, calibration and efficiency learning.
+    fields:
+      soc:
+        name: Battery state of charge
+        description: Select the battery SOC entity. Its state must be the current charge level as a percentage from 0 to 100.
+      capacity_kwh:
+        name: Battery capacity
+        description: Select the entity containing usable battery capacity in kWh. Use a capacity value, not current stored energy.
+      reserve_soc:
+        name: Battery reserve
+        description: Select the inverter entity containing the minimum battery reserve in percent. It should match the reserve enforced by the inverter.
+      power_w:
+        name: Battery power
+        description: Optional live battery power entity in watts. Use the signed battery power reported by the inverter integration.
+      charge_energy_total_kwh:
+        name: Battery charge energy total
+        description: Optional cumulative battery charge-energy sensor in kWh. It must increase over time and is used for battery efficiency learning.
+      discharge_energy_total_kwh:
+        name: Battery discharge energy total
+        description: Optional cumulative battery discharge-energy sensor in kWh. It must increase over time and is used for battery efficiency learning.
+  grid:
+    name: Grid meter
+    description: Utility-meter import and export totals. These are preferred because they represent the actual grid boundary.
+    fields:
+      import_energy_total_kwh:
+        name: Grid import energy total
+        description: Select the cumulative utility-meter import sensor in kWh. Leave blank only if you need the inverter import total as a fallback.
+      export_energy_total_kwh:
+        name: Grid export energy total
+        description: Select the cumulative utility-meter export sensor in kWh. Leave blank only if you need the inverter export total as a fallback.
+  inverter:
+    name: Inverter
+    description: Inverter load, grid, power-limit and schedule entities used to reproduce and control the battery plan.
+    fields:
+      house_load_energy_total_kwh:
+        name: House load energy total
+        description: Select the inverter cumulative house-load energy sensor in kWh. It is used to learn normal household demand.
+      import_energy_total_kwh:
+        name: Inverter import energy total
+        description: Optional cumulative inverter grid-import sensor in kWh. Used only when a utility-meter import entity is not configured.
+      export_energy_total_kwh:
+        name: Inverter export energy total
+        description: Optional cumulative inverter grid-export sensor in kWh. Used only when a utility-meter export entity is not configured.
+      max_rate_w:
+        name: Maximum battery rate
+        description: Select the inverter entity containing the maximum supported battery charge/discharge power in watts.
+      charge_rate_w:
+        name: Charge rate
+        description: Select the inverter setting for scheduled battery charge power in watts. Do not use the live battery power sensor here.
+      discharge_rate_w:
+        name: Discharge rate
+        description: Select the inverter setting for scheduled battery discharge power in watts. Do not use the live battery power sensor here.
+      eco_mode:
+        name: Eco mode
+        description: Select the inverter entity that reports or controls normal self-consumption/Eco mode.
+      charge_schedule_enabled:
+        name: Charge schedule enabled
+        description: Select the inverter switch or status entity that enables scheduled charging.
+      discharge_schedule_enabled:
+        name: Discharge schedule enabled
+        description: Select the inverter switch or status entity that enables scheduled discharging.
+      pause_mode:
+        name: Pause mode
+        description: Select the inverter entity that controls or reports battery pause mode, such as PauseBoth, PauseCharge or PauseDischarge.
+      pause_start:
+        name: Pause start
+        description: Select the inverter entity containing the battery pause-window start time.
+      pause_end:
+        name: Pause end
+        description: Select the inverter entity containing the battery pause-window end time.
+      charge_start_1:
+        name: Charge slot 1 start
+        description: Select the start-time entity for inverter charge slot 1.
+      charge_end_1:
+        name: Charge slot 1 end
+        description: Select the end-time entity for inverter charge slot 1.
+      charge_target_1:
+        name: Charge slot 1 target SOC
+        description: Select the target-SOC entity for charge slot 1, in percent.
+      charge_start_2:
+        name: Charge slot 2 start
+        description: Select the start-time entity for inverter charge slot 2.
+      charge_end_2:
+        name: Charge slot 2 end
+        description: Select the end-time entity for inverter charge slot 2.
+      charge_target_2:
+        name: Charge slot 2 target SOC
+        description: Select the target-SOC entity for charge slot 2, in percent.
+      discharge_start_1:
+        name: Discharge slot 1 start
+        description: Select the start-time entity for inverter discharge slot 1.
+      discharge_end_1:
+        name: Discharge slot 1 end
+        description: Select the end-time entity for inverter discharge slot 1.
+      discharge_target_1:
+        name: Discharge slot 1 target SOC
+        description: Select the SOC floor entity for discharge slot 1, in percent.
+      discharge_start_2:
+        name: Discharge slot 2 start
+        description: Select the start-time entity for inverter discharge slot 2.
+      discharge_end_2:
+        name: Discharge slot 2 end
+        description: Select the end-time entity for inverter discharge slot 2.
+      discharge_target_2:
+        name: Discharge slot 2 target SOC
+        description: Select the SOC floor entity for discharge slot 2, in percent.
+  tariff:
+    name: Electricity tariff
+    description: Current and time-of-use import/export prices used to calculate cost and identify cheap charging periods.
+    fields:
+      import_current_rate:
+        name: Current import rate
+        description: Select the current electricity import-rate entity. The value should represent the current unit rate; p/kWh is preferred.
+      export_current_rate:
+        name: Current export rate
+        description: Select the current electricity export-rate entity. The value should represent the current export payment; p/kWh is preferred.
+      import_current_day_rates:
+        name: Today's import rates
+        description: Select the entity whose attributes provide today's timed import rates.
+      import_next_day_rates:
+        name: Tomorrow's import rates
+        description: Select the entity whose attributes provide tomorrow's timed import rates.
+      export_current_day_rates:
+        name: Today's export rates
+        description: Select the entity whose attributes provide today's timed export rates.
+      export_next_day_rates:
+        name: Tomorrow's export rates
+        description: Select the entity whose attributes provide tomorrow's timed export rates.
+  solar:
+    name: Solar PV
+    description: Solar generation history and Solcast forecast entities used by the whole-home forecast.
+    fields:
+      energy_total_kwh:
+        name: Solar generation energy total
+        description: Select the cumulative PV generation sensor in kWh. It must increase over time.
+      solcast_today:
+        name: Solcast today
+        description: Select the Solcast forecast entity for today.
+      solcast_tomorrow:
+        name: Solcast tomorrow
+        description: Select the Solcast forecast entity for tomorrow.
+      solcast_day_3:
+        name: Solcast day 3
+        description: Optional Solcast day-3 forecast used as a gap-filler when nearer forecast data is incomplete.
+  heat_pump:
+    name: Heat pump - space heating
+    description: Entities used to learn and forecast central-heating electrical demand.
+    fields:
+      ch_energy_total_kwh:
+        name: CH energy total
+        description: Select the cumulative heat-pump electrical energy sensor for central/space heating only, in kWh.
+      outdoor_temperature:
+        name: Outdoor temperature
+        description: Select the outdoor-air temperature sensor that best represents conditions seen by the building, ideally the heat pump external sensor.
+      weather:
+        name: Weather forecast
+        description: Select a Home Assistant weather entity that provides forecast outdoor temperatures.
+      summer_mode_off:
+        name: Summer mode off threshold
+        description: Select the heat-pump/controller entity containing the temperature below which summer mode is cancelled and space heating can resume.
+      summer_mode_on:
+        name: Summer mode on threshold
+        description: Select the heat-pump/controller entity containing the temperature above which summer mode becomes active and normal space heating is suppressed.
+  dhw:
+    name: Domestic hot water
+    description: Hot-water energy, tank-temperature and schedule inputs used by the DHW thermal forecast.
+    fields:
+      energy_total_kwh:
+        name: DHW energy total
+        description: Select the cumulative heat-pump electrical energy sensor for domestic hot water only, in kWh.
+      mode:
+        name: DHW mode
+        description: Select the entity that reports the current DHW operating mode, such as Off, On or Schedule.
+      tank_temperature:
+        name: DHW tank temperature
+        description: Select the main hot-water cylinder temperature sensor in °C.
+      tank_upper_temperature:
+        name: Upper tank temperature
+        description: Optional upper-cylinder temperature sensor in °C. Configure this when you have separate upper and lower probes.
+      tank_lower_temperature:
+        name: Lower tank temperature
+        description: Optional lower-cylinder temperature sensor in °C. Configure this when you have separate upper and lower probes.
+      ambient_temperature:
+        name: Tank ambient temperature
+        description: Optional temperature sensor for the air around the cylinder in °C. It can improve standing-loss modelling.
+      target_temperature:
+        name: DHW target temperature
+        description: Select the entity containing the configured DHW target temperature in °C.
+      hysteresis:
+        name: DHW hysteresis
+        description: Select the entity containing the DHW reheating hysteresis in °C.
+      schedule_prefix:
+        name: DHW schedule entity prefix
+        description: Enter the common entity-ID prefix used by the DHW schedule entities. This is a prefix, not one complete entity ID.
+  ev:
+    name: EV Smart Charging
+    description: Optional EV metering and supplier smart-charging inputs. Leave the entity fields blank if EV Smart Charging is not used.
+    fields:
+      energy_total_kwh:
+        name: EV energy total
+        description: Optional cumulative EV charger energy sensor in kWh. Use the dedicated charger or CT total so EV load can be separated from household load.
+      smart_charging_dispatch:
+        name: Smart charging dispatch
+        description: Optional supplier integration entity containing planned and completed EV smart-charging dispatches.
+      smart_charging_active:
+        name: Smart charging active
+        description: Optional entity that indicates an EV smart-charging slot is active now.
+      smart_charging_enabled:
+        name: Enable EV Smart Charging
+        description: Enable use of EV Smart Charging inputs. Turn this off if you do not use supplier-controlled EV charging.
+
+  axle:
+    name: Axle VPP
+    description: Optional Axle event adapter. Disable this section if you do not use the Axle VPP Home Assistant integration.
     fields:
       enabled:
-        name: Enable MQTT
-        description: Enable MQTT Discovery/state publishing for Home Energy Manager entities. Leave enabled when Home Assistant
-          has an MQTT broker configured; this gives stable discovered devices/entities and is the preferred publishing path.
-          If disabled or unavailable, components may use their REST fallback where implemented.
-      auto_discover_broker:
-        name: Discover MQTT broker
-        description: Ask Home Assistant Supervisor for the MQTT service connection automatically. This is recommended for
-          the Home Assistant Mosquitto broker/app because host, port and credentials are supplied securely at runtime. Disable
-          only when you intentionally want to enter an external broker manually.
-      host:
-        name: MQTT host
-        description: Optional MQTT broker hostname or IP address used when automatic Supervisor discovery is disabled or unavailable.
-          Leave blank when auto-discovery works. For an external broker, enter a name reachable from the add-on container,
-          not localhost unless the broker truly runs inside the same container.
-      port:
-        name: MQTT port
-        description: MQTT broker TCP port. 1883 is the normal unencrypted MQTT port; 8883 is commonly used for TLS but your
-          broker may differ. Keep this consistent with the SSL/TLS setting and the broker configuration.
-      username:
-        name: MQTT username
-        description: Optional MQTT username for a manually configured broker. Leave blank when using Supervisor broker discovery,
-          which supplies the correct service credentials automatically. Do not put Home Assistant login credentials here unless
-          they are explicitly the broker credentials.
-      password:
-        name: MQTT password
-        description: Optional MQTT password for a manually configured broker. Leave blank when using Supervisor broker discovery.
-          This field is treated as a password by the Home Assistant configuration UI; use the credential that belongs with
-          the configured MQTT username.
-      ssl:
-        name: MQTT TLS/SSL
-        description: Enable TLS/SSL for a manually configured MQTT connection. Turn this on only if the broker endpoint/port
-          expects TLS. It is normally false for the internal Home Assistant Mosquitto service discovered by Supervisor.
-      discovery_prefix:
-        name: Discovery prefix
-        description: Home Assistant MQTT Discovery prefix. The standard value is homeassistant and should normally never be
-          changed. Only use a different prefix if your Home Assistant MQTT integration has explicitly been configured to listen
-          on that same custom discovery prefix.
-      topic_prefix:
-        name: Topic prefix
-        description: Root MQTT topic under which Home Energy Manager publishes state, attributes and availability. Normally
-          leave home_energy_manager. Changing it effectively moves the MQTT topics and may temporarily create/migrate entities,
-          so only change it as part of a deliberate MQTT namespace change.
-      migrate_legacy_states:
-        name: Migrate legacy REST entities
-        description: When enabled, Home Energy Manager removes its old REST-created Home Assistant states before publishing
-          MQTT discovery, preventing duplicate/suffixed entities during the REST-to-MQTT transition. Keep enabled for existing
-          upgraded installations; it is harmless once legacy states no longer exist.
+        name: Enable Axle
+        description: Enable reading Axle VPP event entities and publishing the package-owned Axle event sensor.
+      start_time_entity:
+        name: Axle start time
+        description: Select the Axle integration entity containing the next event start time.
+      end_time_entity:
+        name: Axle end time
+        description: Select the Axle integration entity containing the next event end time.
+      import_export_entity:
+        name: Axle event direction
+        description: Select the Axle integration entity that identifies the event as import or export.
+      window_state_entity:
+        name: Axle event state
+        description: Select the Axle integration entity describing whether the event is upcoming, active or otherwise unavailable.
+      updated_at_entity:
+        name: Axle updated time
+        description: Select the Axle integration entity containing the most recent event-data update timestamp.
+      publish_entity:
+        name: Published Axle entity
+        description: Entity ID used by Home Energy Manager for its normalised Axle event. Normally leave this at the default.
+      poll_seconds:
+        name: Axle poll interval
+        description: Seconds between reads of the Axle integration entities.
+  advanced:
+    name: Advanced
+    description: Advanced forecasting, learning and MQTT settings. Defaults are suitable for most installations.
+    fields:
+      home_forecaster:
+        name: Home forecast
+        description: Advanced settings for household-load learning and whole-home forecast updates.
+        fields:
+          history_days:
+            name: History days
+            description: Number of recent days used to learn the ordinary household load profile.
+          day_of_week_weighting:
+            name: Weight matching weekdays
+            description: Give extra weight to historical samples from the same weekday as the day being forecast.
+          same_weekday_weight:
+            name: Same-weekday weight
+            description: Weight multiplier applied to matching weekdays when weekday weighting is enabled.
+          forecast_interval_minutes:
+            name: Forecast update interval
+            description: Minutes between normal Home Energy Forecast recalculations.
+          charge_efficiency:
+            name: Fallback charge efficiency
+            description: Fallback battery charge efficiency from 0 to 1, used when learned data is unavailable.
+          discharge_efficiency:
+            name: Fallback discharge efficiency
+            description: Fallback battery discharge efficiency from 0 to 1, used when learned data is unavailable.
+          minimum_baseline_w:
+            name: Minimum baseline load
+            description: Minimum ordinary household load in watts used to prevent unrealistically low learned baseline demand.
+          log_level:
+            name: Home forecaster log level
+            description: Use INFO for normal operation or DEBUG temporarily for detailed troubleshooting.
+      ashp_forecaster:
+        name: ASHP forecast
+        description: Advanced space-heating and DHW learning thresholds and forecast timing.
+        fields:
+          base_temperature_c:
+            name: Degree-day base temperature
+            description: Heating-degree-day base temperature in °C used to relate outdoor temperature to space-heating demand.
+          winter_mode_below_c:
+            name: Fallback winter threshold
+            description: Fallback outdoor temperature in °C below which space heating is considered active when controller thresholds cannot be read.
+          summer_mode_above_c:
+            name: Fallback summer threshold
+            description: Fallback outdoor temperature in °C above which normal space heating is considered inactive when controller thresholds cannot be read.
+          initial_kwh_per_degree_day:
+            name: Initial kWh per degree day
+            description: Starting CH electrical-energy estimate in kWh per heating degree day, used until enough history has been learned.
+          training_days:
+            name: CH training days
+            description: Maximum recent-history window in days used for CH learning.
+          minimum_daily_degree_days:
+            name: Minimum daily degree days
+            description: Minimum heating degree days required before a historical day is used for CH coefficient learning.
+          minimum_daily_ch_kwh:
+            name: Minimum daily CH energy
+            description: Minimum central-heating electrical energy in kWh required before a day is treated as a valid heating day.
+          forecast_hours:
+            name: ASHP forecast horizon
+            description: Number of hours of CH/DHW forecast to publish. Keep at least 48 hours for today/tomorrow planning.
+          forecast_interval_minutes:
+            name: ASHP forecast slot length
+            description: Length of each published ASHP forecast slot in minutes.
+          update_minutes:
+            name: ASHP update interval
+            description: Minutes between ASHP forecast recalculations.
+          dhw_tank_volume_l:
+            name: DHW tank volume
+            description: Hot-water cylinder volume in litres used by the thermal model.
+          dhw_min_usable_temperature_c:
+            name: Minimum usable DHW temperature
+            description: Temperature in °C below which stored hot water is treated as no longer usefully hot.
+          dhw_thermal_sample_minutes:
+            name: DHW thermal sample interval
+            description: Minutes between internal DHW thermal-model samples.
+          dhw_history_days:
+            name: DHW history days
+            description: Number of recent days used for DHW thermal and demand learning.
+          dhw_activity_threshold_kwh:
+            name: DHW activity threshold
+            description: Minimum DHW electrical-energy increase in kWh that counts as meaningful heating activity.
+      battery_learning:
+        name: Battery learning
+        description: Thresholds controlling battery efficiency and idle-loss observations.
+        fields:
+          battery_idle_threshold_w:
+            name: Battery idle threshold
+            description: Maximum absolute battery power in watts considered idle for learning purposes.
+          battery_efficiency_history_days:
+            name: Efficiency history days
+            description: Number of recent days retained for battery charge/discharge efficiency learning.
+          battery_efficiency_min_session_kwh:
+            name: Minimum efficiency session
+            description: Minimum energy in kWh required before a charge/discharge session is accepted for efficiency learning.
+          battery_efficiency_min_samples:
+            name: Minimum efficiency samples
+            description: Minimum accepted session count required before learned battery efficiency is considered usable.
+          battery_idle_history_days:
+            name: Idle history days
+            description: Number of recent days retained for battery idle-loss learning.
+          battery_idle_min_samples:
+            name: Minimum idle samples
+            description: Minimum accepted idle observations required before an idle-loss estimate is considered usable.
+          battery_idle_soc_delta_pct:
+            name: Maximum idle SOC movement
+            description: Maximum SOC change in percentage points allowed during an observation that is treated as battery idle.
+          battery_efficiency_publish_entity:
+            name: Battery efficiency entity
+            description: Entity ID used to publish the learned battery-efficiency summary. Normally leave this at the default.
+      mqtt:
+        name: MQTT
+        description: MQTT Discovery transport for Home Energy Manager entities. Leave defaults when using the Home Assistant MQTT service.
+        fields:
+          enabled:
+            name: Enable MQTT
+            description: Enable MQTT Discovery publishing. If unavailable, components can fall back to Home Assistant REST state publishing.
+          auto_discover_broker:
+            name: Auto-discover broker
+            description: Use the Home Assistant Supervisor MQTT service details automatically when available.
+          host:
+            name: MQTT host
+            description: Optional broker host. Leave blank when broker auto-discovery is enabled.
+          port:
+            name: MQTT port
+            description: MQTT broker port. The usual non-TLS default is 1883.
+          username:
+            name: MQTT username
+            description: Optional broker username. Leave blank when Supervisor service discovery supplies credentials.
+          password:
+            name: MQTT password
+            description: Optional broker password. Leave blank when Supervisor service discovery supplies credentials.
+          ssl:
+            name: MQTT TLS
+            description: Enable TLS/SSL for the MQTT connection when required by the broker.
+          discovery_prefix:
+            name: Discovery prefix
+            description: Home Assistant MQTT Discovery prefix. Normally leave this as homeassistant.
+          topic_prefix:
+            name: Topic prefix
+            description: Base MQTT topic used by Home Energy Manager. Normally leave this as home_energy_manager.
+          migrate_legacy_states:
+            name: Clean obsolete MQTT identities
+            description: Allow cleanup of obsolete Home Energy Manager discovery/state identities when publishing current entities.
