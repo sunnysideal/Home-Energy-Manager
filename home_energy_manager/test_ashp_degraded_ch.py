@@ -101,6 +101,34 @@ def test_dhw_failure_publishes_fresh_ch_and_unknown_combined_energy(monkeypatch)
     assert health["attributes"]["dhw_status"] == "unavailable"
 
 
+def test_ch_only_builder_reuses_canonical_forecast_and_restores_dhw_builder(monkeypatch):
+    tz = ZoneInfo("Europe/London")
+    client = RecordingClient(tz)
+    store = SimpleNamespace()
+    cfg = _cfg()
+    start = datetime.now(tz).replace(minute=0, second=0, microsecond=0)
+
+    def production_builder(*args, **kwargs):
+        raise AssertionError("production DHW builder must not be called during degraded CH rebuild")
+
+    def canonical_build_forecast(client_arg, store_arg, cfg_arg, coefficient, tz_arg):
+        internal = runner.legacy.build_dhw_forecast(client_arg, store_arg, cfg_arg, [start])
+        assert internal == [0.0]
+        return [{"start": start.isoformat(), "ch_kwh": 0.4, "dhw_kwh": 0.0, "energy_kwh": 0.4, "dhw_active": False}]
+
+    runner.legacy.build_dhw_forecast = production_builder
+    monkeypatch.setattr(runner.legacy, "build_forecast", canonical_build_forecast)
+
+    rows = runner._build_ch_only_forecast(client, store, cfg, 1.6, tz)
+
+    assert runner.legacy.build_dhw_forecast is production_builder
+    assert rows[0]["ch_kwh"] == pytest.approx(0.4)
+    assert rows[0]["dhw_kwh"] is None
+    assert rows[0]["energy_kwh"] is None
+    assert rows[0]["dhw_active"] is None
+    assert rows[0]["ch_priority_applied"] is False
+
+
 def test_home_forecaster_does_not_turn_unavailable_dhw_into_zero():
     tz = ZoneInfo("Europe/London")
     start = datetime.now(tz).replace(minute=0, second=0, microsecond=0)
