@@ -30,6 +30,9 @@ class Log:
     def info(self, message, *args):
         self.messages.append(message % args)
 
+    def error(self, message, *args):
+        self.messages.append(message % args)
+
 
 def plan(charge_start='2026-09-14T00:58:00+01:00', charge_end='2026-09-14T06:00:00+01:00', charge_kwh=12.96,
          discharge_start='2026-09-14T20:00:00+01:00', discharge_end='2026-09-14T20:00:00+01:00', discharge_kwh=0.0):
