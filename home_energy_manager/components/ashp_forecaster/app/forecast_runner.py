@@ -192,62 +192,34 @@ def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
     legacy.build_dhw_training = lambda *args, **kwargs: 0
 
 
-def _build_ch_only_forecast(client: legacy.HAClient, cfg, coefficient: float, tz: ZoneInfo) -> list[dict]:
-    """Build a fresh CH-only horizon without inventing DHW values.
+def _build_ch_only_forecast(
+    client: legacy.HAClient,
+    store: legacy.Store,
+    cfg,
+    coefficient: float,
+    tz: ZoneInfo,
+) -> list[dict]:
+    """Reuse the canonical forecast path while publishing no DHW claim.
 
-    The rows deliberately publish ``dhw_kwh=None`` and ``energy_kwh=None``. CH is
-    the unsuppressed heating demand because DHW priority cannot be evaluated while
-    the authoritative DHW forecast is unavailable.
+    A zero-valued builder is installed only for the duration of the internal CH
+    calculation so the existing CH maths runs without DHW priority suppression.
+    Those placeholder DHW values are never published: every returned row is
+    rewritten with ``dhw_kwh=None`` and ``energy_kwh=None``.
     """
-    raw = client.get_hourly_weather(cfg.weather_entity)
-    weather: list[tuple[datetime, float]] = []
-    for row in raw:
-        try:
-            temp = float(row["temperature"])
-            dt = legacy.parse_dt(row["datetime"]).astimezone(tz)
-            weather.append((dt, temp))
-        except (KeyError, TypeError, ValueError):
-            continue
-    weather.sort(key=lambda item: item[0])
-    if len(weather) < 2:
-        raise RuntimeError("Hourly weather forecast has insufficient temperature points")
+    production_dhw_builder = legacy.build_dhw_forecast
+    legacy.build_dhw_forecast = lambda client_arg, store_arg, cfg_arg, starts: [0.0] * len(starts)
+    try:
+        forecast = legacy.build_forecast(client, store, cfg, coefficient, tz)
+    finally:
+        legacy.build_dhw_forecast = production_dhw_builder
 
-    now = datetime.now(tz)
-    step = timedelta(minutes=cfg.forecast_interval_minutes)
-    start = legacy.ceil_time(now, cfg.forecast_interval_minutes)
-    requested_end = start + timedelta(hours=cfg.forecast_hours)
-    end = min(requested_end, weather[-1][0])
-    starts: list[datetime] = []
-    cursor = start
-    while cursor < end:
-        starts.append(cursor)
-        cursor += step
-
-    result: list[dict] = []
-    hours = cfg.forecast_interval_minutes / 60.0
-    mode = legacy.infer_current_heating_mode(client, cfg, tz)
-    for cursor in starts:
-        temp = legacy.interpolate_temperature(weather, cursor)
-        mode = legacy.update_heating_mode(mode, temp, cfg)
-        heating_enabled = mode == "winter"
-        dd = legacy.degree_days_for_period(temp, cfg.base_temperature_c, hours) if heating_enabled else 0.0
-        ch_kwh = dd * coefficient
-        result.append(
-            {
-                "start": cursor.isoformat(),
-                "temperature_c": round(temp, 2),
-                "heating_mode": mode,
-                "heating_enabled": heating_enabled,
-                "dhw_active": None,
-                "degree_days": round(dd, 5),
-                "ch_kwh": round(ch_kwh, 4),
-                "dhw_kwh": None,
-                "energy_kwh": None,
-                "dhw_status": "unavailable",
-                "ch_priority_applied": False,
-            }
-        )
-    return result
+    for row in forecast:
+        row["dhw_active"] = None
+        row["dhw_kwh"] = None
+        row["energy_kwh"] = None
+        row["dhw_status"] = "unavailable"
+        row["ch_priority_applied"] = False
+    return forecast
 
 
 def _publish_health(client: legacy.HAClient, state: str, *, ch_status: str, dhw_status: str, reason: str = "") -> None:
@@ -277,9 +249,8 @@ def _publish_degraded_ch_forecast(
     cfg = legacy.resolve_dynamic_thresholds(client, cfg)
     store.ensure_training_signature(cfg)
     coefficient, training_days, training_slots = legacy.build_training(client, store, cfg, tz)
-    forecast = _build_ch_only_forecast(client, cfg, coefficient, tz)
+    forecast = _build_ch_only_forecast(client, store, cfg, coefficient, tz)
     now = datetime.now(tz)
-    next_24_end = now + timedelta(hours=24)
     next_48_end = now + timedelta(hours=48)
     midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=tz)
 
