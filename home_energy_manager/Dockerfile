@@ -55,6 +55,7 @@ COPY components/controller/controller_overlay_pipeline.py /app/runtime/controlle
 COPY components/controller/controller_utils.py /app/runtime/controller/controller_utils.py
 COPY components/controller/controller_db.py /app/runtime/controller/controller_db.py
 COPY components/controller/controller_ha.py /app/runtime/controller/controller_ha.py
+COPY components/controller/minimise_export_headroom.py /app/runtime/controller/minimise_export_headroom.py
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_runtime.py
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py
 COPY components/controller/controller_overlay_runtime.py /app/runtime/controller/minimise_export_runtime.py
