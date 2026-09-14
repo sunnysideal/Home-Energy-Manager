@@ -27,6 +27,8 @@ Learns space-heating demand from historical central-heating energy and outdoor t
 
 Combines normal household load, ASHP demand, PV forecast, battery state/schedules, tariff data and optional EV Smart Charging into a forward simulation of load, SOC, import, export and cost.
 
+`sensor.home_energy_cost_today` exposes the current **net actual energy cost so far today** in GBP. It is calculated from the Home Forecaster's existing actual totals as import cost minus export income, so export income can reduce the value below zero. The sensor also exposes today's import cost and export income as attributes. If actual pricing is incomplete, the sensor reports `unknown` rather than £0.
+
 ### Battery control
 
 Available operating modes can minimise export, maximise export, export an amount related to generated solar, remain forecast-only, or operate only for qualifying Axle events. Controller safety rules prioritise avoiding unwanted peak-rate import and protecting battery reserve/safety constraints.
