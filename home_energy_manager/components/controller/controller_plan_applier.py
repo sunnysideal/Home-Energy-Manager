@@ -10,6 +10,72 @@ from datetime import timedelta
 from controller_utils import parse_dt, iso, as_float
 
 
+def _positive_transfer(slot):
+    start=parse_dt((slot or {}).get('start')); end=parse_dt((slot or {}).get('end')); planned=as_float((slot or {}).get('planned_kwh'))
+    return start,end,planned is not None and planned>0 and start is not None and end is not None and end>start
+
+
+def repair_expired_charge(controller, plan, log):
+    """Neutralise an expired controller-owned charge instead of replaying its clock times."""
+    charge=plan.get('charge') or {}; start,end,positive=_positive_transfer(charge)
+    if not positive:return
+    now=controller.now()
+    try:start=start.astimezone(controller.tz); end=end.astimezone(controller.tz); now=now.astimezone(controller.tz)
+    except Exception:return
+    if now<end:return
+    kind=str(charge.get('kind') or '')
+    if not (kind.startswith('calibration_') or kind in ('regular','minimise_export','overnight')):return
+    log.error('Missed controller charge window: kind=%s slot=%s-%s now=%s; disabling expired slot rather than replaying it',kind,start.strftime('%Y-%m-%d %H:%M'),end.strftime('%Y-%m-%d %H:%M'),now.strftime('%Y-%m-%d %H:%M'))
+    anchor=end.replace(second=0,microsecond=0)
+    charge['start']=iso(anchor); charge['end']=iso(anchor); charge['planned_kwh']=0.0
+    if kind.startswith('calibration_'):charge['kind']='calibration_recharge_missed'
+
+
+def resolve_pause_transfer_conflicts(controller, plan, pause, log):
+    """Ensure a blocking pause can never coexist with a deliberate battery transfer.
+
+    This is deliberately enforced at the final plan-to-inverter boundary so every
+    planner (including calibration and future overlays) receives the same safety
+    protection. Future regular/calibration charging also truncates PauseBoth or
+    PauseCharge at charge start, avoiding reliance on an exact controller tick.
+    """
+    pause=dict(pause or {'mode':'Disabled','start':'00:00:00','end':'00:00:00'})
+    mode=pause.get('mode') or 'Disabled'; now=controller.now()
+    try:now=now.astimezone(controller.tz)
+    except Exception:pass
+    cstart,cend,cpositive=_positive_transfer(plan.get('charge'))
+    dstart,dend,dpositive=_positive_transfer(plan.get('discharge'))
+    if cstart:
+        try:cstart=cstart.astimezone(controller.tz); cend=cend.astimezone(controller.tz)
+        except Exception:pass
+    if dstart:
+        try:dstart=dstart.astimezone(controller.tz); dend=dend.astimezone(controller.tz)
+        except Exception:pass
+
+    if cpositive and cstart<=now<cend and mode in ('PauseCharge','PauseBoth'):
+        log.warning('Battery action transition: %s -> Charge reason=%s slot=%s-%s; releasing blocking pause',mode,(plan.get('charge') or {}).get('kind') or 'planned_charge',cstart.strftime('%H:%M'),cend.strftime('%H:%M'))
+        return {'mode':'Disabled','start':'00:00:00','end':'00:00:00'}
+    if dpositive and dstart<=now<dend and mode in ('PauseDischarge','PauseBoth'):
+        log.warning('Battery action transition: %s -> Discharge reason=%s slot=%s-%s; releasing blocking pause',mode,(plan.get('discharge') or {}).get('kind') or 'planned_discharge',dstart.strftime('%H:%M'),dend.strftime('%H:%M'))
+        return {'mode':'Disabled','start':'00:00:00','end':'00:00:00'}
+
+    # Confirmed EV Smart Charging has its own explicit pause overlay and must not
+    # be shortened merely because a separate future regular charge exists.
+    confirmed=bool(plan.get('intelligent_go',{}).get('confirmed'))
+    if cpositive and not confirmed and mode in ('PauseCharge','PauseBoth') and now<cstart:
+        off=plan.get('offpeak') or {}; ostart=parse_dt(off.get('start')); oend=parse_dt(off.get('end'))
+        try:ostart=ostart.astimezone(controller.tz) if ostart else None; oend=oend.astimezone(controller.tz) if oend else None
+        except Exception:pass
+        pause_end=str(pause.get('end') or '')
+        if ostart and oend and ostart<=cstart<=oend and pause_end==controller.tstr(oend):
+            # Only the full regular cheap-window preservation pause is shortened.
+            # A deliberately shorter overlay is left untouched.
+            if pause_end!=controller.tstr(cstart):
+                log.info('Pause/charge invariant: truncating %s at planned charge start %s (was %s)',mode,controller.tstr(cstart),pause_end)
+                pause['end']=controller.tstr(cstart)
+    return pause
+
+
 def repair_disabled_discharge(controller, plan, log):
     discharge=plan.get('discharge') or {}
     if discharge.get('kind')!='none':return
@@ -22,13 +88,7 @@ def repair_disabled_discharge(controller, plan, log):
 
 
 async def charge_end_with_live_extension(controller, plan, log, step_minutes=5):
-    """Extend a controller-owned cheap-rate charge in small live-SOC steps.
-
-    The planner remains responsible for the nominal slot. This is only a
-    last-mile correction when the slot is at/near its planned end and observed
-    SOC is still below the plan's logical target. The extension remains inside
-    the regular off-peak window and preserves the configured safety margin.
-    """
+    """Extend a controller-owned cheap-rate charge in small live-SOC steps."""
     charge=plan.get('charge') or {}; offpeak=plan.get('offpeak') or {}
     start=parse_dt(charge.get('start')); end=parse_dt(charge.get('end')); off_end=parse_dt(offpeak.get('end'))
     target=as_float(charge.get('target_soc')); rate=as_float(charge.get('rate_w')); planned_kwh=as_float(charge.get('planned_kwh'))
@@ -50,7 +110,7 @@ async def charge_end_with_live_extension(controller, plan, log, step_minutes=5):
 
 async def desired_inverter_fields(controller, plan, log):
     """Translate a calculated plan to desired inverter fields without writing."""
-    repair_disabled_discharge(controller,plan,log)
+    repair_disabled_discharge(controller,plan,log); repair_expired_charge(controller,plan,log)
     wend=parse_dt(plan['offpeak']['end']); window={'start':parse_dt(plan['offpeak']['start']).astimezone(controller.tz),'end':wend.astimezone(controller.tz),'rate_p':plan['offpeak']['rate_p']}
     pause=plan.get('pause') or controller.pause_plan(window)
     if plan.get('intelligent_go',{}).get('confirmed'):
@@ -58,6 +118,7 @@ async def desired_inverter_fields(controller, plan, log):
         if mode in ('PauseDischarge','PauseBoth') and ia and ib:pause={'mode':mode,'start':controller.tstr(ia),'end':controller.tstr(ib)}
         elif mode=='PauseCharge':pause=plan.get('pause') or pause
         else:pause={'mode':'Disabled','start':'00:00:00','end':'00:00:00'}
+    pause=resolve_pause_transfer_conflicts(controller,plan,pause,log)
     pause_start=await controller.preserve_active_slot_start('pause',controller.c['pause_start_entity'],controller.c['pause_end_entity'],pause['start'])
     charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(parse_dt(plan['charge']['start'])))
     charge_end=await charge_end_with_live_extension(controller,plan,log)
