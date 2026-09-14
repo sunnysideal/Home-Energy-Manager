@@ -42,11 +42,10 @@ def test_duplicate_press_while_pending_does_not_queue_another_calibration():
 
 
 def test_request_only_clears_after_observed_low_soc():
-    assert "if soc is None or soc > floor:\n        return" in RUNTIME
+    assert 'if was_pending and soc <= floor:' in RUNTIME
     assert "self.db.set(_PENDING_KEY, False)" in RUNTIME
     assert "self.db.set(_COMPLETED_AT_KEY, completed_at)" in RUNTIME
-    assert 'request cleared and normal deep-cycle timer reset' in RUNTIME
-    assert 'requesting or starting discharge never resets/clears the request' in RUNTIME
+    assert 'request cleared and recharge state preserved' in RUNTIME
 
 
 def test_manual_request_diagnostics_are_exposed_on_existing_controller_sensor():
@@ -110,3 +109,33 @@ def test_small_forecast_noise_has_bounded_margin():
 def test_automatic_and_manual_low_calibration_share_strategy_function():
     assert '_legacy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge' in RUNTIME
     assert "if controller.calibration_state() != 'awaiting_deep_low':" in RUNTIME
+
+
+def test_manual_request_overrides_automatic_calibration_disabled_state():
+    state_fn = RUNTIME.split('def _manual_calibration_state(self):', 1)[1].split('\ndef _request_status', 1)[0]
+    assert "if _pending(self):" in state_fn
+    assert "return 'awaiting_deep_low'" in state_fn
+    assert "if state == 'disabled':" not in state_fn
+    assert 'automatic ``disabled`` state' in state_fn
+    assert 'automatic periodic calibration scheduling only' in AGENTS
+
+
+def test_disabled_automatic_calibration_is_not_reported_as_manual_request_blocker():
+    status_fn = RUNTIME.split('def _request_status(controller):', 1)[1].split('\ndef _calibration_attrs_with_manual_request', 1)[0]
+    assert 'calibration_disabled' not in status_fn
+    assert "return 'planned', 'user_requested'" in status_fn
+
+
+def test_manual_low_endpoint_preserves_deep_recharge_when_auto_is_disabled():
+    assert "self.db.set('calibration_low_reached_at', low_reached)" in RUNTIME
+    assert "if self.db.ok and self.db.get('calibration_low_reached_at'):" in RUNTIME
+    assert "return 'deep_recharge'" in RUNTIME
+    assert 'preserving normal deep-recharge completion' in RUNTIME
+
+
+def test_manual_recharge_completion_does_not_reenable_automatic_calibration():
+    assert "if not self.c.get('calibration_enabled', True) and low_reached and soc >= 100:" in RUNTIME
+    assert "self.db.set('last_full_soc_at', now_iso)" in RUNTIME
+    assert "self.db.set('last_deep_calibration_at', now_iso)" in RUNTIME
+    assert "self.db.set('calibration_low_reached_at', None)" in RUNTIME
+    assert 'automatic calibration remains disabled' in RUNTIME
