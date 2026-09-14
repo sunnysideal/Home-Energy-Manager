@@ -1,5 +1,5 @@
 name: Home Energy Manager
-version: 0.1.94
+version: 0.1.97
 slug: home_energy_manager
 description: ASHP forecasting, whole-home energy forecasting, Axle event integration and battery control in one add-on, with components kept strictly separate.
 arch: [aarch64, amd64]
@@ -15,6 +15,41 @@ services:
 map:
 - config:rw
 options:
+  energy_strategy:
+    operation_mode: forecast_only
+    safety_buffer_soc: 20
+    axle_entity: sensor.home_energy_manager_axle
+    axle_discharge_efficiency: 0.95
+    axle_charge_margin_minutes: 10
+    power_down_enabled: true
+    power_down_events_entity: ''
+    power_down_import_baseline_entity: ''
+    power_down_export_baseline_entity: ''
+    minimise_export_min_soc: 25
+    calibration_enabled: true
+    top_full_every_days: 14
+    deep_cycle_every_days: 60
+    deep_cycle_floor_soc: 4
+    reserve_dwell_minutes: 15
+    export_start: '20:00'
+    preferred_charge_c_rate: 0.25
+    max_charge_c_rate: 0.4
+    discharge_rate_w: 0
+    charge_safety_margin_minutes: 10
+    generic_dwell_minutes: 15
+    forecast_stale_minutes: 15
+    future_tolerance_minutes: 2
+    time_deadband_minutes: 3
+    rate_deadband_w: 100
+    energy_deadband_kwh: 0.1
+    charge_variance_threshold_kwh: 0.5
+    export_variance_threshold_kwh: 0.2
+    write_retry_attempts: 4
+    write_retry_delay_seconds: 10
+    sample_interval_seconds: 30
+    rate_match_tolerance_pct: 5
+    rate_match_tolerance_w: 100
+    controller_refresh_timeout_seconds: 90
   battery:
     soc: ''
     capacity_kwh: ''
@@ -83,41 +118,6 @@ options:
     smart_charging_dispatch: ''
     smart_charging_active: ''
     smart_charging_enabled: true
-  energy_strategy:
-    operation_mode: forecast_only
-    safety_buffer_soc: 20
-    axle_entity: sensor.home_energy_manager_axle
-    axle_discharge_efficiency: 0.95
-    axle_charge_margin_minutes: 10
-    power_down_enabled: true
-    power_down_events_entity: ''
-    power_down_import_baseline_entity: ''
-    power_down_export_baseline_entity: ''
-    minimise_export_min_soc: 25
-    calibration_enabled: true
-    top_full_every_days: 14
-    deep_cycle_every_days: 60
-    deep_cycle_floor_soc: 4
-    reserve_dwell_minutes: 15
-    export_start: '20:00'
-    preferred_charge_c_rate: 0.25
-    max_charge_c_rate: 0.4
-    discharge_rate_w: 0
-    charge_safety_margin_minutes: 10
-    generic_dwell_minutes: 15
-    forecast_stale_minutes: 15
-    future_tolerance_minutes: 2
-    time_deadband_minutes: 3
-    rate_deadband_w: 100
-    energy_deadband_kwh: 0.1
-    charge_variance_threshold_kwh: 0.5
-    export_variance_threshold_kwh: 0.2
-    write_retry_attempts: 4
-    write_retry_delay_seconds: 10
-    sample_interval_seconds: 30
-    rate_match_tolerance_pct: 5
-    rate_match_tolerance_w: 100
-    controller_refresh_timeout_seconds: 90
   axle:
     enabled: true
     start_time_entity: sensor.axle_vpp_axle_start_time
@@ -174,6 +174,41 @@ options:
       topic_prefix: home_energy_manager
       migrate_legacy_states: true
 schema:
+  energy_strategy:
+    operation_mode: list(maximise_export|minimise_export|export_generated|forecast_only|axle_only)
+    safety_buffer_soc: int(1,99)
+    axle_entity: str
+    axle_discharge_efficiency: float(0.5,1.0)
+    axle_charge_margin_minutes: int(0,120)
+    power_down_enabled: bool
+    power_down_events_entity: str?
+    power_down_import_baseline_entity: str?
+    power_down_export_baseline_entity: str?
+    minimise_export_min_soc: int(1,99)
+    calibration_enabled: bool
+    top_full_every_days: int(1,365)
+    deep_cycle_every_days: int(1,730)
+    deep_cycle_floor_soc: int(1,20)
+    reserve_dwell_minutes: int(0,180)
+    export_start: str
+    preferred_charge_c_rate: float
+    max_charge_c_rate: float
+    discharge_rate_w: int(0,20000)
+    charge_safety_margin_minutes: int(0,120)
+    generic_dwell_minutes: int(0,120)
+    forecast_stale_minutes: int(1,120)
+    future_tolerance_minutes: int(0,30)
+    time_deadband_minutes: int(0,30)
+    rate_deadband_w: int(0,2000)
+    energy_deadband_kwh: float
+    charge_variance_threshold_kwh: float
+    export_variance_threshold_kwh: float
+    write_retry_attempts: int(1,10)
+    write_retry_delay_seconds: int(1,600)
+    sample_interval_seconds: int(5,300)
+    rate_match_tolerance_pct: float
+    rate_match_tolerance_w: int
+    controller_refresh_timeout_seconds: int(30,600)
   battery:
     soc: str?
     capacity_kwh: str?
@@ -242,41 +277,6 @@ schema:
     smart_charging_dispatch: str?
     smart_charging_active: str?
     smart_charging_enabled: bool
-  energy_strategy:
-    operation_mode: list(maximise_export|minimise_export|export_generated|forecast_only|axle_only)
-    safety_buffer_soc: int(1,99)
-    axle_entity: str
-    axle_discharge_efficiency: float(0.5,1.0)
-    axle_charge_margin_minutes: int(0,120)
-    power_down_enabled: bool
-    power_down_events_entity: str?
-    power_down_import_baseline_entity: str?
-    power_down_export_baseline_entity: str?
-    minimise_export_min_soc: int(1,99)
-    calibration_enabled: bool
-    top_full_every_days: int(1,365)
-    deep_cycle_every_days: int(1,730)
-    deep_cycle_floor_soc: int(1,20)
-    reserve_dwell_minutes: int(0,180)
-    export_start: str
-    preferred_charge_c_rate: float
-    max_charge_c_rate: float
-    discharge_rate_w: int(0,20000)
-    charge_safety_margin_minutes: int(0,120)
-    generic_dwell_minutes: int(0,120)
-    forecast_stale_minutes: int(1,120)
-    future_tolerance_minutes: int(0,30)
-    time_deadband_minutes: int(0,30)
-    rate_deadband_w: int(0,2000)
-    energy_deadband_kwh: float
-    charge_variance_threshold_kwh: float
-    export_variance_threshold_kwh: float
-    write_retry_attempts: int(1,10)
-    write_retry_delay_seconds: int(1,600)
-    sample_interval_seconds: int(5,300)
-    rate_match_tolerance_pct: float
-    rate_match_tolerance_w: int
-    controller_refresh_timeout_seconds: int(30,600)
   axle:
     enabled: bool
     start_time_entity: str
