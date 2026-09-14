@@ -20,6 +20,7 @@ from dhw_shadow_runner import (
     _production_starts,
     _published_half_hours,
     _required_simulation_hours,
+    _simulation_start,
 )
 
 
@@ -34,29 +35,29 @@ class FakeSlot:
 
 def _raw_slots(now: datetime) -> tuple[list[datetime], list[FakeSlot]]:
     production = _production_starts(now)
-    simulation_start = now.replace(second=0, microsecond=0)
-    remainder = simulation_start.minute % THERMAL_STEP_MINUTES
-    if remainder or now.second or now.microsecond:
-        simulation_start += timedelta(minutes=(THERMAL_STEP_MINUTES - remainder) % THERMAL_STEP_MINUTES)
-        if remainder == 0 and (now.second or now.microsecond):
-            simulation_start += timedelta(minutes=THERMAL_STEP_MINUTES)
+    simulation_start = _simulation_start(now, production)
     hours = _required_simulation_hours(simulation_start, production)
     count = int(round(hours * 60 / THERMAL_STEP_MINUTES))
-    raw = [FakeSlot(simulation_start + timedelta(minutes=THERMAL_STEP_MINUTES * i)) for i in range(count)]
+    raw = [
+        FakeSlot(datetime.fromtimestamp(simulation_start.timestamp() + THERMAL_STEP_MINUTES * 60 * i, tz=simulation_start.tzinfo))
+        for i in range(count)
+    ]
     return production, raw
 
 
 def _assert_complete(now: datetime) -> None:
     production, raw = _raw_slots(now)
-    published, complete = _published_half_hours(raw, production)
+    published, complete = _published_half_hours(
+        raw, production, now=now, actual_current_dhw_kwh=0.0,
+        current_upper_c=50.0, current_lower_c=45.0,
+    )
     assert complete is True
     assert PRODUCTION_SLOTS == 96
     assert PRODUCTION_COVERAGE_SLOTS == 97
     assert len(production) == PRODUCTION_COVERAGE_SLOTS
     assert len(published) == PRODUCTION_COVERAGE_SLOTS
-    # ISO strings preserve the exact offset selected for each local production slot,
-    # including the repeated hour at the Europe/London autumn DST transition.
     assert [row["start"] for row in published] == [item.isoformat() for item in production]
+    assert published[0]["current_slot"] is True
     assert published[-1]["start"] == production[-1].isoformat()
 
 
@@ -86,15 +87,16 @@ def test_alignment_crosses_midnight() -> None:
 
 def test_alignment_across_europe_london_dst_change() -> None:
     london = ZoneInfo("Europe/London")
-    now = datetime(2026, 10, 24, 23, 20, tzinfo=london)
-    _assert_complete(now)
+    _assert_complete(datetime(2026, 10, 24, 23, 20, tzinfo=london))
 
 
-def test_one_missing_five_minute_slot_marks_horizon_incomplete() -> None:
+def test_one_missing_future_five_minute_slot_marks_horizon_incomplete() -> None:
     now = datetime(2026, 9, 9, 16, 20, tzinfo=timezone.utc)
     production, raw = _raw_slots(now)
     missing = production[10] + timedelta(minutes=15)
     raw = [slot for slot in raw if slot.start != missing]
-    published, complete = _published_half_hours(raw, production)
+    published, complete = _published_half_hours(
+        raw, production, now=now, current_upper_c=50.0, current_lower_c=45.0,
+    )
     assert complete is False
     assert len(published) == 10
