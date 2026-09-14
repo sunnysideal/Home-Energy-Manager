@@ -109,6 +109,28 @@ def _latest_tank_state(db: sqlite3.Connection) -> tuple[float, float, float | No
     return float(row[0]), float(row[1]), (float(row[2]) if row[2] is not None else None)
 
 
+def _actual_dhw_since(db: sqlite3.Connection, start: datetime, end: datetime) -> float:
+    """Return measured DHW electrical energy recorded inside the active production slot."""
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    total = 0.0
+    rows = db.execute(
+        "SELECT timestamp,dhw_energy_delta_kwh FROM dhw_thermal_samples "
+        "WHERE valid=1 AND dhw_energy_delta_kwh IS NOT NULL ORDER BY timestamp DESC LIMIT 1000"
+    ).fetchall()
+    for raw_ts, raw_delta in rows:
+        try:
+            ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            stamp = ts.timestamp()
+            if start_ts < stamp <= end_ts:
+                total += max(0.0, float(raw_delta))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def _target_sensor_from_config(cfg: dict) -> str:
     control = str(cfg.get("dhw_tank_temperature_entity") or "").strip()
     upper = str(cfg.get("dhw_tank_upper_temperature_entity") or "").strip()
@@ -149,21 +171,14 @@ def _production_starts(now: datetime) -> list[datetime]:
 
 
 def _simulation_start(now: datetime, production_starts: list[datetime]) -> datetime:
-    """Return a thermal-step start that always covers the first production slot.
+    """Start thermal simulation at the next 5-minute point from the current tank state.
 
-    During the shared post-boundary grace window, production_slot_start() may select
-    the half-hour boundary that has just begun while a normal 5-minute ceil would
-    move the simulation to the next thermal step. In that case start exactly at the
-    selected production boundary so the first production half-hour is constructible.
-    Outside that grace case retain the normal next-5-minute simulation start.
+    Production is independently anchored to the current clock half-hour. The thermal
+    model starts from the current measured tank state and therefore must not pretend
+    that state existed at the beginning of a partly elapsed production slot.
     """
-    thermal_start = _ceil_local(now, THERMAL_STEP_MINUTES)
-    if not production_starts:
-        return thermal_start
-    first_production = production_starts[0]
-    if first_production.timestamp() < thermal_start.timestamp():
-        return first_production
-    return thermal_start
+    del production_starts
+    return _ceil_local(now, THERMAL_STEP_MINUTES)
 
 
 def _required_simulation_hours(simulation_start: datetime, production_starts: list[datetime]) -> float:
@@ -175,13 +190,63 @@ def _required_simulation_hours(simulation_start: datetime, production_starts: li
     return steps * THERMAL_STEP_MINUTES / 60.0
 
 
-def _published_half_hours(slots: list, production_starts: list[datetime], *, step_minutes: int = THERMAL_STEP_MINUTES) -> tuple[list[dict[str, Any]], bool]:
-    if not slots or not production_starts:
+def _published_half_hours(
+    slots: list,
+    production_starts: list[datetime],
+    *,
+    now: datetime | None = None,
+    actual_current_dhw_kwh: float = 0.0,
+    current_upper_c: float | None = None,
+    current_lower_c: float | None = None,
+    step_minutes: int = THERMAL_STEP_MINUTES,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not production_starts:
         return [], False
     by_start = {slot.start.astimezone(timezone.utc): slot for slot in slots}
     rows: list[dict[str, Any]] = []
-    for cursor in production_starts:
-        chunk = [by_start.get((cursor + timedelta(minutes=i)).astimezone(timezone.utc)) for i in range(0, PRODUCTION_INTERVAL_MINUTES, step_minutes)]
+
+    for index, cursor in enumerate(production_starts):
+        slot_end = cursor + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES)
+        is_current = bool(index == 0 and now is not None and cursor <= now < slot_end)
+
+        if is_current:
+            first_future = _ceil_local(now, step_minutes)
+            expected = []
+            point = max(first_future, cursor)
+            while point < slot_end:
+                expected.append(point)
+                point += timedelta(minutes=step_minutes)
+            chunk = [by_start.get(point.astimezone(timezone.utc)) for point in expected]
+            if any(slot is None for slot in chunk):
+                return rows, False
+            complete = [slot for slot in chunk if slot is not None]
+            forecast_dhw = sum(float(slot.dhw_kwh) for slot in complete)
+            draw_kwh = sum(float(slot.draw_kwh) for slot in complete)
+            dhw_kwh = max(0.0, actual_current_dhw_kwh) + forecast_dhw
+            if complete:
+                endpoint_upper = float(complete[-1].upper_temp_c)
+                endpoint_lower = float(complete[-1].lower_temp_c)
+            elif current_upper_c is not None and current_lower_c is not None:
+                endpoint_upper = float(current_upper_c)
+                endpoint_lower = float(current_lower_c)
+            else:
+                return rows, False
+            rows.append({
+                "start": cursor.isoformat(),
+                "dhw_active": dhw_kwh > 0.0,
+                "dhw_kwh": round(dhw_kwh, 4),
+                "actual_dhw_kwh": round(max(0.0, actual_current_dhw_kwh), 4),
+                "forecast_remaining_dhw_kwh": round(forecast_dhw, 4),
+                "predicted_draw_kwh": round(draw_kwh, 4),
+                "upper_temperature_c": round(endpoint_upper, 2),
+                "lower_temperature_c": round(endpoint_lower, 2),
+                "current_slot": True,
+                "actual_through": now.isoformat(),
+            })
+            continue
+
+        expected = [cursor + timedelta(minutes=i) for i in range(0, PRODUCTION_INTERVAL_MINUTES, step_minutes)]
+        chunk = [by_start.get(point.astimezone(timezone.utc)) for point in expected]
         if any(slot is None for slot in chunk):
             return rows, False
         complete = [slot for slot in chunk if slot is not None]
@@ -189,9 +254,16 @@ def _published_half_hours(slots: list, production_starts: list[datetime], *, ste
         dhw_kwh = sum(float(slot.dhw_kwh) for slot in complete)
         draw_kwh = sum(float(slot.draw_kwh) for slot in complete)
         rows.append({
-            "start": cursor.isoformat(), "dhw_active": dhw_kwh > 0.0, "dhw_kwh": round(dhw_kwh, 4),
-            "predicted_draw_kwh": round(draw_kwh, 4), "upper_temperature_c": round(float(endpoint.upper_temp_c), 2),
+            "start": cursor.isoformat(),
+            "dhw_active": dhw_kwh > 0.0,
+            "dhw_kwh": round(dhw_kwh, 4),
+            "actual_dhw_kwh": 0.0,
+            "forecast_remaining_dhw_kwh": round(dhw_kwh, 4),
+            "predicted_draw_kwh": round(draw_kwh, 4),
+            "upper_temperature_c": round(float(endpoint.upper_temp_c), 2),
             "lower_temperature_c": round(float(endpoint.lower_temp_c), 2),
+            "current_slot": False,
+            "actual_through": None,
         })
     return rows, len(rows) == len(production_starts) and len(rows) >= PRODUCTION_SLOTS
 
@@ -249,7 +321,15 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
     )
     forecast_ts = datetime.now(timezone.utc)
     checkpoints = persist_shadow_validation(db, slots, forecast_ts=forecast_ts)
-    published, horizon_complete = _published_half_hours(slots, production_starts)
+    actual_current_dhw = _actual_dhw_since(db, production_starts[0], now_local) if production_starts else 0.0
+    published, horizon_complete = _published_half_hours(
+        slots,
+        production_starts,
+        now=now_local,
+        actual_current_dhw_kwh=actual_current_dhw,
+        current_upper_c=upper,
+        current_lower_c=lower,
+    )
     total_dhw = sum(float(row["dhw_kwh"]) for row in published[:PRODUCTION_SLOTS])
     production_start = production_starts[0].isoformat() if production_starts else None
     production_end = production_starts[PRODUCTION_SLOTS - 1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES) if len(production_starts) >= PRODUCTION_SLOTS else None
@@ -263,6 +343,7 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
             "coverage_forecast_slots": PRODUCTION_COVERAGE_SLOTS, "horizon_complete": horizon_complete,
             "production_start": production_start, "production_end": production_end.isoformat() if production_end else None,
             "simulation_start": simulation_start.isoformat(), "simulation_slots": len(slots),
+            "current_slot_actual_dhw_kwh": round(actual_current_dhw, 4),
             "start_upper_temperature_c": round(upper, 2), "start_lower_temperature_c": round(lower, 2),
             "target_temperature_c": round(target, 2), "target_sensor": target_sensor,
             "target_sensor_entity": str(cfg.get("dhw_tank_temperature_entity") or ""), "mode": mode,
@@ -275,9 +356,10 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
     log = LOG.info if horizon_complete else LOG.warning
     log(
         "DHW thermal forecast %s: trigger=%s simulation_slots=%d published_slots=%d horizon_complete=%s "
-        "checkpoints=%d next_48h=%.2fkWh production_start=%s simulation_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC target_sensor=%s mode=%s",
+        "checkpoints=%d next_48h=%.2fkWh current_actual=%.3fkWh production_start=%s simulation_start=%s "
+        "start_upper=%.1fC start_lower=%.1fC target=%.1fC target_sensor=%s mode=%s",
         publication_status, trigger, len(slots), len(published), horizon_complete, checkpoints, total_dhw,
-        production_start, simulation_start.isoformat(), upper, lower, target, target_sensor, mode,
+        actual_current_dhw, production_start, simulation_start.isoformat(), upper, lower, target, target_sensor, mode,
     )
     return checkpoints
 
