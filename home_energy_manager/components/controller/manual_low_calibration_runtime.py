@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""One-shot user-requested low-calibration overlay and low-calibration strategy.
+"""User-requested calibration controls and low-calibration strategy.
 
-The package owns the Home Assistant request button. Calibration policy remains in
-Controller and all actual planning/writes continue through the existing planner
+The package owns the Home Assistant calibration buttons. Calibration policy remains
+in Controller and all actual planning/writes continue through the existing planner
 and plan-applier path. Automatic and requested low calibrations deliberately use
 the same natural-depletion-first strategy.
 """
@@ -25,7 +25,23 @@ _REQUESTED_AT_KEY = 'manual_low_calibration_requested_at'
 _COMPLETED_AT_KEY = 'manual_low_calibration_completed_at'
 _LAST_RESULT_KEY = 'manual_low_calibration_last_result'
 _BUTTON_ENTITY = 'button.home_energy_manager_request_low_calibration'
+_CLEAR_BUTTON_ENTITY = 'button.home_energy_manager_clear_calibration_state'
+_CLEAR_AT_KEY = 'calibration_state_cleared_at'
+_CLEAR_RESULT_KEY = 'calibration_state_clear_result'
+_CLEAR_KEYS_KEY = 'calibration_state_cleared_keys'
 _NATURAL_MARGIN_SOC = 0.5
+
+# These are transient intent markers only. Historical calibration observations,
+# completion timestamps, SOC crossings and learned battery data are deliberately
+# excluded. The high-calibration names reserve the persistence contract for #59
+# so the same clear action works once that request path is added.
+_CLEARABLE_CALIBRATION_STATE = (
+    (_PENDING_KEY, False),
+    ('manual_high_calibration_pending', False),
+    ('high_calibration_requested', False),
+    ('manual_high_calibration_requested', False),
+    ('calibration_low_reached_at', None),
+)
 
 
 def _pending(controller):
@@ -50,6 +66,39 @@ def _latch_request(controller):
     )
 
 
+def _clear_calibration_state(controller):
+    """Clear transient calibration intent without altering calibration history."""
+    if not controller.db.ok:
+        return
+    cleared = []
+    low_was_pending = bool(controller.db.get(_PENDING_KEY))
+    high_was_pending = any(bool(controller.db.get(key)) for key in (
+        'manual_high_calibration_pending', 'high_calibration_requested', 'manual_high_calibration_requested',
+    ))
+    for key, cleared_value in _CLEARABLE_CALIBRATION_STATE:
+        current = controller.db.get(key)
+        active = current is not None if key == 'calibration_low_reached_at' else bool(current)
+        if not active:
+            continue
+        controller.db.set(key, cleared_value)
+        cleared.append(key)
+
+    if low_was_pending:
+        controller.db.set(_LAST_RESULT_KEY, 'cleared')
+    if high_was_pending:
+        controller.db.set('manual_high_calibration_last_result', 'cleared')
+
+    now_iso = core.iso(controller.now())
+    result = 'cleared' if cleared else 'nothing_to_clear'
+    controller.db.set(_CLEAR_AT_KEY, now_iso)
+    controller.db.set(_CLEAR_RESULT_KEY, result)
+    controller.db.set(_CLEAR_KEYS_KEY, cleared)
+    core.LOG.info(
+        'Calibration state clear requested: result=%s cleared=%s; historical calibration timestamps and learning preserved',
+        result, ','.join(cleared) if cleared else 'none',
+    )
+
+
 def _install_request_button(controller):
     event = threading.Event()
     controller._manual_low_calibration_press = event
@@ -65,28 +114,46 @@ def _install_request_button(controller):
         core.LOG.warning('Manual low calibration request button unavailable because Controller MQTT is unavailable')
 
 
-def _init_with_manual_low_button(self, *args, **kwargs):
+def _install_clear_button(controller):
+    event = threading.Event()
+    controller._clear_calibration_state_press = event
+    available = publish_command_button(
+        controller.mqtt,
+        _CLEAR_BUTTON_ENTITY,
+        'Clear Calibration State',
+        'mdi:battery-off-outline',
+        event.set,
+    )
+    controller._clear_calibration_state_button_available = available
+    if not available:
+        core.LOG.warning('Clear calibration state button unavailable because Controller MQTT is unavailable')
+
+
+def _init_with_calibration_buttons(self, *args, **kwargs):
     _original_init(self, *args, **kwargs)
     _install_request_button(self)
+    _install_clear_button(self)
 
 
 def _manual_calibration_state(self):
     state = _original_calibration_state(self)
-    if state == 'disabled':
-        return state
     if state == 'deep_recharge':
         return state
+    # ``calibration_enabled`` governs automatic scheduling only. A low endpoint
+    # already reached by a requested cycle still requires its normal recharge,
+    # even if the automatic scheduler is disabled.
+    if self.db.ok and self.db.get('calibration_low_reached_at'):
+        return 'deep_recharge'
     if _pending(self):
         # Reuse the exact automatic deep-calibration planning state rather than
-        # introducing a manual discharge path.
+        # introducing a manual discharge path. This deliberately overrides an
+        # automatic ``disabled`` state for the one requested cycle only.
         return 'awaiting_deep_low'
     return state
 
 
 def _request_status(controller):
     if _pending(controller):
-        if not controller.c.get('calibration_enabled', True):
-            return 'blocked', 'calibration_disabled'
         state = controller.calibration_state()
         if state == 'awaiting_deep_low':
             return 'planned', 'user_requested'
@@ -108,6 +175,11 @@ def _calibration_attrs_with_manual_request(self):
         'low_calibration_request_target_soc': float(self.c.get('deep_cycle_floor_soc', 4)),
         'low_calibration_request_completed_at': self.db.get(_COMPLETED_AT_KEY) if self.db.ok else None,
         'low_calibration_request_last_result': self.db.get(_LAST_RESULT_KEY) if self.db.ok else None,
+        'calibration_clear_button': _CLEAR_BUTTON_ENTITY,
+        'calibration_clear_button_available': bool(getattr(self, '_clear_calibration_state_button_available', False)),
+        'calibration_state_cleared_at': self.db.get(_CLEAR_AT_KEY) if self.db.ok else None,
+        'calibration_state_clear_result': self.db.get(_CLEAR_RESULT_KEY) if self.db.ok else None,
+        'calibration_state_cleared_keys': self.db.get(_CLEAR_KEYS_KEY, []) if self.db.ok else [],
     })
     return attrs
 
@@ -223,44 +295,78 @@ def _natural_first_calibration_discharge(controller, plan, window, capacity, res
 
 
 async def _sample_with_manual_low_calibration(self):
-    # MQTT callbacks run on paho's network thread. They only set a thread-safe
-    # Event; all DB/policy work happens here on the Controller thread.
-    event = getattr(self, '_manual_low_calibration_press', None)
-    if event is not None and event.is_set():
-        event.clear()
+    # MQTT callbacks run on paho's network thread. They only set thread-safe
+    # Events; all DB/policy work happens here on the Controller thread.
+    request_event = getattr(self, '_manual_low_calibration_press', None)
+    if request_event is not None and request_event.is_set():
+        request_event.clear()
         _latch_request(self)
+
+    # Process clear after request so an accidental/simultaneous pair of presses
+    # resolves to the user's explicit clear action. This changes persistence only;
+    # the next normal planner/apply pass converges any stale inverter schedule.
+    clear_event = getattr(self, '_clear_calibration_state_press', None)
+    if clear_event is not None and clear_event.is_set():
+        clear_event.clear()
+        _clear_calibration_state(self)
 
     was_pending = _pending(self)
     before_deep = self.db.get('last_deep_calibration_at') if self.db.ok else None
     await _original_sample(self)
-    if not was_pending or not self.db.ok:
+    if not self.db.ok:
         return
 
     entity = self.c.get('battery_soc_entity', '')
     st = await self.ha.state(entity) if entity else None
     soc = core.as_float(st.get('state')) if st else None
-    floor = float(self.c.get('deep_cycle_floor_soc', 4))
-    after_deep = self.db.get('last_deep_calibration_at')
-    if soc is None or soc > floor:
+    if soc is None:
         return
 
-    # The existing sampler records the same low-end completion timestamp used
-    # by automatic calibration. Clear only after that real observation; merely
-    # requesting or starting discharge never resets/clears the request.
-    completed_at = after_deep or core.iso(self.now())
-    self.db.set(_PENDING_KEY, False)
-    self.db.set(_COMPLETED_AT_KEY, completed_at)
-    self.db.set(_LAST_RESULT_KEY, 'completed')
-    core.LOG.info(
-        'Manual low calibration completed: soc=%.1f%% floor=%.1f%% last_deep_before=%s last_deep_after=%s; request cleared and normal deep-cycle timer reset',
-        soc, floor, before_deep or 'unknown', after_deep or completed_at,
-    )
+    now_iso = core.iso(self.now())
+    floor = float(self.c.get('deep_cycle_floor_soc', 4))
+    low_reached = self.db.get('calibration_low_reached_at')
+
+    # The ordinary sampler intentionally ignores calibration bookkeeping when
+    # automatic calibration is disabled. For an explicit requested cycle we
+    # still need the same low-end marker so the normal deep-recharge planner can
+    # finish the cycle safely after the request itself is cleared.
+    if was_pending and soc <= floor:
+        if not low_reached:
+            low_reached = now_iso
+            self.db.set('calibration_low_reached_at', low_reached)
+            core.LOG.info(
+                'Manual low calibration endpoint observed with automatic calibration disabled: soc=%.1f%% floor=%.1f%%; preserving normal deep-recharge completion',
+                soc, floor,
+            )
+
+        completed_at = low_reached
+        self.db.set(_PENDING_KEY, False)
+        self.db.set(_COMPLETED_AT_KEY, completed_at)
+        self.db.set(_LAST_RESULT_KEY, 'completed')
+        core.LOG.info(
+            'Manual low calibration completed: soc=%.1f%% floor=%.1f%% last_deep_before=%s low_reached_at=%s; request cleared and recharge state preserved',
+            soc, floor, before_deep or 'unknown', completed_at,
+        )
+        return
+
+    # If automatic calibration was disabled after (or throughout) a requested
+    # low cycle, the legacy sampler will not clear the low marker at 100%. Mirror
+    # only that existing completion bookkeeping here so deep_recharge can finish
+    # without re-enabling automatic scheduling.
+    if not self.c.get('calibration_enabled', True) and low_reached and soc >= 100:
+        self.db.set('last_full_soc_at', now_iso)
+        self.db.set('last_deep_calibration_at', now_iso)
+        self.db.set('calibration_low_reached_at', None)
+        core.LOG.info(
+            'Manual low calibration recharge completed with automatic calibration disabled: soc=%.1f%% last_deep_calibration_at=%s; automatic calibration remains disabled',
+            soc, now_iso,
+        )
 
 
 # Patch the legacy policy function used by the active overlay pipeline. This is
 # policy only: forecast physics still comes from the Home Forecaster entity/API.
 _legacy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge
-core.Controller.__init__ = _init_with_manual_low_button
+core.Controller.__init__ = _init_with_calibration_buttons
 core.Controller.calibration_state = _manual_calibration_state
 core.Controller.calibration_attrs = _calibration_attrs_with_manual_request
 core.Controller.sample = _sample_with_manual_low_calibration

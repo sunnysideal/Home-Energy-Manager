@@ -33,6 +33,10 @@ Combines normal household load, ASHP demand, PV forecast, battery state/schedule
 
 Available operating modes can minimise export, maximise export, export an amount related to generated solar, remain forecast-only, or operate only for qualifying Axle events. Controller safety rules prioritise avoiding unwanted peak-rate import and protecting battery reserve/safety constraints.
 
+The **Calibration enabled** setting controls automatic periodic battery calibration only. Turning it off does not disable an explicit one-shot low-calibration request from `button.home_energy_manager_request_low_calibration`; a requested cycle still uses the normal calibration planner and completes any required recharge while automatic calibration remains disabled.
+
+`button.home_energy_manager_clear_calibration_state` abandons persisted calibration intent such as a pending manual request or an incomplete deep-calibration recharge. It preserves historical calibration timestamps, SOC observations and battery-learning data. The button itself does not write inverter settings; the next normal Controller plan converges any stale calibration schedule. If automatic calibration remains enabled and is genuinely due from its historical timer, the normal scheduler may derive a new calibration again.
+
 ### Optional integrations
 
 - **EV Smart Charging**: supplies confirmed/planned charging information and optional EV energy measurement. Disable Smart Charging handling if you do not use it.

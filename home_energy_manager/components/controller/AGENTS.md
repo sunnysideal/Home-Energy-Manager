@@ -92,6 +92,7 @@ Any person or AI modifying this project MUST read this file before changing cont
 ### Calibration
 
 11a. **Minimise Export deep calibration reaches reserve as late as practical while preserving same-window recharge**
+    - `calibration_enabled` controls automatic periodic calibration scheduling only. An explicit persisted user-requested low/deep calibration must still enter the normal `awaiting_deep_low` path when automatic calibration is disabled, and any `deep_recharge` already required by that requested cycle must be allowed to complete. Completing the manual cycle must not re-enable automatic calibration.
     - Any genuine observed battery SOC at or below the configured `deep_cycle_floor_soc` satisfies the low-end calibration requirement and resets the deep-cycle interval, regardless of whether the low SOC was reached naturally, through another operating mode, or through a controller-requested calibration.
     - A spontaneous/natural low-SOC observation must not by itself enter the `deep_recharge` state or force a calibration recharge. The same-window recharge sequence applies only when the controller is already performing an `awaiting_deep_low` calibration cycle.
     - In `minimise_export`, the reserve objective must be scheduled as late as practical within the regular off-peak window while still leaving enough time for the configured reserve dwell, recharge from reserve to 100% at the available hardware charge rate, and the configured charge safety margin before off-peak ends.
