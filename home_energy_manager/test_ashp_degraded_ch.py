@@ -77,7 +77,7 @@ def test_dhw_failure_publishes_fresh_ch_and_unknown_combined_energy(monkeypatch)
     ]
     monkeypatch.setattr(runner.legacy, "resolve_dynamic_thresholds", lambda client, cfg: cfg)
     monkeypatch.setattr(runner.legacy, "build_training", lambda client, store, cfg, tz: (1.6, 10, 120))
-    monkeypatch.setattr(runner, "_build_ch_only_forecast", lambda client, cfg, coefficient, tz: rows)
+    monkeypatch.setattr(runner, "_build_ch_only_forecast", lambda client, store, cfg, coefficient, tz: rows)
 
     runner._publish_degraded_ch_forecast(client, store, _cfg(), tz, "thermal_horizon_incomplete")
 
