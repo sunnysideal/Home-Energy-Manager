@@ -72,21 +72,23 @@ def _init_with_manual_low_button(self, *args, **kwargs):
 
 def _manual_calibration_state(self):
     state = _original_calibration_state(self)
-    if state == 'disabled':
-        return state
     if state == 'deep_recharge':
         return state
+    # ``calibration_enabled`` governs automatic scheduling only. A low endpoint
+    # already reached by a requested cycle still requires its normal recharge,
+    # even if the automatic scheduler is disabled.
+    if self.db.ok and self.db.get('calibration_low_reached_at'):
+        return 'deep_recharge'
     if _pending(self):
         # Reuse the exact automatic deep-calibration planning state rather than
-        # introducing a manual discharge path.
+        # introducing a manual discharge path. This deliberately overrides an
+        # automatic ``disabled`` state for the one requested cycle only.
         return 'awaiting_deep_low'
     return state
 
 
 def _request_status(controller):
     if _pending(controller):
-        if not controller.c.get('calibration_enabled', True):
-            return 'blocked', 'calibration_disabled'
         state = controller.calibration_state()
         if state == 'awaiting_deep_low':
             return 'planned', 'user_requested'
@@ -233,28 +235,54 @@ async def _sample_with_manual_low_calibration(self):
     was_pending = _pending(self)
     before_deep = self.db.get('last_deep_calibration_at') if self.db.ok else None
     await _original_sample(self)
-    if not was_pending or not self.db.ok:
+    if not self.db.ok:
         return
 
     entity = self.c.get('battery_soc_entity', '')
     st = await self.ha.state(entity) if entity else None
     soc = core.as_float(st.get('state')) if st else None
-    floor = float(self.c.get('deep_cycle_floor_soc', 4))
-    after_deep = self.db.get('last_deep_calibration_at')
-    if soc is None or soc > floor:
+    if soc is None:
         return
 
-    # The existing sampler records the same low-end completion timestamp used
-    # by automatic calibration. Clear only after that real observation; merely
-    # requesting or starting discharge never resets/clears the request.
-    completed_at = after_deep or core.iso(self.now())
-    self.db.set(_PENDING_KEY, False)
-    self.db.set(_COMPLETED_AT_KEY, completed_at)
-    self.db.set(_LAST_RESULT_KEY, 'completed')
-    core.LOG.info(
-        'Manual low calibration completed: soc=%.1f%% floor=%.1f%% last_deep_before=%s last_deep_after=%s; request cleared and normal deep-cycle timer reset',
-        soc, floor, before_deep or 'unknown', after_deep or completed_at,
-    )
+    now_iso = core.iso(self.now())
+    floor = float(self.c.get('deep_cycle_floor_soc', 4))
+    low_reached = self.db.get('calibration_low_reached_at')
+
+    # The ordinary sampler intentionally ignores calibration bookkeeping when
+    # automatic calibration is disabled. For an explicit requested cycle we
+    # still need the same low-end marker so the normal deep-recharge planner can
+    # finish the cycle safely after the request itself is cleared.
+    if was_pending and soc <= floor:
+        if not low_reached:
+            low_reached = now_iso
+            self.db.set('calibration_low_reached_at', low_reached)
+            core.LOG.info(
+                'Manual low calibration endpoint observed with automatic calibration disabled: soc=%.1f%% floor=%.1f%%; preserving normal deep-recharge completion',
+                soc, floor,
+            )
+
+        completed_at = low_reached
+        self.db.set(_PENDING_KEY, False)
+        self.db.set(_COMPLETED_AT_KEY, completed_at)
+        self.db.set(_LAST_RESULT_KEY, 'completed')
+        core.LOG.info(
+            'Manual low calibration completed: soc=%.1f%% floor=%.1f%% last_deep_before=%s low_reached_at=%s; request cleared and recharge state preserved',
+            soc, floor, before_deep or 'unknown', completed_at,
+        )
+        return
+
+    # If automatic calibration was disabled after (or throughout) a requested
+    # low cycle, the legacy sampler will not clear the low marker at 100%. Mirror
+    # only that existing completion bookkeeping here so deep_recharge can finish
+    # without re-enabling automatic scheduling.
+    if not self.c.get('calibration_enabled', True) and low_reached and soc >= 100:
+        self.db.set('last_full_soc_at', now_iso)
+        self.db.set('last_deep_calibration_at', now_iso)
+        self.db.set('calibration_low_reached_at', None)
+        core.LOG.info(
+            'Manual low calibration recharge completed with automatic calibration disabled: soc=%.1f%% last_deep_calibration_at=%s; automatic calibration remains disabled',
+            soc, now_iso,
+        )
 
 
 # Patch the legacy policy function used by the active overlay pipeline. This is
