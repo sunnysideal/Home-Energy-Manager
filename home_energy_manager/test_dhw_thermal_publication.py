@@ -72,3 +72,56 @@ def test_thermal_publication_is_the_dhw_model_entity():
     assert module.THERMAL_FORECAST_ENTITY == "sensor.ashp_dhw_thermal_forecast_next_48h"
     assert not hasattr(module, "LEGACY_FORECAST_ENTITY")
     assert not hasattr(module, "COMPARISON_ENTITY")
+
+
+def test_simulation_start_covers_production_boundary_during_grace_window():
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 9, 14, 6, 30, 6, tzinfo=tz)
+    production = module._production_starts(now)
+
+    assert production[0] == datetime(2026, 9, 14, 6, 30, tzinfo=tz)
+    assert module._ceil_local(now, 5) == datetime(2026, 9, 14, 6, 35, tzinfo=tz)
+    assert module._simulation_start(now, production) == production[0]
+
+
+def test_simulation_start_uses_next_thermal_step_outside_boundary_grace():
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 9, 14, 6, 31, 1, tzinfo=tz)
+    production = module._production_starts(now)
+
+    assert production[0] == datetime(2026, 9, 14, 7, 0, tzinfo=tz)
+    assert module._simulation_start(now, production) == datetime(2026, 9, 14, 6, 35, tzinfo=tz)
+
+
+def test_boundary_cases_keep_simulation_at_or_before_first_production_slot():
+    tz = ZoneInfo("Europe/London")
+    cases = [
+        datetime(2026, 9, 14, 6, 29, 59, tzinfo=tz),
+        datetime(2026, 9, 14, 6, 30, 0, tzinfo=tz),
+        datetime(2026, 9, 14, 6, 30, 1, tzinfo=tz),
+        datetime(2026, 9, 14, 6, 30, 30, tzinfo=tz),
+        datetime(2026, 9, 14, 6, 31, 1, tzinfo=tz),
+    ]
+    for now in cases:
+        production = module._production_starts(now)
+        simulation = module._simulation_start(now, production)
+        assert simulation.timestamp() <= production[0].timestamp()
+
+
+def test_boundary_alignment_is_unambiguous_across_dst_fall_back():
+    tz = ZoneInfo("Europe/London")
+    # The repeated 01:30 local boundary occurs twice; timestamp comparison must keep
+    # each production/simulation pair aligned to its own UTC instant.
+    for fold in (0, 1):
+        now = datetime(2026, 10, 25, 1, 30, 6, tzinfo=tz, fold=fold)
+        production = module._production_starts(now)
+        simulation = module._simulation_start(now, production)
+        assert simulation.timestamp() == production[0].timestamp()
+
+
+def test_boundary_alignment_survives_dst_spring_forward():
+    tz = ZoneInfo("Europe/London")
+    now = datetime(2026, 3, 29, 2, 30, 6, tzinfo=tz)
+    production = module._production_starts(now)
+    simulation = module._simulation_start(now, production)
+    assert simulation.timestamp() == production[0].timestamp()
