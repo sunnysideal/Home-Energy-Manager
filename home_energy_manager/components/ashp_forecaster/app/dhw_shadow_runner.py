@@ -109,6 +109,28 @@ def _latest_tank_state(db: sqlite3.Connection) -> tuple[float, float, float | No
     return float(row[0]), float(row[1]), (float(row[2]) if row[2] is not None else None)
 
 
+def _actual_dhw_since(db: sqlite3.Connection, start: datetime, end: datetime) -> float:
+    """Return measured DHW electrical energy recorded inside the active production slot."""
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    total = 0.0
+    rows = db.execute(
+        "SELECT timestamp,dhw_energy_delta_kwh FROM dhw_thermal_samples "
+        "WHERE valid=1 AND dhw_energy_delta_kwh IS NOT NULL ORDER BY timestamp DESC LIMIT 1000"
+    ).fetchall()
+    for raw_ts, raw_delta in rows:
+        try:
+            ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            stamp = ts.timestamp()
+            if start_ts < stamp <= end_ts:
+                total += max(0.0, float(raw_delta))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def _target_sensor_from_config(cfg: dict) -> str:
     control = str(cfg.get("dhw_tank_temperature_entity") or "").strip()
     upper = str(cfg.get("dhw_tank_upper_temperature_entity") or "").strip()
@@ -133,37 +155,89 @@ def _latest_draw_event(db: sqlite3.Connection) -> tuple[str, float, float] | Non
         return None
 
 
+def _absolute_add(dt: datetime, minutes: int) -> datetime:
+    return datetime.fromtimestamp(dt.timestamp() + minutes * 60, tz=dt.tzinfo)
+
+
 def _ceil_local(dt: datetime, minutes: int) -> datetime:
-    base = dt.replace(second=0, microsecond=0)
-    remainder = base.minute % minutes
-    if remainder == 0 and dt.second == 0 and dt.microsecond == 0:
-        return base
-    if remainder == 0:
-        return base + timedelta(minutes=minutes)
-    return base + timedelta(minutes=minutes - remainder)
+    interval_seconds = minutes * 60
+    stamp = dt.timestamp()
+    selected = math.ceil(stamp / interval_seconds) * interval_seconds
+    return datetime.fromtimestamp(selected, tz=dt.tzinfo)
 
 
 def _production_starts(now: datetime) -> list[datetime]:
     start = production_slot_start(now, PRODUCTION_INTERVAL_MINUTES)
-    return [start + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES * i) for i in range(PRODUCTION_COVERAGE_SLOTS)]
+    return [_absolute_add(start, PRODUCTION_INTERVAL_MINUTES * i) for i in range(PRODUCTION_COVERAGE_SLOTS)]
+
+
+def _simulation_start(now: datetime, production_starts: list[datetime]) -> datetime:
+    """Start thermal simulation at the next 5-minute point from the current tank state."""
+    del production_starts
+    return _ceil_local(now, THERMAL_STEP_MINUTES)
 
 
 def _required_simulation_hours(simulation_start: datetime, production_starts: list[datetime]) -> float:
     if not production_starts:
         return float(PRODUCTION_HOURS)
-    required_end = production_starts[-1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES)
-    seconds = max(0.0, (required_end - simulation_start).total_seconds())
+    required_end = _absolute_add(production_starts[-1], PRODUCTION_INTERVAL_MINUTES)
+    seconds = max(0.0, required_end.timestamp() - simulation_start.timestamp())
     steps = math.ceil(seconds / (THERMAL_STEP_MINUTES * 60.0))
     return steps * THERMAL_STEP_MINUTES / 60.0
 
 
-def _published_half_hours(slots: list, production_starts: list[datetime], *, step_minutes: int = THERMAL_STEP_MINUTES) -> tuple[list[dict[str, Any]], bool]:
-    if not slots or not production_starts:
+def _published_half_hours(
+    slots: list,
+    production_starts: list[datetime],
+    *,
+    now: datetime | None = None,
+    actual_current_dhw_kwh: float = 0.0,
+    current_upper_c: float | None = None,
+    current_lower_c: float | None = None,
+    step_minutes: int = THERMAL_STEP_MINUTES,
+) -> tuple[list[dict[str, Any]], bool]:
+    if not production_starts:
         return [], False
     by_start = {slot.start.astimezone(timezone.utc): slot for slot in slots}
     rows: list[dict[str, Any]] = []
-    for cursor in production_starts:
-        chunk = [by_start.get((cursor + timedelta(minutes=i)).astimezone(timezone.utc)) for i in range(0, PRODUCTION_INTERVAL_MINUTES, step_minutes)]
+
+    for index, cursor in enumerate(production_starts):
+        slot_end = _absolute_add(cursor, PRODUCTION_INTERVAL_MINUTES)
+        is_current = bool(index == 0 and now is not None and cursor.timestamp() <= now.timestamp() < slot_end.timestamp())
+
+        if is_current:
+            first_future = _ceil_local(now, step_minutes)
+            expected: list[datetime] = []
+            point = first_future if first_future.timestamp() >= cursor.timestamp() else cursor
+            while point.timestamp() < slot_end.timestamp():
+                expected.append(point)
+                point = _absolute_add(point, step_minutes)
+            chunk = [by_start.get(point.astimezone(timezone.utc)) for point in expected]
+            if any(slot is None for slot in chunk):
+                return rows, False
+            complete = [slot for slot in chunk if slot is not None]
+            forecast_dhw = sum(float(slot.dhw_kwh) for slot in complete)
+            draw_kwh = sum(float(slot.draw_kwh) for slot in complete)
+            dhw_kwh = max(0.0, actual_current_dhw_kwh) + forecast_dhw
+            if complete:
+                endpoint_upper = float(complete[-1].upper_temp_c)
+                endpoint_lower = float(complete[-1].lower_temp_c)
+            elif current_upper_c is not None and current_lower_c is not None:
+                endpoint_upper = float(current_upper_c)
+                endpoint_lower = float(current_lower_c)
+            else:
+                return rows, False
+            rows.append({
+                "start": cursor.isoformat(), "dhw_active": dhw_kwh > 0.0, "dhw_kwh": round(dhw_kwh, 4),
+                "actual_dhw_kwh": round(max(0.0, actual_current_dhw_kwh), 4),
+                "forecast_remaining_dhw_kwh": round(forecast_dhw, 4), "predicted_draw_kwh": round(draw_kwh, 4),
+                "upper_temperature_c": round(endpoint_upper, 2), "lower_temperature_c": round(endpoint_lower, 2),
+                "current_slot": True, "actual_through": now.isoformat(),
+            })
+            continue
+
+        expected = [_absolute_add(cursor, i) for i in range(0, PRODUCTION_INTERVAL_MINUTES, step_minutes)]
+        chunk = [by_start.get(point.astimezone(timezone.utc)) for point in expected]
         if any(slot is None for slot in chunk):
             return rows, False
         complete = [slot for slot in chunk if slot is not None]
@@ -172,8 +246,9 @@ def _published_half_hours(slots: list, production_starts: list[datetime], *, ste
         draw_kwh = sum(float(slot.draw_kwh) for slot in complete)
         rows.append({
             "start": cursor.isoformat(), "dhw_active": dhw_kwh > 0.0, "dhw_kwh": round(dhw_kwh, 4),
+            "actual_dhw_kwh": 0.0, "forecast_remaining_dhw_kwh": round(dhw_kwh, 4),
             "predicted_draw_kwh": round(draw_kwh, 4), "upper_temperature_c": round(float(endpoint.upper_temp_c), 2),
-            "lower_temperature_c": round(float(endpoint.lower_temp_c), 2),
+            "lower_temperature_c": round(float(endpoint.lower_temp_c), 2), "current_slot": False, "actual_through": None,
         })
     return rows, len(rows) == len(production_starts) and len(rows) >= PRODUCTION_SLOTS
 
@@ -217,44 +292,54 @@ def run_shadow_once(db: sqlite3.Connection, token: str, cfg: dict, timezone_name
     schedule = _schedule_bits(token, prefix) if prefix else {}
     tz = ZoneInfo(timezone_name)
     now_local = datetime.now(tz)
-    simulation_start = _ceil_local(now_local, THERMAL_STEP_MINUTES)
     production_starts = _production_starts(now_local)
+    simulation_start = _simulation_start(now_local, production_starts)
     simulation_hours = _required_simulation_hours(simulation_start, production_starts)
     slots = build_shadow_forecast(
         start=simulation_start, initial_upper_c=upper, initial_lower_c=lower,
         target_temp_c=target, hysteresis_c=max(0.0, hysteresis), mode=mode,
         schedule_bits=schedule, model=model, target_sensor=target_sensor,
-        tank_volume_l=float(cfg.get("dhw_tank_volume_l", 250)),
-        ambient_temp_c=ambient if ambient is not None else 20.0,
+        tank_volume_l=float(cfg.get("dhw_tank_volume_l", 250)), ambient_temp_c=ambient if ambient is not None else 20.0,
         minimum_useful_temperature_c=float(cfg.get("dhw_min_usable_temperature_c", 40.0)),
         horizon_hours=simulation_hours, step_minutes=THERMAL_STEP_MINUTES,
     )
     forecast_ts = datetime.now(timezone.utc)
     checkpoints = persist_shadow_validation(db, slots, forecast_ts=forecast_ts)
-    published, horizon_complete = _published_half_hours(slots, production_starts)
+    actual_current_dhw = _actual_dhw_since(db, production_starts[0], now_local) if production_starts else 0.0
+    published, horizon_complete = _published_half_hours(
+        slots, production_starts, now=now_local, actual_current_dhw_kwh=actual_current_dhw,
+        current_upper_c=upper, current_lower_c=lower,
+    )
     total_dhw = sum(float(row["dhw_kwh"]) for row in published[:PRODUCTION_SLOTS])
     production_start = production_starts[0].isoformat() if production_starts else None
-    production_end = production_starts[PRODUCTION_SLOTS - 1] + timedelta(minutes=PRODUCTION_INTERVAL_MINUTES) if len(production_starts) >= PRODUCTION_SLOTS else None
+    production_end = _absolute_add(production_starts[PRODUCTION_SLOTS - 1], PRODUCTION_INTERVAL_MINUTES) if len(production_starts) >= PRODUCTION_SLOTS else None
+    publication_status = "published_shadow" if horizon_complete else "incomplete"
 
     if publisher is not None:
-        publisher.sensor(THERMAL_FORECAST_ENTITY, round(total_dhw, 3), {
+        attributes = {
             "friendly_name": "ASHP DHW Thermal Forecast Next 48h", "unit_of_measurement": "kWh", "device_class": "energy",
-            "model": "two_zone_thermal", "status": "published_shadow", "authoritative": True,
+            "model": "two_zone_thermal", "status": publication_status, "authoritative": True,
             "forecast": published, "forecast_slots": len(published), "expected_forecast_slots": PRODUCTION_SLOTS,
             "coverage_forecast_slots": PRODUCTION_COVERAGE_SLOTS, "horizon_complete": horizon_complete,
             "production_start": production_start, "production_end": production_end.isoformat() if production_end else None,
             "simulation_start": simulation_start.isoformat(), "simulation_slots": len(slots),
+            "current_slot_actual_dhw_kwh": round(actual_current_dhw, 4),
             "start_upper_temperature_c": round(upper, 2), "start_lower_temperature_c": round(lower, 2),
             "target_temperature_c": round(target, 2), "target_sensor": target_sensor,
             "target_sensor_entity": str(cfg.get("dhw_tank_temperature_entity") or ""), "mode": mode,
             "trigger": trigger, "last_updated": forecast_ts.isoformat(),
-        })
+        }
+        if not horizon_complete:
+            attributes["reason"] = "thermal_horizon_incomplete"
+        publisher.sensor(THERMAL_FORECAST_ENTITY, round(total_dhw, 3), attributes)
 
-    LOG.info(
-        "DHW thermal forecast published: trigger=%s simulation_slots=%d published_slots=%d horizon_complete=%s "
-        "checkpoints=%d next_48h=%.2fkWh production_start=%s start_upper=%.1fC start_lower=%.1fC target=%.1fC target_sensor=%s mode=%s",
-        trigger, len(slots), len(published), horizon_complete, checkpoints, total_dhw,
-        production_start, upper, lower, target, target_sensor, mode,
+    log = LOG.info if horizon_complete else LOG.warning
+    log(
+        "DHW thermal forecast %s: trigger=%s simulation_slots=%d published_slots=%d horizon_complete=%s "
+        "checkpoints=%d next_48h=%.2fkWh current_actual=%.3fkWh production_start=%s simulation_start=%s "
+        "start_upper=%.1fC start_lower=%.1fC target=%.1fC target_sensor=%s mode=%s",
+        publication_status, trigger, len(slots), len(published), horizon_complete, checkpoints, total_dhw,
+        actual_current_dhw, production_start, simulation_start.isoformat(), upper, lower, target, target_sensor, mode,
     )
     return checkpoints
 
