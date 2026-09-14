@@ -1,41 +1,45 @@
 # Home Energy Manager
 
-Home Assistant app providing ASHP forecasting, whole-home energy forecasting and battery control
-in one package.
+Home Energy Manager is a Home Assistant app for forecasting household energy use and controlling a compatible home battery around tariffs, solar generation, heat-pump demand and optional smart-charging/grid-service events.
 
-The project is licensed under the [MIT License](LICENSE).
+It combines:
 
-## Install in Home Assistant
+- ASHP central-heating and hot-water forecasting;
+- whole-home load, PV, battery, import/export and cost forecasting;
+- battery planning and control;
+- optional EV Smart Charging support;
+- optional Axle VPP event support.
+
+## Install
 
 1. In Home Assistant, open **Settings → Apps → App store**.
-2. Open **Repositories** and add the URL of this GitHub repository.
-3. Refresh the store and install **Home Energy Manager**.
-4. Configure the entity IDs for your own Home Assistant installation before starting the app.
+2. Open **Repositories**.
+3. Add:
 
-The repository is source-built by Home Assistant. The app currently supports `aarch64` and `amd64`.
+   `https://github.com/sunnysideal/Home-Energy-Manager`
 
-## Important
+4. Refresh the App store.
+5. Install **Home Energy Manager**.
+6. Open the **Configuration** tab and enter the Home Assistant entities for your installation.
+7. Leave **Operation mode** set to `forecast_only` for the first start.
+8. Start the app and check the forecast/health entities before enabling battery control.
 
-Do not run a standalone Home Energy Controller at the same time as this package. Both could write
-to the inverter.
+Home Energy Manager currently supports `aarch64` and `amd64` Home Assistant systems.
 
-The default configuration intentionally contains no installation-specific GivEnergy serial number,
-Octopus MPAN/meter identifiers or credentials. These must be supplied through the app configuration.
+## Before enabling control
 
-## Source layout
+`forecast_only` is the safe first-run mode. In this mode the forecasters run, but Home Energy Manager does not change inverter settings.
 
-The installable app is in [`home_energy_manager/`](home_energy_manager/).
-The three engines remain separate source components and are supervised by `launcher.py`.
+Do not enable a control mode until the battery, inverter, grid, tariff, solar and heat-pump inputs required for your installation have been checked in Home Assistant.
 
-Historical standalone component packaging files are retained for development under names such as
-`standalone-config.yaml`; only the top-level `home_energy_manager/config.yaml` is an installable Home
-Assistant app configuration.
+Only one system should actively control the inverter schedule at a time. Disable any other automation or controller that writes the same charge, discharge or pause settings before enabling Home Energy Manager control.
 
-## Third-party software
+## Documentation
 
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Direct runtime dependencies are installed at
-container build time rather than vendored into this repository.
+See [`home_energy_manager/DOCS.md`](home_energy_manager/DOCS.md) for the complete fresh-install guide, configuration reference, operating modes, output entities and troubleshooting.
 
-## Migrating an existing local installation
+The app-specific overview is in [`home_energy_manager/README.md`](home_energy_manager/README.md).
 
-Home Energy Manager is now distributed directly from this GitHub repository.
+## License
+
+Home Energy Manager is licensed under the [MIT License](LICENSE). Third-party notices are available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

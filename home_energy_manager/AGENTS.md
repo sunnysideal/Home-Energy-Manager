@@ -27,6 +27,17 @@ The package deliberately contains four separate functional components:
 - A change to one component should not alter another component's behaviour unless the user explicitly requests a cross-component interface change.
 - Any future architectural change that weakens these separation rules requires explicit user approval first.
 
+## User-facing documentation
+
+- Treat the repository README, `home_energy_manager/README.md`, `DOCS.md`, and other user guides as part of the product, not optional maintenance.
+- Any change that adds, removes, renames, or materially changes configuration options, entities, operating modes, installation steps, prerequisites, defaults, or other user-visible behaviour MUST include the corresponding user-documentation update in the same PR.
+- User-facing documentation MUST describe a fresh installation and the current product behaviour. Do not add historical rollout notes, migration instructions, or internal implementation detail unless it directly affects a current user's setup or operation.
+- Write user-facing documentation in normal Home Assistant app/add-on style: installation, configuration, operation, verification, troubleshooting, and concise reference material.
+- Explain entity inputs in plain language, including required units/semantics where ambiguity is possible, such as cumulative kWh versus instantaneous W.
+- Internal architecture, CI/release processes, development workflow, implementation notes, and compatibility internals belong in `AGENTS.md` or other developer-only material rather than the user guide.
+- Before merge, verify user-facing documentation agrees with the current `config.yaml`, entity names, defaults, operating modes, and runtime behaviour.
+- Include all affected user-documentation files in the final diff review whenever user-visible behaviour changes.
+
 ## Component ownership
 
 ### ASHP Forecaster
@@ -105,4 +116,6 @@ Before merging or packaging:
 - run `test_architecture.py`;
 - verify no cross-component Python imports were introduced;
 - verify launcher contains no energy/control calculations;
+- verify whether the change affects installation, configuration, entities, modes, defaults, or other user-visible behaviour and, if so, confirm the corresponding user documentation is updated;
+- diff-review every changed file and confirm each change is intentional and in scope;
 - confirm the full required GitHub CI workflow for the current head commit has completed successfully before merging to `main`.
