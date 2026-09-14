@@ -43,6 +43,12 @@ def test_merged_config_keeps_home_assistant_api_permissions_and_canonical_shape(
     assert cfg["options"]["dhw"]["energy_total_kwh"] == "sensor.ashp_electrical_energy_dhw"
     assert cfg["options"]["advanced"]["mqtt"]["topic_prefix"] == "home_energy_manager"
 
+    # Defaults belong under options; schema entries must remain valid HA schema types.
+    assert cfg["options"]["advanced"]["battery_learning"]["battery_efficiency_publish_entity"] == (
+        "sensor.home_energy_manager_battery_efficiency"
+    )
+    assert cfg["schema"]["advanced"]["battery_learning"]["battery_efficiency_publish_entity"] == "str"
+
 
 def test_standalone_home_forecaster_shape_is_normalised_for_merged_runtime():
     hf = {
