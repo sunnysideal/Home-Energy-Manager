@@ -31,7 +31,8 @@ def test_mqtt_button_command_is_non_retained_and_thread_safe():
     assert 'subscribe(command_topic, qos=1)' in MQTT_BUTTON
     assert 'threading.Event()' in RUNTIME
     assert 'event.set' in RUNTIME
-    assert 'event.clear()' in RUNTIME
+    assert 'request_event.clear()' in RUNTIME
+    assert 'clear_event.clear()' in RUNTIME
     assert '_latch_request(self)' in RUNTIME
     assert '_publish_raw(discovery_topic' in MQTT_BUTTON
 
@@ -139,3 +140,60 @@ def test_manual_recharge_completion_does_not_reenable_automatic_calibration():
     assert "self.db.set('last_deep_calibration_at', now_iso)" in RUNTIME
     assert "self.db.set('calibration_low_reached_at', None)" in RUNTIME
     assert 'automatic calibration remains disabled' in RUNTIME
+
+
+def test_package_owns_clear_calibration_state_button():
+    assert "_CLEAR_BUTTON_ENTITY = 'button.home_energy_manager_clear_calibration_state'" in RUNTIME
+    assert "'Clear Calibration State'" in RUNTIME
+    assert "'mdi:battery-off-outline'" in RUNTIME
+    assert '_clear_calibration_state_press' in RUNTIME
+    assert '_clear_calibration_state(self)' in RUNTIME
+
+
+def test_clear_action_removes_transient_low_and_high_request_state():
+    for key in (
+        'manual_low_calibration_pending',
+        'manual_high_calibration_pending',
+        'high_calibration_requested',
+        'manual_high_calibration_requested',
+        'calibration_low_reached_at',
+    ):
+        assert key in RUNTIME
+    clear_fn = RUNTIME.split('def _clear_calibration_state(controller):', 1)[1].split('\ndef _install_request_button', 1)[0]
+    assert 'for key, cleared_value in _CLEARABLE_CALIBRATION_STATE:' in clear_fn
+    assert 'controller.db.set(key, cleared_value)' in clear_fn
+
+
+def test_clear_action_preserves_calibration_history_and_learning():
+    clearable = RUNTIME.split('_CLEARABLE_CALIBRATION_STATE = (', 1)[1].split('\n)', 1)[0]
+    for historical_key in (
+        'last_full_soc_at',
+        'last_deep_calibration_at',
+        'last_below_40_soc_at',
+        'last_below_20_soc_at',
+        'last_low_soc_at',
+        'soc_crossing_40',
+        'soc_crossing_20',
+    ):
+        assert historical_key not in clearable
+    assert 'historical calibration timestamps and learning preserved' in RUNTIME
+
+
+def test_clear_action_is_transport_only_until_normal_controller_pass():
+    sample_fn = RUNTIME.split('async def _sample_with_manual_low_calibration(self):', 1)[1]
+    assert 'clear_event.clear()' in sample_fn
+    assert '_clear_calibration_state(self)' in sample_fn
+    assert 'next normal planner/apply pass converges any stale inverter schedule' in sample_fn
+    assert '.ensure(' not in RUNTIME.split('def _clear_calibration_state(controller):', 1)[1].split('\ndef _install_request_button', 1)[0]
+
+
+def test_clear_action_exposes_diagnostics():
+    for field in (
+        'calibration_clear_button',
+        'calibration_clear_button_available',
+        'calibration_state_cleared_at',
+        'calibration_state_clear_result',
+        'calibration_state_cleared_keys',
+    ):
+        assert field in RUNTIME
+    assert "result = 'cleared' if cleared else 'nothing_to_clear'" in RUNTIME
