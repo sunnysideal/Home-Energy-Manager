@@ -2,7 +2,8 @@
 """Production ASHP forecaster entrypoint with guaranteed configured horizon.
 
 The learned thermal DHW forecast is the only DHW production path. If its horizon is
-unavailable or invalid, the ASHP forecast run fails rather than publishing a substitute.
+unavailable or invalid, CH still publishes from a degraded run while DHW is marked
+explicitly unavailable rather than replaced by a fabricated or legacy value.
 """
 from __future__ import annotations
 
@@ -25,9 +26,14 @@ from weather_observations import (
 
 LOG = logging.getLogger("ashp_forecast")
 SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
+HEALTH_ENTITY = "sensor.ashp_forecast_health"
 WEATHER_SCORE_ENTITY = "sensor.ashp_weather_raw_mae"
 THERMAL_REFRESH_WAIT_SECONDS = 8.0
 THERMAL_REFRESH_POLL_SECONDS = 0.25
+
+
+class DHWProductionUnavailable(RuntimeError):
+    """Raised when authoritative thermal DHW cannot provide the production horizon."""
 
 
 def _fallback_timezone_name() -> str:
@@ -132,11 +138,29 @@ def _select_dhw_with_refresh_wait(client: legacy.HAClient, store: legacy.Store, 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 LOG.error("DHW thermal alignment wait expired: attempts=%d last_error=%s", attempts, last_signature or "unknown")
-                raise RuntimeError(
+                raise DHWProductionUnavailable(
                     f"DHW thermal production forecast unavailable after {THERMAL_REFRESH_WAIT_SECONDS:.1f}s; "
                     f"attempts={attempts}; last_error={last_signature or 'unknown'}"
                 ) from exc
             time.sleep(min(THERMAL_REFRESH_POLL_SECONDS, remaining))
+
+
+def _publish_dhw_source(client: legacy.HAClient, source: str, reason: str, *, thermal_selected: bool) -> None:
+    try:
+        client.set_sensor(
+            SOURCE_ENTITY,
+            source,
+            {
+                "friendly_name": "ASHP DHW Production Forecast Source",
+                "source": source,
+                "reason": reason,
+                "thermal_selected": thermal_selected,
+                "fallback_available": False,
+                "last_updated": datetime.now(client.tz).isoformat() if hasattr(client, "tz") else datetime.now().isoformat(),
+            },
+        )
+    except Exception as exc:
+        LOG.debug("Could not publish DHW production source diagnostic: %s", exc)
 
 
 def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
@@ -145,32 +169,172 @@ def _install_dhw_selector(client: legacy.HAClient, store: legacy.Store) -> None:
     def thermal_builder(client_arg, store_arg, cfg_arg, starts):
         del client_arg, store_arg
         nonlocal last_logged
-        result = _select_dhw_with_refresh_wait(client, store, cfg_arg, starts)
+        try:
+            result = _select_dhw_with_refresh_wait(client, store, cfg_arg, starts)
+        except DHWProductionUnavailable as exc:
+            reason = str(exc)
+            marker = ("unavailable", reason)
+            if marker != last_logged:
+                LOG.error("DHW production forecast source=unavailable reason=%s", reason)
+                last_logged = marker
+            _publish_dhw_source(client, "unavailable", reason, thermal_selected=False)
+            raise
         marker = (result.source, result.reason)
         if marker != last_logged:
             LOG.info("DHW production forecast source=%s reason=%s", result.source, result.reason)
             last_logged = marker
-        try:
-            client.set_sensor(
-                SOURCE_ENTITY,
-                result.source,
-                {
-                    "friendly_name": "ASHP DHW Production Forecast Source",
-                    "source": result.source,
-                    "reason": result.reason,
-                    "thermal_selected": True,
-                    "fallback_available": False,
-                    "last_updated": datetime.now(client.tz).isoformat() if hasattr(client, "tz") else datetime.now().isoformat(),
-                },
-            )
-        except Exception as exc:
-            LOG.debug("Could not publish DHW production source diagnostic: %s", exc)
+        _publish_dhw_source(client, result.source, result.reason, thermal_selected=True)
         return result.values
 
     legacy.build_dhw_forecast = thermal_builder
     # main.py still contains the pre-thermal historical DHW learner for migration
     # compatibility, but it is no longer part of runtime production.
     legacy.build_dhw_training = lambda *args, **kwargs: 0
+
+
+def _build_ch_only_forecast(client: legacy.HAClient, cfg, coefficient: float, tz: ZoneInfo) -> list[dict]:
+    """Build a fresh CH-only horizon without inventing DHW values.
+
+    The rows deliberately publish ``dhw_kwh=None`` and ``energy_kwh=None``. CH is
+    the unsuppressed heating demand because DHW priority cannot be evaluated while
+    the authoritative DHW forecast is unavailable.
+    """
+    raw = client.get_hourly_weather(cfg.weather_entity)
+    weather: list[tuple[datetime, float]] = []
+    for row in raw:
+        try:
+            temp = float(row["temperature"])
+            dt = legacy.parse_dt(row["datetime"]).astimezone(tz)
+            weather.append((dt, temp))
+        except (KeyError, TypeError, ValueError):
+            continue
+    weather.sort(key=lambda item: item[0])
+    if len(weather) < 2:
+        raise RuntimeError("Hourly weather forecast has insufficient temperature points")
+
+    now = datetime.now(tz)
+    step = timedelta(minutes=cfg.forecast_interval_minutes)
+    start = legacy.ceil_time(now, cfg.forecast_interval_minutes)
+    requested_end = start + timedelta(hours=cfg.forecast_hours)
+    end = min(requested_end, weather[-1][0])
+    starts: list[datetime] = []
+    cursor = start
+    while cursor < end:
+        starts.append(cursor)
+        cursor += step
+
+    result: list[dict] = []
+    hours = cfg.forecast_interval_minutes / 60.0
+    mode = legacy.infer_current_heating_mode(client, cfg, tz)
+    for cursor in starts:
+        temp = legacy.interpolate_temperature(weather, cursor)
+        mode = legacy.update_heating_mode(mode, temp, cfg)
+        heating_enabled = mode == "winter"
+        dd = legacy.degree_days_for_period(temp, cfg.base_temperature_c, hours) if heating_enabled else 0.0
+        ch_kwh = dd * coefficient
+        result.append(
+            {
+                "start": cursor.isoformat(),
+                "temperature_c": round(temp, 2),
+                "heating_mode": mode,
+                "heating_enabled": heating_enabled,
+                "dhw_active": None,
+                "degree_days": round(dd, 5),
+                "ch_kwh": round(ch_kwh, 4),
+                "dhw_kwh": None,
+                "energy_kwh": None,
+                "dhw_status": "unavailable",
+                "ch_priority_applied": False,
+            }
+        )
+    return result
+
+
+def _publish_health(client: legacy.HAClient, state: str, *, ch_status: str, dhw_status: str, reason: str = "") -> None:
+    try:
+        client.set_sensor(
+            HEALTH_ENTITY,
+            state,
+            {
+                "friendly_name": "ASHP Forecast Health",
+                "ch_status": ch_status,
+                "dhw_status": dhw_status,
+                "reason": reason,
+                "last_updated": datetime.now(client.tz).isoformat() if hasattr(client, "tz") else datetime.now().isoformat(),
+            },
+        )
+    except Exception as exc:
+        LOG.debug("Could not publish ASHP forecast health diagnostic: %s", exc)
+
+
+def _publish_degraded_ch_forecast(
+    client: legacy.HAClient,
+    store: legacy.Store,
+    cfg,
+    tz: ZoneInfo,
+    reason: str,
+) -> None:
+    cfg = legacy.resolve_dynamic_thresholds(client, cfg)
+    store.ensure_training_signature(cfg)
+    coefficient, training_days, training_slots = legacy.build_training(client, store, cfg, tz)
+    forecast = _build_ch_only_forecast(client, cfg, coefficient, tz)
+    now = datetime.now(tz)
+    next_24_end = now + timedelta(hours=24)
+    next_48_end = now + timedelta(hours=48)
+    midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=tz)
+
+    def ch_sum(end: datetime) -> float:
+        return sum(float(slot["ch_kwh"]) for slot in forecast if legacy.parse_dt(slot["start"]) < end)
+
+    common = {
+        "model": "heating_degree_days",
+        "base_temperature_c": cfg.base_temperature_c,
+        "winter_mode_below_c": cfg.winter_mode_below_c,
+        "summer_mode_above_c": cfg.summer_mode_above_c,
+        "kwh_per_degree_day": round(coefficient, 4),
+        "training_days_used": training_days,
+        "training_slots_used": training_slots,
+        "aggregate_status": "degraded",
+        "ch_status": "fresh",
+        "dhw_status": "unavailable",
+        "dhw_reason": reason,
+        "dhw_fallback_used": False,
+        "last_updated": now.isoformat(),
+    }
+
+    def unknown_energy_sensor(entity: str, name: str, extra: dict | None = None) -> None:
+        attrs = {
+            "friendly_name": name,
+            "unit_of_measurement": "kWh",
+            "device_class": "energy",
+            **common,
+        }
+        if extra:
+            attrs.update(extra)
+        client.set_sensor(entity, "unknown", attrs)
+
+    unknown_energy_sensor("sensor.ashp_forecast_next_30m", "ASHP Forecast Next 30m")
+    unknown_energy_sensor("sensor.ashp_forecast_remaining_today", "ASHP Forecast Remaining Today")
+    unknown_energy_sensor("sensor.ashp_forecast_next_24h", "ASHP Forecast Next 24h", {"forecast": forecast})
+    unknown_energy_sensor("sensor.ashp_forecast_next_48h", "ASHP Forecast Next 48h", {"forecast": forecast})
+
+    client.set_sensor(
+        "sensor.ashp_forecast_ch_next_48h",
+        round(ch_sum(next_48_end), 3),
+        {
+            "friendly_name": "ASHP CH Forecast Next 48h",
+            "unit_of_measurement": "kWh",
+            "device_class": "energy",
+            **common,
+            "forecast": forecast,
+        },
+    )
+    unknown_energy_sensor("sensor.ashp_forecast_dhw_next_48h", "ASHP DHW Forecast Next 48h")
+    _publish_health(client, "degraded", ch_status="fresh", dhw_status="unavailable", reason=reason)
+    LOG.warning(
+        "ASHP forecast published degraded: CH fresh, DHW unavailable, forecast_slots=%d, ch_today=%.2f kWh, reason=%s",
+        len(forecast), ch_sum(midnight), reason,
+    )
 
 
 def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: ZoneInfo) -> None:
@@ -236,8 +400,14 @@ def main() -> None:
     while True:
         try:
             _complete_weather_observations(client, store, cfg, tz)
-            legacy.run_once(client, store, cfg, tz)
-        except Exception:
+            try:
+                legacy.run_once(client, store, cfg, tz)
+            except DHWProductionUnavailable as exc:
+                _publish_degraded_ch_forecast(client, store, cfg, tz, str(exc))
+            else:
+                _publish_health(client, "healthy", ch_status="fresh", dhw_status="fresh")
+        except Exception as exc:
+            _publish_health(client, "error", ch_status="error", dhw_status="unknown", reason=str(exc))
             LOG.exception("Forecast update failed")
         time.sleep(cfg.update_minutes * 60)
 
