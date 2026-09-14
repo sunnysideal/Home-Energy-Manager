@@ -142,7 +142,7 @@ Any person or AI modifying this project MUST read this file before changing cont
 
 16. **Axle event data comes from the HACS Axle integration**
    - Home Energy Manager must not authenticate with or call Axle directly.
-   - The Axle component normalises the installed HACS Axle VPP integration into `sensor.home_energy_manager_axle`; the controller consumes only that package-owned interface.
+   - The Axle component normalises the installed HACS Axle integration into `sensor.home_energy_manager_axle`; the controller consumes only that package-owned interface.
 
 17. **`axle_only` is passive outside necessary Axle intervention**
    - The normal optimisation planner is not loaded in `axle_only` mode.
