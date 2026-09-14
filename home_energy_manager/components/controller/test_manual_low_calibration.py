@@ -31,7 +31,8 @@ def test_mqtt_button_command_is_non_retained_and_thread_safe():
     assert 'subscribe(command_topic, qos=1)' in MQTT_BUTTON
     assert 'threading.Event()' in RUNTIME
     assert 'event.set' in RUNTIME
-    assert 'event.clear()' in RUNTIME
+    assert 'request_event.clear()' in RUNTIME
+    assert 'clear_event.clear()' in RUNTIME
     assert '_latch_request(self)' in RUNTIME
     assert '_publish_raw(discovery_topic' in MQTT_BUTTON
 
