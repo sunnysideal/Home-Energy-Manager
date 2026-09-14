@@ -22,7 +22,7 @@ base = model.base
 
 COST_TODAY_ENTITY = "sensor.home_energy_cost_today"
 _wrapped_simulate_battery = base.simulate_battery
-_wrapped_make_forecast = base.make_forecast
+_wrapped_make_forecast = getattr(base, "make_forecast", None)
 _active_model_attributes: dict[str, Any] | None = None
 
 
@@ -167,6 +167,8 @@ def cost_today_state(payload: dict[str, Any], reasons: list[str]) -> tuple[Any, 
 
 
 def make_forecast_with_cost_sensor(client, store, cfg, now):
+    if _wrapped_make_forecast is None:
+        raise RuntimeError("base make_forecast is unavailable")
     payload, reasons = _wrapped_make_forecast(client, store, cfg, now)
     try:
         state, attrs = cost_today_state(payload, reasons)
