@@ -66,10 +66,10 @@ def resolve_pause_transfer_conflicts(controller, plan, pause, log):
         off=plan.get('offpeak') or {}; ostart=parse_dt(off.get('start')); oend=parse_dt(off.get('end'))
         try:ostart=ostart.astimezone(controller.tz) if ostart else None; oend=oend.astimezone(controller.tz) if oend else None
         except Exception:pass
-        if ostart and oend and ostart<=cstart<=oend:
-            # The pause is the regular cheap-window preservation pause. Ending it
-            # at charge start guarantees PauseBoth -> Charge even across restarts.
-            pause_end=str(pause.get('end') or '')
+        pause_end=str(pause.get('end') or '')
+        if ostart and oend and ostart<=cstart<=oend and pause_end==controller.tstr(oend):
+            # Only the full regular cheap-window preservation pause is shortened.
+            # A deliberately shorter overlay is left untouched.
             if pause_end!=controller.tstr(cstart):
                 log.info('Pause/charge invariant: truncating %s at planned charge start %s (was %s)',mode,controller.tstr(cstart),pause_end)
                 pause['end']=controller.tstr(cstart)
