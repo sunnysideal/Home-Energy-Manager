@@ -1,234 +1,429 @@
 # Home Energy Manager
 
-Home Energy Manager combines ASHP forecasting, whole-home energy forecasting and battery control. This page is the complete configuration reference for the Home Assistant app.
+Home Energy Manager is a Home Assistant app that forecasts household energy use and can control a compatible home battery around tariffs, solar generation, heat-pump demand and optional EV/grid-service events.
 
-## How to use this page
+This guide is written for a **fresh installation**. Start with `forecast_only`, confirm the data and forecasts are correct, and only then enable battery control.
 
-Entity settings expect a Home Assistant entity ID such as `sensor.example`, `number.example`, `select.example` or `binary_sensor.example`. The description for each field explains what the entity must represent and how Home Energy Manager uses it. A blank default means the feature/input is not preconfigured; fill it in when the description says that input is required for the feature you want to use. Settings marked optional by the schema may always be left blank.
+## What the app does
 
-Do not choose entities purely because their names look similar. Check the entity state, unit and attributes in **Developer Tools → States** and make sure they match the description below. For cumulative energy inputs, use monotonically increasing kWh totals rather than instantaneous W/kW power sensors unless the description explicitly says otherwise.
+Home Energy Manager provides four user-visible functions:
 
-## ASHP Forecaster
+- **ASHP forecasting** — central-heating (CH) and domestic-hot-water (DHW) electricity demand.
+- **Whole-home forecasting** — household load, PV, battery SOC, import/export and cost.
+- **Battery control** — charge, discharge and pause planning using the selected operating mode.
+- **Optional event support** — EV Smart Charging and Axle VPP events.
 
-Configures the separate ASHP model that learns central-heating and domestic-hot-water electrical demand from Home Assistant history, then publishes the forward heat-pump forecast consumed by the whole-home model.
+## Requirements
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **CH energy total** | `ch_energy_entity` | `str` | `sensor.ashp_electrical_energy_ch` | Configured/defaulted | Select a cumulative energy sensor, in kWh, that measures only the heat pump electrical energy used for central/space heating (CH). It should increase over time, for example sensor.ashp_electrical_energy_ch. This is the primary historical input used to learn how much electrical energy the heating system needs for a given outdoor temperature, so it is required for CH learning. |
-| **Outdoor temperature** | `outdoor_temperature_entity` | `str` | `sensor.ecomax360i_outdoor_temperature` | Configured/defaulted | Select the outdoor-air temperature sensor that best represents the temperature seen by the building, ideally the heat pump’s own shaded external sensor rather than an indoor sensor. The ASHP forecaster combines this history with CH energy to learn heating demand and also uses the current value when deciding whether the system is in winter or summer mode. |
-| **Weather forecast** | `weather_entity` | `str` | `weather.forecast_home` | Configured/defaulted | Select a Home Assistant weather entity that provides forecast outdoor temperatures, for example weather.forecast_home. Future temperatures from this entity are converted into heating degree days and therefore drive the forward CH energy forecast. This is required if you want temperature-driven ASHP forecasting. |
-| **Degree-day base temperature** | `base_temperature_c` | `float` | `15.5` | Configured/defaulted | Heating-degree-day base temperature in °C. Below this temperature the model assumes the home needs space heating; above it, no heating demand is attributed to temperature. Set this to the balance-point temperature appropriate for your home. The default 15.5 °C is a common UK starting point, but it should normally align with how your heating actually behaves. |
-| **Summer-mode off threshold entity** | `summer_mode_off_entity` | `str` | `number.ecomax360i_summer_mode_off` | Configured/defaulted | Select the heat-pump/controller entity that contains the temperature threshold below which summer mode is cancelled and heating/winter mode becomes active. A number entity is typical. The forecaster reads historical values so it can reproduce the controller’s real seasonal switching; equal off/on thresholds are valid and are treated as zero-width hysteresis. |
-| **Summer-mode on threshold entity** | `summer_mode_on_entity` | `str` | `number.ecomax360i_summer_mode_on` | Configured/defaulted | Select the heat-pump/controller entity that contains the temperature threshold above which summer mode becomes active and normal space heating is suppressed. A number entity is typical. The forecaster reads historical values so it can reproduce the controller’s real seasonal switching; equal off/on thresholds are valid and are treated as zero-width hysteresis. |
-| **Fallback winter threshold** | `winter_mode_below_c` | `float(-30,30)` | `11.0` | Configured/defaulted | Fallback winter-mode threshold in °C, used only when the configured summer-mode threshold entities cannot be read. At temperatures below this value, the forecaster assumes heating/winter mode. Keep it consistent with the real controller setting so forecasts remain sensible during entity outages. |
-| **Fallback summer threshold** | `summer_mode_above_c` | `float(-30,30)` | `12.0` | Configured/defaulted | Fallback summer-mode threshold in °C, used only when the configured summer-mode threshold entities cannot be read. At temperatures above this value, the forecaster assumes summer mode. Keep it consistent with the real controller setting; values between the winter and summer thresholds retain the previous seasonal state. |
-| **Initial kWh per degree day** | `initial_kwh_per_degree_day` | `float` | `1.55` | Configured/defaulted | Starting estimate of central-heating electrical energy per heating degree day, in kWh/DD. This is used only until enough valid history has been learned. If you already know the approximate seasonal relationship for your home, enter it here; otherwise the default provides a reasonable seed and the model will replace it with learned data. |
-| **CH training days** | `training_days` | `int(1,180)` | `30` | Configured/defaulted | Maximum number of recent historical days examined when learning the CH kWh-per-degree-day relationship and time-of-day profile. More days make the model steadier but slower to react to changes in heating behaviour; fewer days react faster but can be noisier. |
-| **Minimum daily degree days** | `minimum_daily_degree_days` | `float(0,20)` | `2.0` | Configured/defaulted | Minimum heating-degree-day total required for a day to be accepted for CH coefficient training. Days milder than this are ignored because very small heating demand makes the kWh/DD ratio unstable and overly sensitive to incidental loads. |
-| **Minimum daily CH energy** | `minimum_daily_ch_kwh` | `float(0,100)` | `2.0` | Configured/defaulted | Minimum measured CH electrical energy, in kWh, required for a historical day to be accepted as a genuine heating day. Raise this if short or accidental heating runs are polluting the model; lower it if legitimate low-load heating days are being excluded. |
-| **Forecast horizon** | `forecast_hours` | `int(1,168)` | `48` | Configured/defaulted | How far ahead the ASHP forecaster publishes CH and DHW demand, in hours. The whole-home forecaster needs enough horizon to cover its own planning period; 48 hours is normally appropriate for today/tomorrow battery planning. |
-| **ASHP forecast interval** | `forecast_interval_minutes` | `int(5,60)` | `30` | Configured/defaulted | Duration of each ASHP forecast slot, in minutes. A 30-minute interval aligns naturally with most UK electricity tariff periods and keeps the forecast compact. Changing this affects the granularity of the published ASHP forecast rather than the heat pump itself. |
-| **ASHP update interval** | `update_minutes` | `int(5,60)` | `15` | Configured/defaulted | How often the ASHP forecast is recalculated, in minutes. The recalculation reads current conditions and refreshed weather data but does not control the heat pump. A shorter interval reacts sooner to changing forecasts at the cost of more Home Assistant queries. |
-| **DHW energy total** | `dhw_energy_entity` | `str` | `sensor.ashp_electrical_energy_dhw` | Configured/defaulted | Select a cumulative energy sensor, in kWh, that measures only the heat pump electrical energy used for domestic hot water (DHW), for example sensor.ashp_electrical_energy_dhw. The forecaster uses historical increments from this sensor to learn the typical size and timing of hot-water heating cycles. |
-| **DHW mode** | `dhw_mode_entity` | `str` | `select.dhw_mode` | Configured/defaulted | Select the entity that reports the heat pump DHW operating mode, typically a select such as Off, On or Schedule. The forecaster uses it to distinguish periods when DHW heating is allowed from periods when it is deliberately disabled, which prevents impossible DHW forecasts. |
-| **DHW tank temperature** | `dhw_tank_temperature_entity` | `str` | `sensor.dhw_temperature` | Configured/defaulted | Select the sensor reporting the current hot-water cylinder/tank temperature in °C. Together with the target and hysteresis settings, this lets the forecaster judge whether a scheduled DHW window is likely to require reheating rather than assuming every window consumes energy. |
-| **DHW target temperature** | `dhw_target_temperature_entity` | `str` | `number.dhw_target_temperature` | Configured/defaulted | Select the number or sensor containing the configured DHW target temperature in °C. The forecaster compares the tank temperature with this target and the hysteresis setting to estimate whether the heat pump will need to run during a DHW opportunity. |
-| **DHW hysteresis** | `dhw_hysteresis_entity` | `str` | `number.dhw_hysteresis` | Configured/defaulted | Select the number or sensor containing the DHW reheating hysteresis in °C. If the tank temperature falls sufficiently below the target, the forecaster treats a scheduled DHW period as requiring heat. This should be the controller’s actual DHW hysteresis setting. |
-| **DHW schedule entity prefix** | `dhw_schedule_prefix` | `str` | `number.dhw_dhw_schedule_` | Configured/defaulted | Enter the common entity-ID prefix used by your DHW schedule number entities. The forecaster appends its expected weekday and AM/PM suffixes to this prefix, so this is not a single entity ID. For the default naming scheme, a prefix such as number.dhw_dhw_schedule_ allows entities like number.dhw_dhw_schedule_monday_am to be found automatically. |
-| **DHW history days** | `dhw_history_days` | `int(7,90)` | `28` | Configured/defaulted | Number of recent days used to learn typical DHW energy per heating event and schedule period. A longer history smooths occasional unusually large or small hot-water draws; a shorter history adapts faster when household DHW usage changes. |
-| **DHW activity threshold** | `dhw_activity_threshold_kwh` | `float(0,10)` | `0.2` | Configured/defaulted | Minimum DHW energy increase, in kWh per analysis interval, that counts as a real hot-water heating event. Smaller changes are treated as meter noise or insignificant activity. Set this below the energy used by the smallest genuine DHW run you want the model to learn. |
+You need:
 
-## Home Energy Forecaster
+- Home Assistant with **Apps** support;
+- an `aarch64` or `amd64` system;
+- Home Assistant entities exposing the energy system measurements/settings described below;
+- Recorder history for useful learning from previous household/ASHP behaviour;
+- a weather entity with forecast temperatures;
+- a compatible inverter integration if you want Home Energy Manager to control the battery.
 
-Configures the whole-home simulator. It combines learned household load, ASHP demand, PV, battery schedules, tariff rates, true grid meters and EV Smart Charging into the forecast used by the controller.
+An MQTT broker is recommended for normal entity discovery. When Home Assistant exposes its MQTT service to the app, no manual broker address is normally required.
 
-### General forecast settings
+## Install the app
 
-Core timing, history, fallback battery-efficiency and logging settings. Most users should configure the timezone and leave the internal refresh entity at its default.
+1. Open **Settings → Apps → App store**.
+2. Open **Repositories**.
+3. Add:
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **Timezone** | `timezone` | `str` | `Europe/London` | Configured/defaulted | IANA timezone used for all forecast timestamps, tariff periods and inverter schedules, for example Europe/London. This must match the local timezone of the Home Assistant installation and energy tariff; an incorrect timezone can move charging and tariff windows to the wrong clock time. |
-| **Home-load history days** | `history_days` | `int(7,90)` | `28` | Configured/defaulted | Number of recent days used to learn the normal non-ASHP, non-EV household load profile. The model compares consumption at similar times of day across this window. More history smooths unusual days; less history adapts faster to lasting changes in household behaviour. |
-| **Weight matching weekdays** | `day_of_week_weighting` | `bool` | `true` | Configured/defaulted | When enabled, historical days matching the weekday being forecast receive extra weight. This is useful when weekday and weekend consumption patterns differ. Disable it if your household load has little day-of-week pattern or if the additional weighting makes the forecast too sparse. |
-| **Same-weekday weight** | `same_weekday_weight` | `float(1.0,10.0)` | `1.5` | Configured/defaulted | Multiplier applied to historical samples from the same weekday when day-of-week weighting is enabled. For example 1.5 means a matching Monday contributes 50% more weight than a non-Monday. Values close to 1 reduce the effect; larger values make weekday matching more influential. |
-| **Home forecast interval** | `forecast_interval_minutes` | `int(1,60)` | `5` | Configured/defaulted | Length of each whole-home simulation slot in minutes. The default 5-minute resolution is used internally for battery, tariff, PV and EV calculations and is later suitable for aggregation into 30-minute table rows. Smaller intervals increase detail and processing cost. |
-| **Controller refresh request entity** | `controller_refresh_request_entity` | `str` | `sensor.home_energy_forecast_refresh_request` | Configured/defaulted | Internal Home Assistant sensor used as a handshake between the controller and forecaster after inverter settings are changed. The controller publishes a refresh request and waits for a forecast generated from the new plan. Leave this at the default unless you deliberately change the corresponding controller implementation; it is not a physical sensor you need to create. |
-| **Fallback charge efficiency** | `charge_efficiency` | `float(0.5,1.0)` | `0.95` | Configured/defaulted | Fallback battery charging efficiency as a fraction from 0 to 1, for example 0.95 for 95%. It is used when learned charge-curve data is unavailable or insufficient. This represents energy retained in the battery versus AC energy drawn for charging; learned efficiency takes precedence when available. |
-| **Fallback discharge efficiency** | `discharge_efficiency` | `float(0.5,1.0)` | `0.95` | Configured/defaulted | Fallback battery discharging efficiency as a fraction from 0 to 1, for example 0.95 for 95%. It is used when learned discharge information is unavailable or insufficient. This represents AC energy delivered versus energy removed from the battery; learned efficiency takes precedence when available. |
-| **Minimum baseline load** | `minimum_baseline_w` | `int(0,5000)` | `200` | Configured/defaulted | Minimum ordinary household electrical load, in watts, enforced in the learned baseline after excluding ASHP and EV consumption. Use this to prevent sparse meter history from producing unrealistically low overnight/background demand. Set it near the lowest genuine base load of the property. |
-| **Log level** | `log_level` | `list(INFO|DEBUG)` | `INFO` | Configured/defaulted | Logging detail for Home Energy Forecaster. Use INFO for normal operation. Use DEBUG temporarily when diagnosing data, entity or forecast problems because it produces substantially more log output. |
+   `https://github.com/sunnysideal/Home-Energy-Manager`
 
-### Battery entities
+4. Refresh the App store.
+5. Install **Home Energy Manager**.
+6. Open the app's **Configuration** tab.
+7. Configure the entities for your installation.
+8. Leave **Operation mode** set to `forecast_only` for the first start.
+9. Start the app.
 
-Input entities describing the battery/inverter state and its two charge/discharge schedules. These are readings/settings from your inverter integration; they allow the forecast to simulate exactly what the battery is currently configured to do.
+Updates are delivered through the Home Assistant App store in the same way as other repository apps.
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **Battery state of charge** | `soc` | `str` | blank | Optional | Select the battery state-of-charge sensor reported by the inverter integration. It must represent the current battery charge as a percentage from 0 to 100. This is required: every battery simulation starts from this value and an incorrect entity will make all SOC, import and export forecasts unreliable. |
-| **Battery capacity** | `capacity_kwh` | `str` | blank | Optional | Select the entity containing the battery’s usable or configured capacity in kWh. A number or sensor is acceptable as long as its state is the capacity value, not stored energy at this moment. The forecaster converts SOC percentages into kWh using this value, so it is required for correct battery modelling. |
-| **Battery reserve SOC** | `reserve_soc` | `str` | blank | Optional | Select the inverter entity containing the minimum battery reserve as a percentage. The forecaster will not simulate normal discharge below this reserve unless a specific calibration/plan explicitly targets the allowed floor. Use the same reserve setting that the inverter itself enforces. |
-| **Inverter maximum rate** | `inverter_max_rate_w` | `str` | blank | Optional | Select the entity reporting the inverter’s maximum supported battery charge/discharge power in watts. This is a hardware/setting limit, not the current battery power. The forecaster uses it to cap simulated charge and discharge rates so the plan cannot assume physically impossible power. |
-| **Battery charge rate** | `charge_rate_w` | `str` | blank | Optional | Select the inverter entity containing the currently configured scheduled battery charge rate in watts. The forecaster reads this to model existing charge slots and controller-written plans. Do not use a live battery power sensor here; this field is the configured rate/limit. |
-| **Battery discharge rate** | `discharge_rate_w` | `str` | blank | Optional | Select the inverter entity containing the currently configured scheduled battery discharge rate in watts. The forecaster reads this to model existing discharge slots and controller-written plans. Do not use a live battery power sensor here; this field is the configured rate/limit. |
-| **Eco mode** | `eco_mode` | `str` | blank | Optional | Select the switch/select/sensor that reports whether the inverter’s normal eco/self-consumption mode is enabled. The forecaster needs this to understand whether the battery may freely charge/discharge outside explicit schedule slots. Use the entity that reflects the inverter setting, not a derived dashboard helper. |
-| **Charge schedule enabled** | `charge_schedule_enabled` | `str` | blank | Optional | Select the switch or status entity that reports whether scheduled battery charging is enabled. When off, configured charge-slot times should not be treated as active. This must reflect the inverter’s actual schedule-enable setting. |
-| **Discharge schedule enabled** | `discharge_schedule_enabled` | `str` | blank | Optional | Select the switch or status entity that reports whether scheduled battery discharging is enabled. When off, configured discharge-slot times should not be treated as active. This must reflect the inverter’s actual schedule-enable setting. |
-| **Pause mode** | `pause_mode` | `str` | blank | Optional | Select the inverter entity reporting the current pause mode, for example PauseCharge, PauseDischarge or Disabled depending on the integration. The forecaster uses this together with pause start/end to model periods where normal battery behaviour is intentionally suspended. |
-| **Pause start** | `pause_start` | `str` | blank | Optional | Select the inverter entity containing the start time of the active pause window. This is normally a time/select entity. The forecaster only uses the pause interval when the configured pause mode makes it relevant. |
-| **Pause end** | `pause_end` | `str` | blank | Optional | Select the inverter entity containing the end time of the active pause window. This is normally a time/select entity. Together with pause mode and pause start it defines when charging or discharging is intentionally paused. |
-| **Charge slot 1 start** | `charge_start_1` | `str` | blank | Optional | Select the inverter time/select entity that contains the start time of battery charging slot 1. The forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller may also update the corresponding inverter setting when planning. |
-| **Charge slot 1 end** | `charge_end_1` | `str` | blank | Optional | Select the inverter time/select entity that contains the end time of battery charging slot 1. It must be the partner of slot 1 start. The forecaster uses the interval only when the relevant schedule is enabled, and the controller may update it when applying a plan. |
-| **Charge slot 1 target SOC** | `charge_target_1` | `str` | blank | Optional | Select the inverter number/select entity containing the target SOC percentage for battery charging slot 1. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which forced discharge stops. Use the actual inverter target entity for slot 1. |
-| **Charge slot 2 start** | `charge_start_2` | `str` | blank | Optional | Select the inverter time/select entity that contains the start time of battery charging slot 2. The forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller may also update the corresponding inverter setting when planning. |
-| **Charge slot 2 end** | `charge_end_2` | `str` | blank | Optional | Select the inverter time/select entity that contains the end time of battery charging slot 2. It must be the partner of slot 2 start. The forecaster uses the interval only when the relevant schedule is enabled, and the controller may update it when applying a plan. |
-| **Charge slot 2 target SOC** | `charge_target_2` | `str` | blank | Optional | Select the inverter number/select entity containing the target SOC percentage for battery charging slot 2. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which forced discharge stops. Use the actual inverter target entity for slot 2. |
-| **Discharge slot 1 start** | `discharge_start_1` | `str` | blank | Optional | Select the inverter time/select entity that contains the start time of battery discharging slot 1. The forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller may also update the corresponding inverter setting when planning. |
-| **Discharge slot 1 end** | `discharge_end_1` | `str` | blank | Optional | Select the inverter time/select entity that contains the end time of battery discharging slot 1. It must be the partner of slot 1 start. The forecaster uses the interval only when the relevant schedule is enabled, and the controller may update it when applying a plan. |
-| **Discharge slot 1 target SOC** | `discharge_target_1` | `str` | blank | Optional | Select the inverter number/select entity containing the target SOC percentage for battery discharging slot 1. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which forced discharge stops. Use the actual inverter target entity for slot 1. |
-| **Discharge slot 2 start** | `discharge_start_2` | `str` | blank | Optional | Select the inverter time/select entity that contains the start time of battery discharging slot 2. The forecaster reads this exact schedule so its simulation matches what the inverter will do; the controller may also update the corresponding inverter setting when planning. |
-| **Discharge slot 2 end** | `discharge_end_2` | `str` | blank | Optional | Select the inverter time/select entity that contains the end time of battery discharging slot 2. It must be the partner of slot 2 start. The forecaster uses the interval only when the relevant schedule is enabled, and the controller may update it when applying a plan. |
-| **Discharge slot 2 target SOC** | `discharge_target_2` | `str` | blank | Optional | Select the inverter number/select entity containing the target SOC percentage for battery discharging slot 2. For charging this is the SOC the inverter should reach; for discharging it is the SOC floor at which forced discharge stops. Use the actual inverter target entity for slot 2. |
+## Before configuring entities
 
-### House load
+An entity name is not enough to determine whether it is suitable. Check the entity under **Developer Tools → States** and confirm its state, unit and meaning.
 
-Historical whole-home load input used to learn the ordinary household baseline. Choose the cumulative load-energy total at the battery/inverter measurement boundary.
+Important distinctions:
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **House-load energy total** | `energy_total_kwh` | `str` | blank | Optional | Select a cumulative kWh sensor representing whole-home load as measured on the battery/inverter side of the installation, excluding any EV charger that sits outside that measurement boundary. The forecaster differences this total over time to learn ordinary household demand after separating ASHP and EV components. It should be a monotonically increasing energy total, not an instantaneous watt sensor. |
+- **Cumulative energy** means a total that increases over time, normally measured in `kWh`.
+- **Power** is an instantaneous value, normally measured in `W` or `kW`.
+- **SOC** is a battery percentage from `0` to `100`.
+- **Configured charge/discharge rate** is an inverter setting/limit, not live battery power.
 
-### Solar PV
+The default heat-pump and solar entity IDs in the app are examples from the development installation. Replace them unless your entities really use those IDs.
 
-Actual PV generation and Solcast forecast inputs. The cumulative actual-energy sensor is used for history, while Solcast supplies future generation.
+# Configuration
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **Solar generation energy total** | `energy_total_kwh` | `str` | blank | Optional | Select the cumulative kWh sensor for actual solar/PV generation. The forecaster uses historical increments for actual generation and for model/forecast comparisons. Use total PV generation rather than grid export, because self-consumed solar must also be counted. |
-| **Solcast today** | `solcast_today` | `str` | `sensor.solcast_pv_forecast_forecast_today` | Configured/defaulted | Select the Solcast entity containing today’s PV forecast. The entity is expected to expose Solcast forecast detail/attributes as provided by the Home Assistant Solcast integration, not merely a single instantaneous power value. This is the primary source for forecast PV during the current day. |
-| **Solcast tomorrow** | `solcast_tomorrow` | `str` | `sensor.solcast_pv_forecast_forecast_tomorrow` | Configured/defaulted | Select the Solcast entity containing tomorrow’s PV forecast. It should be the matching tomorrow entity from the same Solcast integration used for today. The forecaster joins it to today’s data so battery planning can extend across midnight. |
-| **Solcast day 3** | `solcast_day_3` | `str?` | `sensor.solcast_pv_forecast_forecast_day_3` | Optional | Optional Solcast entity containing the third forecast day. Configure this when your planning horizon can extend far enough to need day-three PV data; otherwise it may be left blank. It should come from the same Solcast installation and have the same forecast attribute format as today/tomorrow. |
+## 1. Battery
 
-### Tariff and inverter meter inputs
+These inputs describe the physical battery. They are needed for the whole-home battery simulation and for controller operation.
 
-Tariff and inverter-boundary grid energy inputs. Use the rate entities from your electricity-tariff integration and the import/export totals measured at the battery/inverter grid point.
+| Setting | What to select |
+|---|---|
+| **State of charge** (`battery.soc`) | Current battery SOC percentage. |
+| **Capacity** (`battery.capacity_kwh`) | Battery usable/configured capacity in kWh. |
+| **Reserve SOC** (`battery.reserve_soc`) | Inverter minimum reserve percentage. |
+| **Battery power** (`battery.power_w`) | Live battery power in watts. Use the integration's signed battery-power convention. |
+| **Charge energy total** (`battery.charge_energy_total_kwh`) | Cumulative battery charging energy in kWh. Used for battery-efficiency learning. |
+| **Discharge energy total** (`battery.discharge_energy_total_kwh`) | Cumulative battery discharge energy in kWh. Used for battery-efficiency learning. |
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **Inverter-side import energy** | `import_energy_total_kwh` | `str` | blank | Optional | Select the cumulative import-energy total seen at the battery/inverter grid meter, in kWh. This is used for historical energy reconciliation around the inverter boundary. If loads such as the EV charger are upstream of the inverter meter, this is intentionally different from the optional true-grid meter configured below. |
-| **Inverter-side export energy** | `export_energy_total_kwh` | `str` | blank | Optional | Select the cumulative export-energy total seen at the battery/inverter grid meter, in kWh. This is used for historical energy reconciliation around the inverter boundary. Do not substitute the whole-property smart-meter export here when an EV or other load exists between the two measurement points. |
-| **Current import rate** | `import_current_rate` | `str` | blank | Optional | Select the tariff entity whose current state is the present import price, normally in p/kWh or the units supplied by your tariff integration. The forecaster uses it as the authoritative current rate and as a fallback when detailed rate tables are unavailable. |
-| **Current export rate** | `export_current_rate` | `str` | blank | Optional | Select the tariff entity whose current state is the present export payment rate. The forecaster uses it to value forecast export and as a fallback when detailed export rate tables are unavailable. Use the actual export tariff, not the import tariff entity. |
-| **Import rates today** | `import_current_day_rates` | `str` | blank | Optional | Select the tariff entity whose attributes contain the full set of import rates/periods for today. Kraken/Octopus-style integrations commonly expose a structured rate list. The forecaster uses the timestamped periods to price every forecast slot and to identify cheap/off-peak windows. |
-| **Import rates tomorrow** | `import_next_day_rates` | `str` | blank | Optional | Select the tariff entity whose attributes contain the full set of import rates/periods for tomorrow. It should have the same structured format as the current-day rate entity so the forecast can price slots after midnight. Required for accurate next-day planning on time-varying tariffs. |
-| **Export rates today** | `export_current_day_rates` | `str` | blank | Optional | Select the tariff entity whose attributes contain today’s timestamped export rates. Configure this when export value varies by time; if your export tariff is flat, the current export-rate entity may be sufficient depending on the integration data available. |
-| **Export rates tomorrow** | `export_next_day_rates` | `str` | blank | Optional | Select the tariff entity whose attributes contain tomorrow’s timestamped export rates. It should use the same format as the current-day export-rate entity. Configure it for accurate export-value calculations across midnight when the export tariff is time-varying. |
+For basic forecasting, SOC and capacity are the most important battery inputs. For accurate learning, provide the cumulative charge/discharge totals as well.
 
-### ASHP forecast inputs
+## 2. Grid meters
 
-Links the ASHP forecaster output and actual CH/DHW energy totals into the whole-home model so heat-pump demand is forecast separately instead of being hidden inside ordinary house load.
+| Setting | What to select |
+|---|---|
+| **Grid import energy total** (`grid.import_energy_total_kwh`) | True utility/smart-meter cumulative import in kWh. |
+| **Grid export energy total** (`grid.export_energy_total_kwh`) | True utility/smart-meter cumulative export in kWh. |
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **ASHP 48-hour forecast** | `forecast_48h` | `str` | `sensor.ashp_forecast_next_48h` | Configured/defaulted | Select the ASHP Forecaster entity containing the detailed forward CH/DHW forecast, normally the Home Energy Manager ASHP 48-hour forecast sensor. The whole-home forecaster reads its forecast attributes and adds ASHP demand to the household simulation. Use the forecast entity, not one of the summary kWh sensors. |
-| **ASHP CH energy total** | `ch_energy_total_kwh` | `str` | `sensor.ashp_electrical_energy_ch` | Configured/defaulted | Select the cumulative central-heating electrical energy sensor used by the ASHP forecaster. The whole-home model uses this actual CH energy history to remove heating consumption from learned baseline house load, avoiding double-counting when CH is added back from the ASHP forecast. |
-| **ASHP DHW energy total** | `dhw_energy_total_kwh` | `str` | `sensor.ashp_electrical_energy_dhw` | Configured/defaulted | Select the cumulative domestic-hot-water electrical energy sensor used by the ASHP forecaster. The whole-home model uses this actual DHW history to separate hot-water consumption from ordinary house load before adding forecast DHW demand back into future slots. |
+When available, true grid-meter totals are preferred because they represent what the supplier sees. If these are not available, Home Energy Manager can use the configured inverter import/export totals as fallback inputs.
 
-### True whole-property grid meters
+## 3. Inverter
 
-Optional true whole-property smart-meter totals. Configure these when the inverter grid meter does not see every load—for example an EV charger connected between the smart meter and the battery grid CT.
+These settings let the forecast reproduce the battery's current configuration and allow the controller to write future plans.
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **True grid import energy** | `import_energy_total_kwh` | `str?` | blank | Optional | Optional cumulative kWh import sensor at the true whole-property grid boundary, normally the smart meter. Use this when the inverter/battery grid meter does not see every load, such as an EV charger connected upstream. When supplied, this is preferred for actual grid-import accounting and export-generated logic. |
-| **True grid export energy** | `export_energy_total_kwh` | `str?` | blank | Optional | Optional cumulative kWh export sensor at the true whole-property grid boundary, normally the smart meter. Use this when the inverter/battery grid meter is not at the same electrical boundary. When supplied, this is preferred for actual grid-export accounting and export-generated credit calculations. |
+| Setting | What it represents |
+|---|---|
+| `inverter.house_load_energy_total_kwh` | Cumulative house/load energy in kWh measured on the battery side of the installation. |
+| `inverter.import_energy_total_kwh` | Inverter cumulative grid import in kWh. |
+| `inverter.export_energy_total_kwh` | Inverter cumulative grid export in kWh. |
+| `inverter.max_rate_w` | Hardware maximum battery charge/discharge rate in watts. |
+| `inverter.charge_rate_w` | Configured scheduled charge rate in watts. |
+| `inverter.discharge_rate_w` | Configured scheduled discharge rate in watts. |
+| `inverter.eco_mode` | Entity reporting the inverter's normal self-consumption/eco setting. |
+| `inverter.charge_schedule_enabled` | Whether scheduled charging is enabled. |
+| `inverter.discharge_schedule_enabled` | Whether scheduled discharging is enabled. |
+| `inverter.pause_mode` | Current pause mode, such as Disabled/PauseCharge/PauseDischarge/PauseBoth. |
+| `inverter.pause_start`, `inverter.pause_end` | Pause window start/end settings. |
+| `inverter.charge_start_1`, `charge_end_1`, `charge_target_1` | First charge slot settings. |
+| `inverter.charge_start_2`, `charge_end_2`, `charge_target_2` | Second charge slot settings. |
+| `inverter.discharge_start_1`, `discharge_end_1`, `discharge_target_1` | First discharge slot settings. |
+| `inverter.discharge_start_2`, `discharge_end_2`, `discharge_target_2` | Second discharge slot settings. |
 
-### EV charging
+For controller modes, configure all inverter settings that Home Energy Manager is expected to read or write. Do not point a schedule field at a live power sensor.
 
-EV-specific measurements and supplier-independent smart-charging inputs. The cumulative EV energy sensor teaches the model charging power; planned dispatches decide when future ev_kwh appears.
+## 4. Tariff
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **EV energy total** | `energy_total_kwh` | `str` | blank | Optional | Select the cumulative kWh sensor measuring energy consumed by the EV charger, for example an energy sensor derived from a CT clamp around the Hypervolt supply. The value should only increase with EV charging. Home Energy Manager differences this history to learn the EV’s typical charging power; leave blank only if EV forecasting is not required. |
-| **EV Smart Charging dispatches** | `smart_charging_dispatch_entity` | `str` | blank | Optional | Select the supplier/integration entity whose attributes contain planned EV smart-charging dispatches with start/end times, such as Kraken-based smart-charging slots from Octopus or EDF. The field is intentionally supplier-independent: when you change supplier, point it at the equivalent planned-dispatch entity. These slots determine when future ev_kwh is inserted into the forecast. |
-| **EV Smart Charging active** | `smart_charging_active_entity` | `str` | blank | Optional | Optional entity indicating that an EV smart-charging slot is active now, typically a binary_sensor. It is used to confirm the current interval when the planned-dispatch list is late or incomplete. Leave blank if your supplier integration does not provide a reliable active-slot indicator. |
+Home Energy Manager can use current rates plus richer current-day/next-day rate entities.
 
-## Controller
+| Setting | What to select |
+|---|---|
+| `tariff.import_current_rate` | Current import rate. |
+| `tariff.export_current_rate` | Current export rate. |
+| `tariff.import_current_day_rates` | Entity whose attributes contain today's import rate periods. |
+| `tariff.import_next_day_rates` | Entity whose attributes contain tomorrow's import rate periods. |
+| `tariff.export_current_day_rates` | Entity whose attributes contain today's export rate periods. |
+| `tariff.export_next_day_rates` | Entity whose attributes contain tomorrow's export rate periods. |
 
-Battery-control policy and safeguards. These settings determine how Home Energy Manager converts the latest forecast into inverter charge, discharge and pause schedules; change them only when you understand the operational effect.
+The detailed day-rate entities give the forecaster enough information to identify cheap/off-peak periods and model costs accurately. If they are unavailable, current-rate data is only a degraded fallback.
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **Controller status entity** | `status_entity_id` | `str` | `sensor.home_energy_controller` | Configured/defaulted | Requested entity ID for the controller status sensor published by Home Energy Manager. This sensor contains controller health, plan details and diagnostics. Normally leave the default; changing it does not select an input entity and may break dashboards or automations that expect the standard name. |
-| **Home energy forecast entity** | `home_energy_forecast_entity` | `str` | `sensor.home_energy_forecast` | Configured/defaulted | Whole-home forecast sensor consumed by the controller. Normally leave the default sensor.home_energy_forecast: the controller can discover the MQTT-created Home Energy Manager forecast entity when Home Assistant assigns a longer registry ID. Change this only if you deliberately publish the forecast under a different entity. |
-| **Safety buffer SOC** | `safety_buffer_soc` | `int(1,99)` | `20` | Configured/defaulted | General battery SOC guardrail, in percent, used to protect against forecast error and unexpected load. The controller plans to preserve this additional margin where appropriate rather than running the battery exactly to reserve. Higher values are more conservative but may increase grid import or reduce export opportunity. |
-| **Operation mode** | `operation_mode` | `list(maximise_export|minimise_export|export_generated)` | `maximise_export` | Configured/defaulted | Select the battery strategy. maximise_export prioritises using/exporting energy according to tariff opportunity; minimise_export tries to avoid unnecessary grid export while preserving sufficient SOC; export_generated aims to export no more than the amount of solar generated, including a later forced export if required. This setting directly changes controller behaviour. |
-| **Power-down handling** | `power_down_enabled` | `bool` | `true` | Configured/defaulted | Enable support for supplier power-down/grid-event periods when the corresponding event and baseline entities are configured. Turn this off if you do not participate in such events or do not provide the required entities; normal battery planning continues without the feature. |
-| **Power-down events entity** | `power_down_events_entity` | `str` | blank | Optional | Optional event/entity containing upcoming supplier power-down windows in the format expected by the controller. Historically this was intended for Octopus Power Down event data. Leave blank if you do not use this feature; enabling power-down handling without usable event data has no benefit. |
-| **Power-down import baseline** | `power_down_import_baseline_entity` | `str` | blank | Optional | Optional entity containing the supplier-provided/import baseline used to assess a power-down event. Configure only if your event integration exposes the baseline the controller expects; otherwise leave blank. This is not the normal household import meter. |
-| **Power-down export baseline** | `power_down_export_baseline_entity` | `str` | blank | Optional | Optional entity containing the supplier-provided/export baseline used to assess a power-down event. Configure only if your event integration exposes a separate export baseline; otherwise leave blank. This is not the normal smart-meter export total. |
-| **Minimise-export minimum SOC** | `minimise_export_min_soc` | `int(1,99)` | `25` | Configured/defaulted | Minimum battery SOC, in percent, that minimise_export mode tries to maintain while suppressing export. Set this above the inverter reserve if you want a working buffer for later household demand. It applies specifically to minimise_export behaviour rather than changing the inverter’s own reserve setting. |
-| **Battery calibration** | `calibration_enabled` | `bool` | `true` | Configured/defaulted | Allow the controller to schedule periodic battery calibration behaviour: occasional charges to 100% and, less frequently, discharges toward the configured deep-cycle floor. Disable this if you prefer to manage BMS/SOC calibration manually. |
-| **Full-charge interval** | `top_full_every_days` | `int(1,365)` | `14` | Configured/defaulted | Maximum number of days between controller-requested charges to 100% when calibration is enabled. Reaching full charge periodically can help the battery management system maintain top-end SOC calibration. A smaller number performs this more often; a larger number reduces calibration frequency. |
-| **Deep-cycle interval** | `deep_cycle_every_days` | `int(1,730)` | `60` | Configured/defaulted | Maximum number of days between controller-requested deep calibration cycles when calibration is enabled. A deep cycle deliberately allows the battery to approach the configured floor so the BMS can observe the lower end of its SOC range. This should normally be much less frequent than a top-end full charge. |
-| **Deep-cycle floor SOC** | `deep_cycle_floor_soc` | `int(1,20)` | `4` | Configured/defaulted | Target SOC percentage for the low point of a calibration deep cycle. This should not be below the safe reserve supported by your inverter/battery. The controller relies on the BMS/inverter to stop discharge at the configured limit. |
-| **Reserve dwell time** | `reserve_dwell_minutes` | `int(0,180)` | `30` | Configured/defaulted | Minimum time, in minutes, to leave the battery at or near reserve during an applicable deep-cycle calibration. This gives the BMS a stable low-SOC period rather than immediately charging again. Set to 0 if no deliberate dwell is wanted. |
-| **Preferred export start** | `export_start` | `str` | `20:00` | Configured/defaulted | Preferred earliest local clock time, HH:MM, for deliberate scheduled battery export. In export-related modes the controller tries to place forced export at or after this time, subject to tariff/plan constraints. This is a planning preference, not an inverter entity. |
-| **Export-generated solar threshold** | `export_generated_solar_threshold_w` | `int(0,2000)?` | blank | Optional | Optional PV power threshold in watts used by export_generated mode to decide when solar generation is meaningfully active for pause-charge behaviour. Leave unset to use the built-in default. Increase it if tiny/noisy PV readings are falsely triggering solar-active behaviour; decrease it if low genuine generation should count. |
-| **Preferred charge C-rate** | `preferred_charge_c_rate` | `float` | `0.25` | Configured/defaulted | Preferred battery charging C-rate used when choosing a charge power. A value of 0.25 means charging at power equal to 25% of battery capacity per hour (for example about 3.45 kW for 13.8 kWh). The controller prefers this gentler rate when there is enough time, subject to inverter and deadline limits. |
-| **Maximum charge C-rate** | `max_charge_c_rate` | `float` | `0.4` | Configured/defaulted | Maximum C-rate the controller is allowed to request for scheduled charging. This caps the calculated charge power even if a faster rate would meet the target sooner. It should reflect a rate you are comfortable using and must not exceed battery/inverter capability. |
-| **Controller discharge rate** | `discharge_rate_w` | `int(0,20000)` | `0` | Configured/defaulted | Requested power in watts for deliberate scheduled discharge/export. Set 0 to let the controller use the inverter’s available/normal maximum where supported; otherwise enter the explicit export/discharge power you want the controller to request. This affects forced export duration calculations. |
-| **Charge safety margin** | `charge_safety_margin_minutes` | `int(0,120)` | `10` | Configured/defaulted | Extra charging time added to a calculated charge window so the target SOC is reached despite modelling error, tapering or small efficiency differences. Larger values start charging earlier and are more conservative; too large a margin can buy more cheap energy than necessary. |
-| **Generic dwell time** | `generic_dwell_minutes` | `int(0,120)` | `15` | Configured/defaulted | Minimum dwell/stability period used by controller planning to avoid immediately reversing or changing a recently selected operating action. This is a general anti-chatter setting; increase it if plans oscillate too frequently, but large values make the controller slower to react. |
-| **Forecast stale threshold** | `forecast_stale_minutes` | `int(1,120)` | `15` | Configured/defaulted | Maximum age, in minutes, of a forecast the controller will trust for making changes. Older forecasts are treated as stale and control is withheld/degraded until a fresh one arrives. Set this comfortably above the normal forecast update interval. |
-| **Future timestamp tolerance** | `future_tolerance_minutes` | `int(0,30)` | `2` | Configured/defaulted | Tolerance, in minutes, for a forecast timestamp that appears slightly in the future because component clocks or publication timing do not align perfectly. Forecasts further into the future than this are rejected as suspicious rather than acted on. |
-| **Schedule time deadband** | `time_deadband_minutes` | `int(0,30)` | `3` | Configured/defaulted | Schedule-time deadband in minutes. If a newly calculated inverter start/end time differs from the currently configured time by no more than this amount, the controller leaves it unchanged. This prevents repetitive one-minute writes caused by small forecast changes. |
-| **Power-rate deadband** | `rate_deadband_w` | `int(0,2000)` | `100` | Configured/defaulted | Charge/discharge-rate deadband in watts. If a newly calculated rate differs from the current inverter setting by less than this amount, the controller avoids rewriting it. Increase this to reduce rate-setting chatter; decrease it if small power changes matter. |
-| **Energy deadband** | `energy_deadband_kwh` | `float` | `0.1` | Configured/defaulted | Minimum forecast energy difference, in kWh, considered material when comparing plans. Changes smaller than this are treated as noise and do not by themselves justify rewriting inverter settings. |
-| **Charge variance threshold** | `charge_variance_threshold_kwh` | `float` | `0.5` | Configured/defaulted | Amount of charge-energy difference, in kWh, required before the controller considers a revised charging requirement significant. This helps prevent small forecast fluctuations from constantly moving the overnight charge plan. |
-| **Export variance threshold** | `export_variance_threshold_kwh` | `float` | `0.2` | Configured/defaulted | Amount of export-energy difference, in kWh, required before a revised export requirement is considered significant. This is especially relevant to export-generated planning, where the remaining export target changes as actual generation/export accumulates. |
-| **Write retry attempts** | `write_retry_attempts` | `int(1,10)` | `4` | Configured/defaulted | Maximum number of attempts when writing an inverter setting if the requested value is not confirmed by a subsequent Home Assistant read. Increase only if the integration is occasionally slow; excessive retries can delay a controller cycle when an entity is genuinely unavailable. |
-| **Write retry delay** | `write_retry_delay_seconds` | `int(1,600)` | `10` | Configured/defaulted | Seconds to wait between failed inverter write/confirmation attempts. This gives integrations such as GivTCP time to propagate a setting before trying again. Longer delays reduce pressure on a slow integration but make failures take longer to resolve. |
-| **Learning sample interval** | `sample_interval_seconds` | `int(5,300)` | `30` | Configured/defaulted | Interval, in seconds, between controller observations used for battery charge/discharge session and efficiency learning. Shorter intervals capture the curve in more detail but create more Home Assistant reads and database samples. |
-| **Rate match tolerance (%)** | `rate_match_tolerance_pct` | `float` | `5` | Configured/defaulted | Percentage tolerance used when deciding whether observed battery power matches the commanded charge/discharge rate closely enough for a sample to be valid for learning. It is combined with the absolute watt tolerance; the comparison is intended to reject periods where other control effects distort the requested rate. |
-| **Rate match tolerance (W)** | `rate_match_tolerance_w` | `int` | `100` | Configured/defaulted | Absolute watt tolerance used alongside the percentage tolerance when deciding whether battery power matches the requested rate for learning. This prevents very small percentage bands from becoming unrealistically strict at lower powers. |
-| **Forecast refresh timeout** | `controller_refresh_timeout_seconds` | `int(30,600)` | `90` | Configured/defaulted | Maximum time, in seconds, the controller waits after changing inverter settings for the forecaster to publish a controller-refresh forecast based on the new plan. During this wait scheduled control is blocked to avoid a race with stale plan data. If the timeout expires, normal processing can resume with diagnostics. |
-| **EV Smart Charging awareness** | `ev_smart_charging_enabled` | `bool` | `true` | Configured/defaulted | Enable supplier-independent EV Smart Charging awareness in controller planning. When enabled, confirmed/planned smart-charge periods can be treated as cheap charging opportunities and are accounted for when deciding whether the battery must preserve energy for later peak periods. Disable if no smart EV tariff/integration is in use. |
-| **EV Smart Charging dispatches** | `ev_smart_charging_dispatch_entity` | `str` | blank | Optional | Select the supplier/integration entity whose attributes contain planned EV smart-charging dispatches. Kraken-based services from Octopus and EDF expose similar slot data but under different entity names, so point this generic setting at whichever planned-dispatch entity your current supplier provides. Leave blank if no planned-slot data is available. |
-| **EV Smart Charging active** | `ev_smart_charging_active_entity` | `str` | `binary_sensor.octopus_slot_actually_charging` | Configured/defaulted | Select the binary/status entity that indicates a smart EV charging slot is active right now. This is used as a real-time confirmation in addition to planned dispatches. Replace the old Octopus default with the equivalent EDF/Kraken entity when you change supplier, or leave blank if your integration has no reliable active indicator. |
+## 5. Solar
 
-## MQTT publishing
+| Setting | What to select |
+|---|---|
+| `solar.energy_total_kwh` | Cumulative PV generation in kWh. |
+| `solar.solcast_today` | Solcast-style forecast entity for today. |
+| `solar.solcast_tomorrow` | Solcast-style forecast entity for tomorrow. |
+| `solar.solcast_day_3` | Optional third-day forecast used to fill horizon gaps. |
 
-MQTT Discovery and state-publishing settings. For a normal Home Assistant installation with the Mosquitto broker/app, keep MQTT enabled and automatic broker discovery enabled; manual host/credentials are only for an external broker.
+The supplied Solcast entity IDs are examples. Replace them if your Solcast integration uses different names.
 
-| Setting | Config key | Type | Default | Setup | Description |
-|---|---|---|---|---|---|
-| **Enable MQTT** | `enabled` | `bool` | `true` | Configured/defaulted | Enable MQTT Discovery/state publishing for Home Energy Manager entities. Leave enabled when Home Assistant has an MQTT broker configured; this gives stable discovered devices/entities and is the preferred publishing path. If disabled or unavailable, components may use their REST fallback where implemented. |
-| **Discover MQTT broker** | `auto_discover_broker` | `bool` | `true` | Configured/defaulted | Ask Home Assistant Supervisor for the MQTT service connection automatically. This is recommended for the Home Assistant Mosquitto broker/app because host, port and credentials are supplied securely at runtime. Disable only when you intentionally want to enter an external broker manually. |
-| **MQTT host** | `host` | `str?` | blank | Optional | Optional MQTT broker hostname or IP address used when automatic Supervisor discovery is disabled or unavailable. Leave blank when auto-discovery works. For an external broker, enter a name reachable from the add-on container, not localhost unless the broker truly runs inside the same container. |
-| **MQTT port** | `port` | `int(1,65535)` | `1883` | Configured/defaulted | MQTT broker TCP port. 1883 is the normal unencrypted MQTT port; 8883 is commonly used for TLS but your broker may differ. Keep this consistent with the SSL/TLS setting and the broker configuration. |
-| **MQTT username** | `username` | `str?` | blank | Optional | Optional MQTT username for a manually configured broker. Leave blank when using Supervisor broker discovery, which supplies the correct service credentials automatically. Do not put Home Assistant login credentials here unless they are explicitly the broker credentials. |
-| **MQTT password** | `password` | `password?` | blank | Optional | Optional MQTT password for a manually configured broker. Leave blank when using Supervisor broker discovery. This field is treated as a password by the Home Assistant configuration UI; use the credential that belongs with the configured MQTT username. |
-| **MQTT TLS/SSL** | `ssl` | `bool` | `false` | Configured/defaulted | Enable TLS/SSL for a manually configured MQTT connection. Turn this on only if the broker endpoint/port expects TLS. It is normally false for the internal Home Assistant Mosquitto service discovered by Supervisor. |
-| **Discovery prefix** | `discovery_prefix` | `str` | `homeassistant` | Configured/defaulted | Home Assistant MQTT Discovery prefix. The standard value is homeassistant and should normally never be changed. Only use a different prefix if your Home Assistant MQTT integration has explicitly been configured to listen on that same custom discovery prefix. |
-| **Topic prefix** | `topic_prefix` | `str` | `home_energy_manager` | Configured/defaulted | Root MQTT topic under which Home Energy Manager publishes state, attributes and availability. Normally leave home_energy_manager. Changing it effectively moves the MQTT topics and may temporarily create/migrate entities, so only change it as part of a deliberate MQTT namespace change. |
-| **Migrate legacy REST entities** | `migrate_legacy_states` | `bool` | `true` | Configured/defaulted | When enabled, Home Energy Manager removes its old REST-created Home Assistant states before publishing MQTT discovery, preventing duplicate/suffixed entities during the REST-to-MQTT transition. Keep enabled for existing upgraded installations; it is harmless once legacy states no longer exist. |
+## 6. Heat pump / central heating
 
-## Published and persistent data
+These inputs drive CH learning and forecasting.
 
-Learned state is stored in the app `/data` directory and survives normal app upgrades:
+| Setting | Required meaning |
+|---|---|
+| `heat_pump.ch_energy_total_kwh` | Cumulative electrical energy used for central/space heating, in kWh. |
+| `heat_pump.outdoor_temperature` | Outdoor temperature in °C, ideally the heat pump's own shaded external sensor. |
+| `heat_pump.weather` | Home Assistant weather entity that supplies forecast temperatures. |
+| `heat_pump.summer_mode_off` | Controller threshold below which heating/winter mode becomes active. |
+| `heat_pump.summer_mode_on` | Controller threshold above which summer mode suppresses normal space heating. |
 
-- `/data/ashp_forecast.db` — ASHP learning/history.
-- `/data/home_energy_forecaster.db` — whole-home forecast learning/history.
-- `/data/last_forecast.json` — most recently persisted whole-home forecast.
-- `/data/controller.db` — controller state, confirmed plans and battery learning.
+All five are required by the current configuration schema.
 
-MQTT Discovery groups user-facing entities under Home Energy Manager devices. If MQTT is unavailable during startup, components can use their REST publishing fallback for that run where supported.
+## 7. Domestic hot water
 
-## Development
+| Setting | Required meaning |
+|---|---|
+| `dhw.energy_total_kwh` | Cumulative heat-pump DHW electrical energy in kWh. |
+| `dhw.mode` | DHW mode entity, for example Off/On/Schedule. |
+| `dhw.tank_temperature` | Main/current cylinder temperature in °C. |
+| `dhw.target_temperature` | Configured DHW target temperature in °C. |
+| `dhw.hysteresis` | DHW reheating hysteresis in °C. |
+| `dhw.schedule_prefix` | Common entity-ID prefix used for the DHW weekday AM/PM schedule entities. |
 
-Read `AGENTS.md` before changing package architecture, and `components/controller/AGENTS.md` before changing controller behaviour.
+Optional thermal inputs improve the tank model when available:
 
-## Licence
+- `dhw.tank_upper_temperature` — upper cylinder sensor;
+- `dhw.tank_lower_temperature` — lower cylinder sensor;
+- `dhw.ambient_temperature` — temperature around the cylinder, useful for standing-loss modelling.
 
-Home Energy Manager is released under the MIT License. See the repository root `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+The DHW forecast estimates the electrical energy needed to reach the configured target from the simulated tank state. When the authoritative DHW forecast is temporarily unavailable, CH can continue updating while DHW is reported unavailable rather than being silently treated as zero.
+
+## 8. EV Smart Charging (optional)
+
+| Setting | Purpose |
+|---|---|
+| `ev.energy_total_kwh` | Cumulative energy measured at the EV charger, if available. |
+| `ev.smart_charging_dispatch` | Entity containing planned/confirmed smart-charging dispatches. |
+| `ev.smart_charging_active` | Entity indicating that smart charging is currently active/confirmed. |
+| `ev.smart_charging_enabled` | Enables EV Smart Charging handling. |
+
+EV energy is modelled separately from ordinary household baseline load when configured.
+
+## 9. Energy strategy / controller
+
+The default mode is `forecast_only`.
+
+Important settings:
+
+| Setting | Default | Meaning |
+|---|---:|---|
+| `operation_mode` | `forecast_only` | Selects controller behaviour. |
+| `safety_buffer_soc` | 20% | Battery SOC buffer the controller aims to protect at the next regular off-peak period. |
+| `minimise_export_min_soc` | 25% | Minimum SOC floor used by minimise-export planning; the controller may target higher when required to avoid peak import. |
+| `calibration_enabled` | true | Enables periodic battery calibration planning. |
+| `top_full_every_days` | 14 | Maximum interval between top-end/full calibration opportunities. |
+| `deep_cycle_every_days` | 60 | Interval used for low-end calibration planning. |
+| `deep_cycle_floor_soc` | 4% | Low-SOC calibration target/floor. |
+| `reserve_dwell_minutes` | 15 | Time to remain at the low endpoint during a requested deep calibration. |
+| `export_start` | 20:00 | Earliest normal forced export start in `export_generated`. |
+| `preferred_charge_c_rate` | 0.25 | Preferred battery charge rate as a fraction of battery capacity per hour. |
+| `max_charge_c_rate` | 0.4 | Normal maximum charge C-rate used by planning. |
+| `charge_safety_margin_minutes` | 10 | Margin kept when sizing timed charging. |
+| `forecast_stale_minutes` | 15 | Forecast age after which controller data is treated as stale. |
+| `write_retry_attempts` | 4 | Number of attempts for inverter writes. |
+| `write_retry_delay_seconds` | 10 | Delay between write retries. |
+| `controller_refresh_timeout_seconds` | 90 | Maximum wait for a refreshed forecast after controller changes. |
+
+Most timing/deadband/rate-match settings under this section are advanced tuning values. Leave the defaults unless logs show a specific reason to adjust them.
+
+## 10. Axle (optional)
+
+Home Energy Manager reads Axle event data from Home Assistant entities supplied by the Axle integration; it does not log in to Axle itself.
+
+Configure:
+
+- event start time;
+- event end time;
+- Import/Export direction;
+- event-window state;
+- updated-at timestamp;
+- package output entity (default `sensor.home_energy_manager_axle`).
+
+Only qualifying **Export** events cause battery action. Import events may be reported but do not trigger battery charging/discharging.
+
+## 11. Advanced settings
+
+### Home forecaster
+
+The defaults are suitable for most installations:
+
+- history: 28 days;
+- same-weekday weighting enabled;
+- 5-minute whole-home simulation interval;
+- fallback charge/discharge efficiency: 95%;
+- minimum baseline load: 200 W;
+- log level: INFO.
+
+Change these only when tuning forecast behaviour or diagnosing a problem.
+
+### ASHP forecaster
+
+Defaults include:
+
+- degree-day base: 15.5 °C;
+- fallback winter/summer thresholds: 11/12 °C;
+- initial coefficient: 1.55 kWh/DD;
+- 30-day CH training window;
+- 48-hour forecast horizon;
+- 30-minute ASHP output slots;
+- 15-minute refresh interval;
+- 250 L DHW tank volume;
+- 5-minute DHW thermal sampling.
+
+The threshold values in this advanced section are fallbacks; the live summer-mode threshold entities are preferred when available.
+
+### Battery learning
+
+Battery learning settings control how charge/discharge sessions and idle periods are accepted. The defaults are deliberately conservative. Configure the cumulative battery charge/discharge energy entities before expecting useful efficiency learning.
+
+### MQTT
+
+Leave MQTT discovery enabled for normal Home Assistant presentation. With **Auto-discover broker** enabled, the app asks Home Assistant for the configured MQTT service. Only enter host/port/credentials when automatic discovery is not suitable.
+
+# First start and verification
+
+Keep `energy_strategy.operation_mode` set to `forecast_only`.
+
+After starting the app, verify these areas in order.
+
+## 1. Check the app log
+
+Open the app's **Log** tab. Look for:
+
+- unavailable/non-numeric required entities;
+- missing weather forecast data;
+- tariff data that could not be parsed;
+- stale forecast warnings;
+- DHW thermal model readiness/alignment messages.
+
+Fix input problems before enabling control.
+
+## 2. Check ASHP outputs
+
+Useful entities include:
+
+- `sensor.ashp_forecast_next_30m`
+- `sensor.ashp_forecast_remaining_today`
+- `sensor.ashp_forecast_next_24h`
+- `sensor.ashp_forecast_next_48h`
+- `sensor.ashp_forecast_ch_next_48h`
+- `sensor.ashp_forecast_dhw_next_48h`
+- `sensor.ashp_forecast_kwh_per_degree_day`
+- `sensor.ashp_forecast_health`
+- `sensor.ashp_dhw_production_source`
+
+The detailed 48-hour forecast is exposed in the `forecast` attribute and contains half-hour rows including `ch_kwh`, `dhw_kwh`, temperature and heating state.
+
+A healthy forecast should update regularly. If DHW becomes unavailable, `sensor.ashp_forecast_health` reports degraded DHW status while CH may remain fresh.
+
+## 3. Check whole-home outputs
+
+Useful entities include:
+
+- `sensor.home_energy_forecast`
+- `sensor.home_energy_forecast_health`
+- `sensor.home_energy_forecast_comparison`
+
+The detailed forecast should show plausible load, CH, DHW, PV, battery, SOC, import/export and cost values. Compare current SOC and household load with the source entities before trusting future planning.
+
+## 4. Check controller output
+
+`sensor.home_energy_controller` reports controller state/reasoning. In `forecast_only`, it should not make inverter changes.
+
+Battery-learning diagnostics may also be available, including charge-curve and learning/efficiency entities.
+
+# Operating modes
+
+## `forecast_only` — recommended first-run mode
+
+Runs the forecasters and controller diagnostics without writing inverter/battery settings. Use this for installation, validation and troubleshooting.
+
+## `minimise_export`
+
+Designed for situations where exporting energy has little or no value. The controller tries to retain/use energy locally while still prioritising avoidance of peak-rate grid import and protection of the configured safety buffer. Overnight charging is sized from the forecast rather than treating the configured minimum SOC as a fixed target.
+
+## `maximise_export`
+
+Runs the normal optimisation strategy with an export-oriented objective while preserving controller safety rules. Use only when exported energy has sufficient value and your tariff/meter inputs are correctly configured.
+
+## `export_generated`
+
+Targets export related to genuine solar generation. Normal forced export does not begin before the configured `export_start`, must stop by the regular off-peak period, and confirmed EV Smart Charging periods do not permit normal forced export. True grid-export metering is preferred for measuring credited export.
+
+## `axle_only`
+
+Leaves normal battery behaviour alone except when Home Energy Manager needs to prepare for or execute a qualifying Axle **Export** event. Temporary settings are restored/replanned after the event. This is useful when Axle support is wanted without the normal daily optimiser.
+
+## Axle overlay in normal modes
+
+Qualifying Axle Export events can overlay `minimise_export`, `maximise_export` and `export_generated`. `forecast_only` remains completely write-free.
+
+# Controller safety behaviour
+
+Home Energy Manager's controller is designed around these priorities:
+
+1. avoid avoidable peak-rate grid import;
+2. preserve battery reserve/safety constraints;
+3. optimise/export surplus energy.
+
+Normal battery operation remains self-consumption/eco mode outside explicitly planned charge, discharge or pause periods.
+
+The controller never uses the inverter charge-target SOC setting as a normal planning control. Charge quantity is controlled by schedule duration/rate. Forced discharge quantity is likewise controlled by duration while preserving the configured reserve target.
+
+# Calibration
+
+When calibration is enabled, Home Energy Manager can periodically plan top-end and low-end battery calibration opportunities.
+
+For low calibration in `minimise_export`, the controller prefers natural household consumption to reduce SOC. Forced discharge/export is used only for the remaining shortfall when required, and the controller plans the recharge within the same cheap period when practical. If there is not enough cheap-rate time for the required low dwell and recharge, calibration is postponed rather than deliberately extending the recharge into peak-rate time.
+
+# Troubleshooting
+
+## The app starts but forecast entities are missing
+
+- Check the app log for an unavailable required entity.
+- Confirm MQTT is working if you expect MQTT-discovered entities.
+- Check **Developer Tools → States** for the entity IDs.
+- Restart the app after correcting configuration.
+
+## ASHP CH forecast is zero or implausible
+
+- Confirm `heat_pump.ch_energy_total_kwh` is cumulative CH-only electrical energy.
+- Confirm outdoor temperature is in °C and represents outdoor conditions.
+- Confirm the weather entity provides hourly forecast temperatures.
+- Check summer-mode thresholds and `sensor.ashp_forecast_kwh_per_degree_day`.
+- Remember that several valid heating days are needed before learned data becomes representative.
+
+## DHW forecast is unavailable
+
+Check:
+
+- DHW energy total;
+- mode, target and hysteresis entities;
+- tank temperature sensors;
+- schedule prefix/entities;
+- `sensor.ashp_dhw_production_source`;
+- `sensor.ashp_forecast_health`;
+- app log messages mentioning DHW thermal readiness/alignment.
+
+CH should remain able to update during a DHW-specific failure.
+
+## Whole-home forecast looks wrong
+
+Check whether you accidentally selected:
+
+- power (`W`) instead of cumulative energy (`kWh`);
+- inverter import/export instead of true grid meters when true meters are available;
+- a load meter that includes/excludes the EV differently from your configured EV measurement;
+- stale or incomplete tariff/Solcast entities.
+
+Compare the source entities with the forecast's current slot before adjusting advanced tuning values.
+
+## Controller is not writing settings
+
+- Confirm the mode is not `forecast_only`.
+- Check `sensor.home_energy_controller` and the app log for the reason.
+- Confirm the forecast is fresh.
+- Confirm all configured inverter entities are available and writable through the underlying integration.
+- Confirm another automation is not immediately overwriting the same settings.
+
+## Unexpected charging/discharging
+
+Return to `forecast_only` first. Then check:
+
+- tariff periods;
+- confirmed EV Smart Charging periods;
+- Axle events;
+- calibration state;
+- safety-buffer and reserve values;
+- the controller reason/status entity and logs.
+
+Do not troubleshoot control behaviour by repeatedly changing advanced deadbands or timing values before the input data has been verified.
+
+# Getting help
+
+When reporting a problem, include:
+
+- the Home Energy Manager version;
+- selected operation mode;
+- the relevant entity states/attributes;
+- the app log covering the event;
+- what you expected to happen and what actually happened.
+
+Do not publish credentials, API keys or other secrets.
