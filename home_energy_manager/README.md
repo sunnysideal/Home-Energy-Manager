@@ -8,11 +8,12 @@ For a new installation:
 
 1. Complete the required entity settings in the app **Configuration** tab.
 2. Keep **Operation mode** set to `forecast_only`.
-3. Start the app.
-4. Check the app log for missing/unavailable entities.
-5. Confirm the ASHP and whole-home forecast entities are updating.
-6. Confirm the forecast values and battery state match what you expect from Home Assistant.
-7. Only then select a battery-control mode if you want Home Energy Manager to write inverter settings.
+3. Disable optional event features you do not use, such as Axle or Power Down handling.
+4. Start the app.
+5. Check the app log for missing/unavailable entities.
+6. Confirm the ASHP and whole-home forecast entities are updating.
+7. Confirm the forecast values and battery state match what you expect from Home Assistant.
+8. Only then select a battery-control mode if you want Home Energy Manager to write inverter settings.
 
 `forecast_only` does not write battery/inverter settings and is the recommended setup and troubleshooting mode.
 
@@ -32,8 +33,9 @@ Available operating modes can minimise export, maximise export, export an amount
 
 ### Optional integrations
 
-- **EV Smart Charging**: supplies confirmed/planned charging information and optional EV energy measurement.
-- **Axle VPP**: reads event information from the Home Assistant Axle integration and can prepare/control the battery for qualifying export events.
+- **EV Smart Charging**: supplies confirmed/planned charging information and optional EV energy measurement. Disable Smart Charging handling if you do not use it.
+- **Axle VPP**: reads event information from the Home Assistant Axle integration and can prepare/control the battery for qualifying export events. Set `axle.enabled` to `false` if you do not use Axle.
+- **Power Down**: supplier event handling controlled by `energy_strategy.power_down_enabled`. Disable it when no matching event/baseline entities are configured.
 - **MQTT**: used for Home Assistant discovery/presentation when a broker is available; explicit broker details are normally unnecessary when Home Assistant can provide the MQTT service.
 
 ## Important safety note
