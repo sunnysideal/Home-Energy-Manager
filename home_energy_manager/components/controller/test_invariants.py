@@ -83,7 +83,7 @@ require("max(configured_floor, protected_soc)" in MINIMISE_RUNTIME,
         "Configured minimise-export SOC is not retained as a floor")
 require("forecast_coverage_complete" in MINIMISE_RUNTIME,
         "Minimise Export peak-protection coverage is not exposed diagnostically")
-require("If forecast coverage is incomplete, the target must fail safe to 100%" in AGENTS,
+require("the regular target must fail safe to 100%" in AGENTS,
         "Minimise Export incomplete-forecast fail-safe is not contractual")
 
 # Axle is a higher-priority plan overlay in all active optimisation modes. It
