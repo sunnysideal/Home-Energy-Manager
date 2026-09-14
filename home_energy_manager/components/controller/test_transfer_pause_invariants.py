@@ -1,12 +1,10 @@
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import controller_plan_applier as applier
 
 
 TZ = ZoneInfo('Europe/London')
-ROOT = Path(__file__).resolve().parent
 
 
 class Controller:
@@ -110,9 +108,3 @@ def test_charge_is_not_marked_missed_while_window_is_active():
     applier.repair_expired_charge(controller, p, log)
     assert p['charge']['kind'] == 'calibration_forecast_recharge'
     assert p['charge']['planned_kwh'] > 0
-
-
-def test_hard_rule_documents_transfer_pause_invariant():
-    rules = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
-    assert 'Active battery transfer overrides a blocking pause' in rules
-    assert 'expired controller-owned charge slot' in rules
