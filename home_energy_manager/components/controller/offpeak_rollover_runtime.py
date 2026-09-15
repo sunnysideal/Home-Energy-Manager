@@ -6,7 +6,7 @@ currently active tariff period, treating it as the following window inverts the
 active-end -> next-start bridge. Patch that helper at module scope so every
 legacy policy calculation uses the same chronological interpretation.
 """
-import legacy_minimise_export_core as runtime
+import minimise_export_core as runtime
 
 core = runtime.core
 _shift_local_day = runtime._shift_local_day
