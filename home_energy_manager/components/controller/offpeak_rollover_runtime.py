@@ -15,11 +15,18 @@ _original_current_regular_offpeak = runtime._current_regular_offpeak
 
 
 def _current_regular_offpeak(controller, next_window):
-    """Return persisted active off-peak only when ``next_window`` is not itself active."""
+    """Return an active window only when the supplied window genuinely follows it."""
     now = controller.now()
     if next_window['start'] <= now < next_window['end']:
         return None
-    return _original_current_regular_offpeak(controller, next_window)
+    active = _original_current_regular_offpeak(controller, next_window)
+    if active and next_window['start'] <= active['end']:
+        core.LOG.warning(
+            'Minimise export off-peak invariant: invalid_interval_order active_end=%s next_start=%s; treating supplied window as current',
+            core.iso(active['end']), core.iso(next_window['start']),
+        )
+        return None
+    return active
 
 
 runtime._current_regular_offpeak = _current_regular_offpeak
