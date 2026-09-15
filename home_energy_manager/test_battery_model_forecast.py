@@ -102,5 +102,6 @@ def test_issue_51_wrapper_is_packaged_after_learning_core():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
     assert "COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/battery_model_core.py" in dockerfile
-    assert "COPY components/home_forecaster/app/battery_model_forecast_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py" in dockerfile
+    assert "COPY components/home_forecaster/app/battery_model_forecast_runtime.py /app/runtime/home_forecaster/battery_model_forecast_runtime.py" in dockerfile
+    assert "COPY components/home_forecaster/app/offpeak_rollover_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py" in dockerfile
     assert "/app/runtime/home_forecaster/axle_pricing_runner.py" in launcher
