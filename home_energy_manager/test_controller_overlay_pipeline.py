@@ -14,7 +14,8 @@ def test_overlay_runtime_has_no_ha_write_path():
 
 def test_runtime_packages_legacy_and_explicit_overlay_layers():
     docker=(ROOT/'Dockerfile').read_text()
-    assert 'minimise_export_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py' in docker
+    assert 'minimise_export_runtime.py /app/runtime/controller/minimise_export_core.py' in docker
+    assert 'offpeak_rollover_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py' in docker
     assert 'controller_overlay_runtime.py /app/runtime/controller/minimise_export_runtime.py' in docker
     assert 'controller_overlay_pipeline.py /app/runtime/controller/controller_overlay_pipeline.py' in docker
 
