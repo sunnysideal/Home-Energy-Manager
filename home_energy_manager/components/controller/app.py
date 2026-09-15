@@ -32,6 +32,7 @@ from controller_battery import (
     band_factor as _band_factor, dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
     learn_top_completion as _learn_top_completion, bootstrap_top_completion as _bootstrap_top_completion,
 )
+from controller_battery_parity import publish_seed as _publish_battery_model_seed, publish_parity as _publish_battery_model_parity
 from controller_tariff import (
     offpeak_from_forecast as _offpeak_from_forecast, persist_offpeak as _persist_offpeak,
     fallback_offpeak as _fallback_offpeak, current_active_offpeak as _current_active_offpeak,
@@ -82,7 +83,14 @@ class Controller(_legacy.Controller):
         if plan and plan.get('intelligent_go', {}).get('confirmed'):
             intelligent = plan['intelligent_go']
             if intelligent.get('pause_mode') == 'PauseDischarge': intelligent['pause_mode'] = 'PauseBoth'
+        if plan:
+            try: await _publish_battery_model_parity(self,plan)
+            except Exception as exc: self.LOG.warning('Battery model parity diagnostics unavailable; production plan unchanged: %s',exc)
         return plan
+    async def publish_learning_entities(self):
+        await super().publish_learning_entities()
+        try: await _publish_battery_model_seed(self)
+        except Exception as exc: self.LOG.warning('Battery model seed diagnostics unavailable: %s',exc)
     async def finish_session(self,n,end_soc):
         active=self.active
         target=as_float((self.confirmed or {}).get('charge_target_soc'))
