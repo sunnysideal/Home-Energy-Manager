@@ -14,9 +14,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import battery_model_forecast_runtime as runtime
+import battery_model_seed
 
 base = runtime.base
 _original_select_controller_offpeak = base.select_controller_offpeak
+_model = getattr(runtime, "model", None)
+_original_publish_battery_model = _model.publish_shadow_model if _model is not None else None
 
 
 def _shift_local_day(value: datetime, days: int, tz) -> datetime:
@@ -57,7 +60,15 @@ def select_controller_offpeak(import_rates, now, tz):
     )
 
 
+def publish_battery_model_with_seed(client, store, cfg, now):
+    _model._ensure_schema(store)
+    battery_model_seed.seed_if_needed(client, store, _model, now)
+    return _original_publish_battery_model(client, store, cfg, now)
+
+
 base.select_controller_offpeak = select_controller_offpeak
+if _model is not None:
+    _model.publish_shadow_model = publish_battery_model_with_seed
 
 if __name__ == "__main__":
     base.main()
