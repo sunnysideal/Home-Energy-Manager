@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Tariff-window rollover guard for Home Forecaster issue #91.
+
+The legacy selector deliberately skips an overnight block once it has started.
+When the following night's tariff has not yet been published, that previously
+fell through to a supplier-specific 23:30-05:30 fallback in the core forecaster.
+This runtime layer keeps tariff interpretation supplier-neutral: it first uses
+the normal selector, then derives the following regular window from an actually
+observed active overnight block. If no regular block can be established from
+tariff data, forecasting fails explicitly rather than inventing tariff hours.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import battery_model_forecast_runtime as runtime
+
+base = runtime.base
+_original_select_controller_offpeak = base.select_controller_offpeak
+
+
+def _shift_local_day(value: datetime, days: int, tz) -> datetime:
+    local = value.astimezone(tz)
+    day = local.date() + timedelta(days=days)
+    return datetime.combine(day, local.timetz().replace(tzinfo=None), tz)
+
+
+def select_controller_offpeak(import_rates, now, tz):
+    """Return the real next regular cheap window without fixed-time fallback."""
+    selected = _original_select_controller_offpeak(import_rates, now, tz)
+    if selected is not None:
+        return selected
+
+    now_utc = now.astimezone(timezone.utc)
+    blocks = sorted(base.find_overnight_blocks(import_rates, tz), key=lambda item: item[0].astimezone(timezone.utc))
+    active = next(
+        (block for block in blocks if block[0].astimezone(timezone.utc) <= now_utc < block[1].astimezone(timezone.utc)),
+        None,
+    )
+    if active is not None:
+        start, end, rate = active
+        # The tariff source has proved the regular active boundaries. Preserve
+        # those wall-clock boundaries when deriving the following daily window.
+        next_start = _shift_local_day(start, 1, tz)
+        next_end = _shift_local_day(end, 1, tz)
+        while next_start.astimezone(timezone.utc) <= now_utc:
+            next_start = _shift_local_day(next_start, 1, tz)
+            next_end = _shift_local_day(next_end, 1, tz)
+        base.LOG.info(
+            "Regular overnight cheap block: following window inferred from active tariff block %s->%s as %s->%s",
+            start.isoformat(), end.isoformat(), next_start.isoformat(), next_end.isoformat(),
+        )
+        return next_start, next_end, rate
+
+    raise base.HAError(
+        "Regular overnight cheap block could not be identified from tariff data; fixed tariff hours are not assumed"
+    )
+
+
+base.select_controller_offpeak = select_controller_offpeak
+
+if __name__ == "__main__":
+    base.main()

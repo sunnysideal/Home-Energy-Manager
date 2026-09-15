@@ -41,6 +41,7 @@ COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_f
 COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/battery_model_core.py
 COPY components/home_forecaster/app/battery_model_forecast_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/home_forecaster/app/battery_model_forecast_runtime.py /app/runtime/home_forecaster/battery_model_forecast_runtime.py
+COPY components/home_forecaster/app/offpeak_rollover_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/axle/main.py /app/runtime/axle/main.py
 COPY components/controller/controller_legacy_core.py /app/runtime/controller/controller_legacy_core.py
 COPY components/controller/app.py /app/runtime/controller/app_core.py
@@ -58,6 +59,8 @@ COPY components/controller/controller_ha.py /app/runtime/controller/controller_h
 COPY components/controller/minimise_export_headroom.py /app/runtime/controller/minimise_export_headroom.py
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_runtime.py
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py
+COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_core.py
+COPY components/controller/offpeak_rollover_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py
 COPY components/controller/controller_overlay_runtime.py /app/runtime/controller/minimise_export_runtime.py
 COPY components/controller/active_runtime.py /app/runtime/controller/app.py
 COPY components/controller/active_runtime.py /app/runtime/controller/active_runtime.py
