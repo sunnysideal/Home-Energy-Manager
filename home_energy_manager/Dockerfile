@@ -37,6 +37,7 @@ COPY components/home_forecaster/app/axle_pricing_runner.py /app/runtime/home_for
 COPY components/home_forecaster/app/battery_idle_runtime.py /app/runtime/home_forecaster/battery_idle_core.py
 COPY components/home_forecaster/app/health_runtime.py /app/runtime/home_forecaster/health_runtime.py
 COPY components/home_forecaster/app/battery_model_contract.py /app/runtime/home_forecaster/battery_model_contract.py
+COPY components/home_forecaster/app/battery_model_seed.py /app/runtime/home_forecaster/battery_model_seed.py
 COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py
 COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/battery_model_core.py
 COPY components/home_forecaster/app/battery_model_forecast_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py
@@ -50,6 +51,7 @@ COPY components/controller/controller_minimise_offpeak.py /app/runtime/controlle
 COPY components/controller/controller_export_generated.py /app/runtime/controller/controller_export_generated.py
 COPY components/controller/controller_power_down.py /app/runtime/controller/controller_power_down.py
 COPY components/controller/controller_battery.py /app/runtime/controller/controller_battery.py
+COPY components/controller/controller_battery_parity.py /app/runtime/controller/controller_battery_parity.py
 COPY components/controller/controller_tariff.py /app/runtime/controller/controller_tariff.py
 COPY components/controller/controller_plan_applier.py /app/runtime/controller/controller_plan_applier.py
 COPY components/controller/controller_overlay_pipeline.py /app/runtime/controller/controller_overlay_pipeline.py
