@@ -1,9 +1,13 @@
 """Battery planning calculations extracted from the controller compatibility core."""
 
+from datetime import timezone
+
 from controller_utils import as_float, clamp, iso, parse_dt
 
 SOC_BANDS=[(0,10),(10,20),(20,30),(30,40),(40,50),(50,60),(60,70),(70,80),(80,90),(90,95),(95,98),(98,99),(99,100)]
 GENERIC={(0,10):.95,(10,20):.95,(20,30):.95,(30,40):.95,(40,50):.95,(50,60):.95,(60,70):.95,(70,80):.95,(80,90):.93,(90,95):.88,(95,98):.78,(98,99):.58,(99,100):.35}
+MODEL_ENTITY='sensor.home_energy_manager_battery_model'
+
 
 def soc_at(c,s,when,attr='forecast_no_slots'):
     best=None
@@ -122,7 +126,59 @@ def bootstrap_top_completion(c):
     c.db.set('top_completion_bootstrap_completed_at',iso(c.now()))
     c.LOG.info('Top charge learning bootstrap: replayed=%d allowance=%.1fmin',replayed,dwell(c))
 
-def charge_minutes(c,soc,target,rate,cap):
+
+def validate_forecaster_model(attrs,now):
+    """Validate the Home Forecaster battery-model contract used for planning."""
+    if not isinstance(attrs,dict) or attrs.get('schema_version')!=1:return False,'schema_version',None
+    stamp=parse_dt(attrs.get('generated_at'))
+    if not stamp:return False,'generated_at',None
+    age=(now.astimezone(timezone.utc)-stamp.astimezone(timezone.utc)).total_seconds()
+    if age>900:return False,'stale',age
+    if age < -60:return False,'future',age
+    bands=attrs.get('bands')
+    if not isinstance(bands,list) or len(bands)!=len(SOC_BANDS):return False,'bands',age
+    try:
+        factors={(float(b['soc_lo']),float(b['soc_hi'])):float(b['effective_factor']) for b in bands}
+        top=float(attrs['top_completion_allowance_minutes']); generic=float(attrs['generic_top_completion_minutes'])
+    except (KeyError,TypeError,ValueError):return False,'fields',age
+    if set(factors)!=set((float(a),float(b)) for a,b in SOC_BANDS) or any(not .05<=x<=1 for x in factors.values()):return False,'band_values',age
+    if generic<0 or top<generic:return False,'top_completion',age
+    return True,'ok',age
+
+
+async def refresh_forecaster_model(c):
+    """Refresh the model selected for this planning pass, falling back deterministically."""
+    previous=(getattr(c,'_battery_model_source',None),getattr(c,'_battery_model_fallback_reason',None))
+    attrs={}; age=None; reason=None
+    try:
+        st=await c.ha.state(MODEL_ENTITY)
+        attrs=st.get('attributes',{}) if st else {}
+        ok,why,age=validate_forecaster_model(attrs,c.now())
+        if not ok:reason='forecaster_model_'+why
+    except Exception as exc:
+        ok=False; reason='forecaster_model_read_error'
+        c.LOG.warning('Battery planning model read failed; using fallback: %s',exc)
+    if ok:
+        c._battery_model_attrs=attrs
+        c._battery_model_source='forecaster'
+        c._battery_model_fallback_reason=None
+        c._battery_model_age_seconds=age
+    else:
+        c._battery_model_attrs=None
+        c._battery_model_source='fallback'
+        c._battery_model_fallback_reason=reason
+        c._battery_model_age_seconds=age
+    current=(c._battery_model_source,c._battery_model_fallback_reason)
+    if current!=previous:
+        if c._battery_model_source=='forecaster':
+            c.LOG.info('Battery planning model source: forecaster entity=%s age=%.1fs',MODEL_ENTITY,age)
+        else:
+            c.LOG.warning('Battery planning model source: fallback reason=%s entity=%s',reason,MODEL_ENTITY)
+    return c._battery_model_source
+
+
+def fallback_charge_minutes(c,soc,target,rate,cap):
+    """Current Controller-owned learned/generic compatibility calculation."""
     if rate<=0 or target<=soc:return 0.0
     mins=0.0
     for lo,hi in SOC_BANDS:
@@ -130,6 +186,26 @@ def charge_minutes(c,soc,target,rate,cap):
         if ov:mins+=(cap*(ov/100))/((rate/1000)*max(.05,band_factor(c,(lo,hi))))*60
     if target>=100:mins+=dwell(c)
     return mins
+
+
+def forecaster_charge_minutes(soc,target,rate,cap,attrs):
+    """Calculate charge duration from a validated Home Forecaster battery model."""
+    if rate<=0 or target<=soc:return 0.0
+    factors={(float(b['soc_lo']),float(b['soc_hi'])):float(b['effective_factor']) for b in attrs['bands']}
+    mins=0.0
+    for lo,hi in SOC_BANDS:
+        ov=max(0,min(target,hi)-max(soc,lo))
+        if ov:mins+=(cap*(ov/100))/((rate/1000)*max(.05,factors[(float(lo),float(hi))]))*60
+    if target>=100:mins+=float(attrs['top_completion_allowance_minutes'])
+    return mins
+
+
+def charge_minutes(c,soc,target,rate,cap):
+    """Authoritative Controller charge-duration calculation with deterministic fallback."""
+    attrs=getattr(c,'_battery_model_attrs',None)
+    if getattr(c,'_battery_model_source',None)=='forecaster' and isinstance(attrs,dict):
+        return forecaster_charge_minutes(soc,target,rate,cap,attrs)
+    return fallback_charge_minutes(c,soc,target,rate,cap)
 
 def latest_charge_start_for_rate(c,s,w,target,rate,cap,reserve,adjust,earliest=None):
     margin=float(c.c.get('charge_safety_margin_minutes',10)); lo=max(w['start'],earliest or w['start']); hi=w['end']
