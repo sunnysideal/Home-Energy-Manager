@@ -31,7 +31,9 @@ Combines normal household load, ASHP demand, PV forecast, battery state/schedule
 
 ### Battery model diagnostics
 
-`sensor.home_energy_manager_battery_model` exposes the Home Forecaster's learned SOC-band charging model. `sensor.home_energy_manager_battery_model_parity` is a read-only diagnostic that compares the charge duration calculated by that model with the Controller's current production calculation whenever a charge is planned. A state of `match` means the two calculations agree within the diagnostic tolerance; `difference` exposes both durations, the delta and the SOC-band factors involved; `unavailable` includes the reason, such as no active charge plan or stale model data. These diagnostics do not alter the Controller plan or write inverter settings.
+`sensor.home_energy_manager_battery_model` exposes the Home Forecaster's learned SOC-band charging model. The Controller uses this model for charge-duration planning when it is valid and fresh. If it is missing, stale, invalid or incompatible, the Controller automatically falls back to its existing local learned/generic calculation without changing inverter-write semantics.
+
+`sensor.home_energy_manager_battery_model_parity` shows which source supplied the Controller calculation (`forecaster` or `fallback`) and compares the resulting charge duration with the currently published Forecaster model whenever a charge is planned. A state of `match` means the calculations agree within the diagnostic tolerance; `difference` exposes both durations, the delta and the SOC-band factors involved; `unavailable` includes the reason, such as no active charge plan or unusable model data.
 
 `sensor.home_energy_manager_battery_model_seed` exposes the Controller model used to initialise the Home Forecaster's learned battery state on a fresh data store. It is an internal hand-off entity and normally needs no user action.
 
