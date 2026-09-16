@@ -121,8 +121,8 @@ def test_candidate_validates_partial_heating_range_chronologically() -> None:
     result = temperature_shadow_analysis(db, now=now, winter_threshold_c=11.0)
     candidate = result["candidate_model"]
     assert candidate["eligible"] is True
-    assert candidate["validated_min_c"] == 6.0
-    assert candidate["validated_max_c"] == 10.0
+    assert candidate["validated_min_c"] == 6.5
+    assert candidate["validated_max_c"] == 8.5
     assert candidate["validated_bands"] == ["6_8c", "8_10c"]
     assert candidate["training_days"] >= 2
     assert candidate["holdout_days"] >= 1
@@ -130,6 +130,23 @@ def test_candidate_validates_partial_heating_range_chronologically() -> None:
     assert candidate["temperature_plus_horizon"] is not None
     assert candidate["selected_model"] in {"temperature_linear", "temperature_plus_horizon", "global_horizon"}
     assert result["bands"]["lt_0c"]["samples"] == 0
+
+
+def test_open_ended_cold_band_does_not_claim_unobserved_range() -> None:
+    db = _db()
+    now = datetime(2027, 1, 20, 12, tzinfo=timezone.utc)
+    for day in range(4):
+        for index in range(30):
+            actual = -3.0 if index % 2 == 0 else 1.0
+            error = 0.9 - 0.1 * actual
+            issued = now - timedelta(days=4 - day, hours=8, minutes=index)
+            _insert(db, issued=issued, horizon=3.0, actual=actual, error=error)
+    result = temperature_shadow_analysis(db, now=now, winter_threshold_c=11.0)
+    candidate = result["candidate_model"]
+    assert candidate["validated_bands"] == ["lt_0c", "0_2c"]
+    assert candidate["validated_min_c"] == -3.0
+    assert candidate["validated_max_c"] == 1.0
+    assert candidate["eligible"] is True
 
 
 def test_candidate_stays_global_horizon_when_temperature_range_is_sparse() -> None:
