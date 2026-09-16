@@ -26,6 +26,8 @@ The package deliberately contains four separate functional components:
 - The controller's own `components/controller/AGENTS.md` remains authoritative for all controller hard rules and MUST be read before controller behaviour is changed.
 - A change to one component should not alter another component's behaviour unless the user explicitly requests a cross-component interface change.
 - Any future architectural change that weakens these separation rules requires explicit user approval first.
+- Home Forecaster is the sole authority for learned physical battery modelling used by simulation and Controller charge-duration planning.
+- Controller MUST NOT maintain or use a generic, learned, persisted, cached, last-known, or other substitute physical battery model when the Home Forecaster battery-model entity is unavailable or invalid. Planning that requires the model must fail closed to the Controller's safe/degraded path.
 
 ## User-facing documentation
 
@@ -59,6 +61,8 @@ Owns:
 - exclusion of EV charging from learned/forecast household load
 - household baseline forecast
 - PV/load/tariff/battery simulation
+- physical battery modelling and learning used by battery simulation
+- the authoritative battery-model entity consumed by Controller charge-duration planning
 - actual/forecast aggregation
 - controller input/discovery payload
 - forecast refresh handshake
@@ -80,13 +84,16 @@ Does not own:
 
 ### Controller
 Owns:
-- battery operating decisions
+- battery operating decisions and policy
 - inverter writes
 - hard controller invariants
-- charge-curve learning
+- consumption of the Home Forecaster battery model for charge-duration planning
+- calibration decisions
 - EV Smart Charging / Power Down / Axle policy
 
 Does not own:
+- physical battery curve/top-completion learning
+- a fallback physical battery model
 - reimplementation of load/PV/ASHP forecasting
 - direct Axle API access or HACS integration internals
 
