@@ -31,6 +31,7 @@ from controller_battery import (
     latest_charge_start_for_rate as _latest_charge_start_for_rate, choose_rate_and_start as _choose_rate_and_start,
     band_factor as _band_factor, dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
     learn_top_completion as _learn_top_completion, bootstrap_top_completion as _bootstrap_top_completion,
+    refresh_forecaster_model as _refresh_forecaster_model,
 )
 from controller_battery_parity import publish_seed as _publish_battery_model_seed, publish_parity as _publish_battery_model_parity
 from controller_tariff import (
@@ -78,6 +79,7 @@ class Controller(_legacy.Controller):
         return plan
     async def plan(self, state, soc, window, fallback=False):
         _bootstrap_top_completion(self)
+        await _refresh_forecaster_model(self)
         plan = await super().plan(state, soc, window, fallback)
         plan = await _coordinate_minimise_offpeak(self, state, plan, window, fallback)
         if plan and plan.get('intelligent_go', {}).get('confirmed'):
