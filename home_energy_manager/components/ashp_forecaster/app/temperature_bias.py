@@ -288,11 +288,16 @@ def temperature_shadow_analysis(
 
     if reliable_range is not None:
         lower, upper, reliable_bands = reliable_range
-        candidate["validated_min_c"] = lower
-        candidate["validated_max_c"] = upper
         candidate["validated_bands"] = reliable_bands
-        span = upper - lower
         model_rows = [row for row in heating_rows if row["actual"] >= lower and row["actual"] < upper]
+        if model_rows:
+            observed_min = min(row["actual"] for row in model_rows)
+            observed_max = max(row["actual"] for row in model_rows)
+            candidate["validated_min_c"] = observed_min
+            candidate["validated_max_c"] = observed_max
+            span = observed_max - observed_min
+        else:
+            span = 0.0
         unique_days = sorted({row["day"] for row in model_rows})
         candidate["training_days"] = 0
         candidate["holdout_days"] = 0
