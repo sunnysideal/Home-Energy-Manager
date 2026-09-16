@@ -23,9 +23,17 @@ For a new installation:
 
 Learns space-heating demand from historical central-heating energy and outdoor temperature. It also models domestic-hot-water demand from the configured DHW state, tank temperatures, target and schedule.
 
-`sensor.ashp_weather_raw_mae` reports weather-forecast accuracy and shadow calibration diagnostics. Home Energy Manager learns a robust 30-day median temperature bias globally and for the 0–6h, 6–12h, 12–24h, 24–36h and 36–48h forecast horizons. Sparse horizon buckets fall back to the global correction, and learned corrections are limited to ±5°C. The sensor exposes raw MAE, shadow-corrected MAE, improvement percentage, sample counts and oldest/newest calibration samples. This is diagnostic only: `calibration_applied` remains `false`, so the learned weather correction does not yet alter the production ASHP forecast.
+`sensor.ashp_weather_raw_mae` reports weather-forecast accuracy and shadow calibration diagnostics. Home Energy Manager learns a robust 30-day median temperature bias globally and for the 0–6h, 6–12h, 12–24h, 24–36h and 36–48h forecast horizons. Sparse horizon buckets fall back to the global correction, and learned corrections are limited to ±5°C. The sensor exposes raw MAE, shadow-corrected MAE, improvement percentage, sample counts and oldest/newest calibration samples.
 
-The app log also records a summary of the learned global bias and shadow improvement plus per-horizon sample counts, learned corrections, fallback source and raw/shadow MAE. This makes it possible to see immediately how much usable observation history has accumulated.
+The same sensor now exposes `temperature_analysis`, which focuses on the temperatures that matter for space heating. The configured **winter-mode threshold** is used as the heating-active boundary rather than assuming a fixed 11°C. Below that threshold the analysis uses fine temperature bands, normally 2°C wide with a narrower threshold-adjacent band when required. Warmer, non-heating ranges use broader bands. Each band reports sample count, distinct observed days, evidence state (`insufficient`, `observational` or `reliable`), median bias and raw/shadow MAE and RMSE.
+
+`temperature_analysis.heating_active` summarises only observations whose actual outdoor temperature is below the configured winter threshold. This lets you judge whether weather calibration improves the part of the forecast that actually drives continuous weather-compensated space heating. A large number of repeated forecast snapshots from one day does not make a band reliable: the evidence state also requires observations across multiple distinct days.
+
+Temperature bands mature independently. Home Energy Manager does not wait for the coldest winter temperatures before validating warmer heating-active ranges. When multiple adjacent heating-active bands become reliable, a temperature-dependent candidate model is fitted only across that observed contiguous range and scored chronologically against later days. Both a temperature-only linear model and a temperature-plus-horizon residual model are evaluated against the existing global/horizon correction. The candidate must improve held-out heating-active MAE by at least 5% before it is identified as the better shadow model, and it is never extrapolated beyond its validated temperature interval.
+
+The app log records the global/horizon summary plus three additional temperature diagnostics: the heating-active summary, the per-temperature-band evidence, and the candidate model's validated range, training/holdout day counts, selected shadow model and held-out improvement.
+
+All weather-bias learning remains diagnostic only. `calibration_applied` remains `false`, so neither the global/horizon correction nor any temperature-dependent candidate changes the production ASHP temperature forecast yet.
 
 ### Whole-home forecast
 
