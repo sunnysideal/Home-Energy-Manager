@@ -29,11 +29,9 @@ from controller_battery import (
     soc_at as _soc_at, forecast_battery_kwh_between as _forecast_battery_kwh_between,
     planned_discharge_soc_adjustment as _planned_discharge_soc_adjustment, projected_charge_start_soc as _projected_charge_start_soc,
     latest_charge_start_for_rate as _latest_charge_start_for_rate, choose_rate_and_start as _choose_rate_and_start,
-    band_factor as _band_factor, dwell as _dwell, charge_minutes as _charge_minutes, choose_rate as _choose_rate,
-    learn_top_completion as _learn_top_completion, bootstrap_top_completion as _bootstrap_top_completion,
+    charge_minutes as _charge_minutes, choose_rate as _choose_rate,
     refresh_forecaster_model as _refresh_forecaster_model,
 )
-from controller_battery_parity import publish_seed as _publish_battery_model_seed, publish_parity as _publish_battery_model_parity
 from controller_tariff import (
     offpeak_from_forecast as _offpeak_from_forecast, persist_offpeak as _persist_offpeak,
     fallback_offpeak as _fallback_offpeak, current_active_offpeak as _current_active_offpeak,
@@ -64,8 +62,6 @@ class Controller(_legacy.Controller):
     def projected_charge_start_soc(self,state,when,adjust,reserve):return _projected_charge_start_soc(self,state,when,adjust,reserve)
     def latest_charge_start_for_rate(self,state,window,target,rate,cap,reserve,adjust,earliest=None):return _latest_charge_start_for_rate(self,state,window,target,rate,cap,reserve,adjust,earliest)
     def choose_rate_and_start(self,state,window,target,cap,reserve,adjust,hw,earliest=None):return _choose_rate_and_start(self,state,window,target,cap,reserve,adjust,hw,earliest)
-    def band_factor(self,band):return _band_factor(self,band)
-    def dwell(self):return _dwell(self)
     def charge_minutes(self,soc,target,rate,cap):return _charge_minutes(self,soc,target,rate,cap)
     def choose_rate(self,soc,target,cap,window,hw):return _choose_rate(self,soc,target,cap,window,hw)
     def offpeak_from_forecast(self,state):return _offpeak_from_forecast(self,state)
@@ -77,27 +73,29 @@ class Controller(_legacy.Controller):
         if self.operation_mode() == 'minimise_export' and plan.get('mode') == 'PauseDischarge':
             plan = dict(plan); plan['mode'] = 'PauseBoth'
         return plan
+    async def learn_pending(self):
+        """Controller no longer owns or updates the physical battery model."""
+        return None
     async def plan(self, state, soc, window, fallback=False):
-        _bootstrap_top_completion(self)
-        await _refresh_forecaster_model(self)
+        source=await _refresh_forecaster_model(self)
+        if source!='forecaster':
+            reason=getattr(self,'_battery_model_unavailable_reason','forecaster_model_unavailable')
+            self.err('planning','battery_model',f'Authoritative Home Forecaster battery model unavailable ({reason}); no Controller fallback is permitted',95)
+            return None
+        self.clear('planning','battery_model')
         plan = await super().plan(state, soc, window, fallback)
         plan = await _coordinate_minimise_offpeak(self, state, plan, window, fallback)
         if plan and plan.get('intelligent_go', {}).get('confirmed'):
             intelligent = plan['intelligent_go']
             if intelligent.get('pause_mode') == 'PauseDischarge': intelligent['pause_mode'] = 'PauseBoth'
-        if plan:
-            try: await _publish_battery_model_parity(self,plan)
-            except Exception as exc: self.LOG.warning('Battery model parity diagnostics unavailable; production plan unchanged: %s',exc)
         return plan
     async def publish_learning_entities(self):
-        await super().publish_learning_entities()
-        try: await _publish_battery_model_seed(self)
-        except Exception as exc: self.LOG.warning('Battery model seed diagnostics unavailable: %s',exc)
+        """Battery learning entities are published by Home Forecaster, not Controller."""
+        return None
     async def finish_session(self,n,end_soc):
-        active=self.active
-        target=as_float((self.confirmed or {}).get('charge_target_soc'))
+        # Keep non-model session/accounting lifecycle in the compatibility core,
+        # but do not run Controller top-completion learning.
         await super().finish_session(n,end_soc)
-        _learn_top_completion(self,n,end_soc,active,target)
     async def apply(self,plan):return await _apply_plan(self,plan,_legacy.LOG)
     async def safe(self,window,cap=None,hw=None):return await _apply_safe_fallback(self,window,cap,hw)
 
