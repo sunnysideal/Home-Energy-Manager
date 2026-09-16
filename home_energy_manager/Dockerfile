@@ -68,6 +68,7 @@ COPY components/controller/active_runtime.py /app/runtime/controller/app.py
 COPY components/controller/active_runtime.py /app/runtime/controller/active_runtime.py
 COPY components/controller/manual_low_calibration_runtime.py /app/runtime/controller/app.py
 COPY components/controller/manual_low_calibration_runtime.py /app/runtime/controller/manual_low_calibration_runtime.py
+COPY components/controller/manual_high_calibration_runtime.py /app/runtime/controller/manual_high_calibration_runtime.py
 COPY components/controller/calibration_charge_runtime.py /app/runtime/controller/app.py
 COPY components/controller/forecast_only.py /app/runtime/controller/forecast_only.py
 COPY components/controller/axle_only.py /app/runtime/controller/axle_only_core.py
