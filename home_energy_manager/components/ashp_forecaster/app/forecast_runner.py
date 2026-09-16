@@ -17,6 +17,7 @@ import main as legacy
 from active_dd_training import build_training as build_active_dd_training
 from common.forecast_slots import production_slot_start
 from dhw_production_selector import SelectionResult, select_dhw_forecast
+from temperature_bias import temperature_shadow_analysis
 from weather_observations import (
     complete_pending_actuals,
     ensure_schema,
@@ -313,11 +314,16 @@ def _fmt_metric(value) -> str:
     return "n/a" if value is None else f"{float(value):.3f}"
 
 
-def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: ZoneInfo) -> None:
+def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, cfg, tz: ZoneInfo) -> None:
     try:
         now = datetime.now(tz)
         scores = raw_forecast_scores(store.db)
         calibration = shadow_weather_calibration(store.db, now=now)
+        temperature_analysis = temperature_shadow_analysis(
+            store.db,
+            now=now,
+            winter_threshold_c=cfg.winter_mode_below_c,
+        )
         overall = scores["overall"]
         state = overall["mae_c"] if overall["mae_c"] is not None else 0.0
         client.set_sensor(
@@ -327,7 +333,7 @@ def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: Zo
                 "friendly_name": "ASHP Weather Raw Forecast MAE",
                 "unit_of_measurement": "°C",
                 "device_class": "temperature",
-                "phase": "shadow_bias_learning",
+                "phase": "temperature_bias_shadow_learning",
                 "samples": overall["samples"],
                 "mean_bias_c": overall["mean_bias_c"],
                 "mae_c": overall["mae_c"],
@@ -350,6 +356,7 @@ def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: Zo
                 "shadow_corrected_mae_c": calibration["shadow_corrected"]["mae_c"],
                 "shadow_improvement_pct": calibration["improvement_pct"],
                 "shadow_horizons": calibration["horizons"],
+                "temperature_analysis": temperature_analysis,
                 "last_updated": now.isoformat(),
             },
         )
@@ -379,6 +386,41 @@ def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: Zo
                 f"rawMAE={_fmt_metric(result['raw_mae_c'])}C,shadowMAE={_fmt_metric(result['shadow_mae_c'])}C"
             )
         LOG.info("Weather bias shadow horizons: %s", "; ".join(horizon_log))
+        heating = temperature_analysis["heating_active"]
+        LOG.info(
+            "Weather temperature shadow: winter_threshold=%.2fC heating_samples=%d days=%d evidence=%s median=%sC raw_MAE=%sC shadow_MAE=%sC improvement=%s%% calibration_applied=false",
+            temperature_analysis["winter_threshold_c"],
+            heating["samples"],
+            heating["distinct_days"],
+            heating["evidence"],
+            _fmt_metric(heating["median_bias_c"]),
+            _fmt_metric(heating["raw_mae_c"]),
+            _fmt_metric(heating["shadow_mae_c"]),
+            _fmt_metric(heating["improvement_pct"]),
+        )
+        band_log = []
+        for name, result in temperature_analysis["bands"].items():
+            band_log.append(
+                f"{name}:n={result['samples']},days={result['distinct_days']},evidence={result['evidence']},"
+                f"median={_fmt_metric(result['median_bias_c'])}C,rawMAE={_fmt_metric(result['raw_mae_c'])}C,"
+                f"shadowMAE={_fmt_metric(result['shadow_mae_c'])}C"
+            )
+        LOG.info("Weather temperature shadow bands: %s", "; ".join(band_log))
+        candidate = temperature_analysis["candidate_model"]
+        LOG.info(
+            "Weather temperature shadow model: eligible=%s range=%s..%sC bands=%s train_days=%d holdout_days=%d selected=%s reason=%s baseline_holdout_MAE=%sC candidate_holdout_MAE=%sC improvement=%s%%",
+            candidate["eligible"],
+            _fmt_metric(candidate["validated_min_c"]),
+            _fmt_metric(candidate["validated_max_c"]),
+            ",".join(candidate["validated_bands"]) or "none",
+            candidate["training_days"],
+            candidate["holdout_days"],
+            candidate["selected_model"],
+            candidate["reason"],
+            _fmt_metric(candidate["baseline_holdout_mae_c"]),
+            _fmt_metric(candidate["best_candidate_holdout_mae_c"]),
+            _fmt_metric(candidate["best_candidate_improvement_pct"]),
+        )
     except Exception as exc:
         LOG.warning("Could not publish weather forecast bias diagnostics: %s", exc)
 
@@ -391,7 +433,7 @@ def _complete_weather_observations(client: HorizonHAClient, store: legacy.Store,
         return
     if completed or unmatched:
         LOG.debug("Weather observation backfill: completed_rows=%d unmatched_targets=%d", completed, unmatched)
-    _publish_weather_scores(client, store, tz)
+    _publish_weather_scores(client, store, cfg, tz)
 
 
 def main() -> None:
