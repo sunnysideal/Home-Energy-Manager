@@ -4,23 +4,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 RUNNER = (ROOT / "components" / "ashp_forecaster" / "app" / "forecast_runner.py").read_text(encoding="utf-8")
 OBSERVATIONS = (ROOT / "components" / "ashp_forecaster" / "app" / "weather_observations.py").read_text(encoding="utf-8")
+TEMPERATURE = (ROOT / "components" / "ashp_forecaster" / "app" / "temperature_bias.py").read_text(encoding="utf-8")
 
 
 def test_shadow_weather_bias_is_diagnostic_only() -> None:
     assert '"calibration_applied": False' in RUNNER
-    assert '"phase": "shadow_bias_learning"' in RUNNER
+    assert '"phase": "temperature_bias_shadow_learning"' in RUNNER
     assert 'shadow_weather_calibration(store.db, now=now)' in RUNNER
+    assert 'temperature_shadow_analysis(' in RUNNER
+    assert 'winter_threshold_c=cfg.winter_mode_below_c' in RUNNER
+    assert '"temperature_analysis": temperature_analysis' in RUNNER
     assert 'global_shadow_correction_c' in RUNNER
     assert 'shadow_corrected_mae_c' in RUNNER
     assert 'shadow_improvement_pct' in RUNNER
 
 
-def test_weather_bias_logging_includes_summary_and_horizons() -> None:
+def test_weather_bias_logging_includes_summary_horizons_and_temperature() -> None:
     assert 'Weather bias shadow: window=%dd samples=%d' in RUNNER
     assert 'global_median=%sC' in RUNNER
     assert 'raw_MAE=%sC shadow_MAE=%sC improvement=%s%%' in RUNNER
     assert 'Weather bias shadow horizons: %s' in RUNNER
     assert "source={result['correction_source']}" in RUNNER
+    assert 'Weather temperature shadow: winter_threshold=%.2fC' in RUNNER
+    assert 'Weather temperature shadow bands: %s' in RUNNER
+    assert 'Weather temperature shadow model: eligible=%s' in RUNNER
 
 
 def test_shadow_learner_has_safety_floors_and_clamp() -> None:
@@ -30,3 +37,12 @@ def test_shadow_learner_has_safety_floors_and_clamp() -> None:
     assert 'DEFAULT_MAX_ABS_BIAS_C = 5.0' in OBSERVATIONS
     assert 'correction_source = "global_fallback"' in OBSERVATIONS
     assert 'correction_source = "insufficient_samples"' in OBSERVATIONS
+
+
+def test_temperature_learner_requires_distinct_days_and_stays_shadow_only() -> None:
+    assert 'DEFAULT_MIN_RELIABLE_DAYS = 3' in TEMPERATURE
+    assert 'DEFAULT_MIN_MODEL_IMPROVEMENT_PCT = 5.0' in TEMPERATURE
+    assert '"calibration_applied": False' in TEMPERATURE
+    assert '"evidence": _evidence_state' in TEMPERATURE
+    assert '"selected_model": "global_horizon"' in TEMPERATURE
+    assert 'heldout_heating_active_improvement_met' in TEMPERATURE
