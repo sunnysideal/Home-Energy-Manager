@@ -52,7 +52,6 @@ COPY components/controller/controller_minimise_offpeak.py /app/runtime/controlle
 COPY components/controller/controller_export_generated.py /app/runtime/controller/controller_export_generated.py
 COPY components/controller/controller_power_down.py /app/runtime/controller/controller_power_down.py
 COPY components/controller/controller_battery.py /app/runtime/controller/controller_battery.py
-COPY components/controller/controller_battery_parity.py /app/runtime/controller/controller_battery_parity.py
 COPY components/controller/controller_tariff.py /app/runtime/controller/controller_tariff.py
 COPY components/controller/controller_plan_applier.py /app/runtime/controller/controller_plan_applier.py
 COPY components/controller/controller_overlay_pipeline.py /app/runtime/controller/controller_overlay_pipeline.py
