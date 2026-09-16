@@ -3,11 +3,11 @@
 import asyncio
 from datetime import timedelta
 
-import manual_low_calibration_runtime as runtime
+import manual_high_calibration_runtime as runtime
 
 core = runtime.core
-_legacy_runtime = runtime._legacy_runtime
-_original_strategy = runtime._natural_first_calibration_discharge
+_legacy_runtime = runtime.runtime._legacy_runtime
+_original_strategy = runtime.runtime._natural_first_calibration_discharge
 
 
 def _strategy_with_forecast_recharge(controller, plan, window, capacity, reserve, max_discharge, forecast):
