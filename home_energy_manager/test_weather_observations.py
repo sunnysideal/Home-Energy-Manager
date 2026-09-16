@@ -9,6 +9,7 @@ from components.ashp_forecaster.app.weather_observations import (
     ensure_schema,
     raw_forecast_scores,
     record_forecast_snapshot,
+    shadow_weather_calibration,
 )
 
 
@@ -81,6 +82,10 @@ def test_unmatched_target_remains_pending() -> None:
 
 def _insert_scored(db: sqlite3.Connection, horizon: float, error: float, suffix: int) -> None:
     issued = datetime(2026, 9, 1, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=suffix)
+    _insert_scored_at(db, horizon, error, issued)
+
+
+def _insert_scored_at(db: sqlite3.Connection, horizon: float, error: float, issued: datetime) -> None:
     target = issued + timedelta(hours=horizon)
     forecast = 10.0
     actual = forecast + error
@@ -127,3 +132,78 @@ def test_raw_scores_empty_database_is_explicitly_untrained() -> None:
     scores = raw_forecast_scores(_db())
     assert scores["overall"] == {"samples": 0, "mean_bias_c": None, "mae_c": None, "rmse_c": None}
     assert all(bucket["samples"] == 0 for bucket in scores["horizons"].values())
+
+
+def test_shadow_calibration_uses_robust_median_not_outlier_mean() -> None:
+    db = _db()
+    now = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc)
+    errors = [1.0, 1.1, 0.9, 1.0, 20.0]
+    for index, error in enumerate(errors):
+        _insert_scored_at(db, 3.0, error, now - timedelta(hours=8, minutes=index))
+    result = shadow_weather_calibration(db, now=now, min_global_samples=3, min_horizon_samples=3)
+    assert result["global_median_bias_c"] == 1.0
+    assert result["global_correction_c"] == 1.0
+    assert result["horizons"]["0_6h"]["correction_source"] == "horizon"
+    assert result["horizons"]["0_6h"]["correction_c"] == 1.0
+
+
+def test_shadow_calibration_filters_to_rolling_window() -> None:
+    db = _db()
+    now = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc)
+    _insert_scored_at(db, 1.0, 4.0, now - timedelta(days=40, hours=1))
+    for index in range(3):
+        _insert_scored_at(db, 1.0, -0.5, now - timedelta(days=2, hours=index + 2))
+    result = shadow_weather_calibration(db, now=now, window_days=30, min_global_samples=2, min_horizon_samples=2)
+    assert result["samples"] == 3
+    assert result["global_median_bias_c"] == -0.5
+    assert result["oldest_sample_at"] is not None
+    assert "2026-08" not in result["oldest_sample_at"]
+
+
+def test_sparse_horizon_falls_back_to_global_bias() -> None:
+    db = _db()
+    now = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc)
+    for index in range(6):
+        _insert_scored_at(db, 3.0, 0.8, now - timedelta(hours=12 + index))
+    _insert_scored_at(db, 30.0, -3.0, now - timedelta(days=2))
+    result = shadow_weather_calibration(db, now=now, min_global_samples=4, min_horizon_samples=3)
+    sparse = result["horizons"]["24_36h"]
+    assert sparse["samples"] == 1
+    assert sparse["usable"] is False
+    assert sparse["correction_source"] == "global_fallback"
+    assert sparse["correction_c"] == 0.8
+
+
+def test_shadow_calibration_clamps_extreme_bias() -> None:
+    db = _db()
+    now = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc)
+    for index in range(4):
+        _insert_scored_at(db, 8.0, 12.0, now - timedelta(hours=20 + index))
+    result = shadow_weather_calibration(db, now=now, min_global_samples=2, min_horizon_samples=2, max_abs_bias_c=5.0)
+    assert result["global_median_bias_c"] == 12.0
+    assert result["global_correction_c"] == 5.0
+    assert result["horizons"]["6_12h"]["correction_c"] == 5.0
+
+
+def test_shadow_scoring_reports_improvement_without_applying_calibration() -> None:
+    db = _db()
+    now = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc)
+    for index, error in enumerate([1.0, 1.2, 0.8, 1.1]):
+        _insert_scored_at(db, 18.0, error, now - timedelta(days=1, hours=index + 18))
+    result = shadow_weather_calibration(db, now=now, min_global_samples=2, min_horizon_samples=2)
+    assert result["calibration_applied"] is False
+    assert result["raw"]["mae_c"] > result["shadow_corrected"]["mae_c"]
+    assert result["improvement_pct"] > 0
+    assert result["horizons"]["12_24h"]["shadow_mae_c"] < result["horizons"]["12_24h"]["raw_mae_c"]
+
+
+def test_shadow_calibration_ignores_beyond_48h_and_pending_rows() -> None:
+    db = _db()
+    now = datetime(2026, 9, 16, 9, 0, tzinfo=timezone.utc)
+    _insert_scored_at(db, 49.0, 10.0, now - timedelta(days=2, hours=49))
+    issued = now - timedelta(hours=2)
+    record_forecast_snapshot(db, issued_at=issued, source_entity="weather.home", points=[(issued + timedelta(hours=1), 99.0)])
+    result = shadow_weather_calibration(db, now=now, min_global_samples=1, min_horizon_samples=1)
+    assert result["samples"] == 0
+    assert result["global_bias_usable"] is False
+    assert result["global_correction_c"] == 0.0
