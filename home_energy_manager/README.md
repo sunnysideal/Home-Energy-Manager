@@ -23,6 +23,10 @@ For a new installation:
 
 Learns space-heating demand from historical central-heating energy and outdoor temperature. It also models domestic-hot-water demand from the configured DHW state, tank temperatures, target and schedule.
 
+`sensor.ashp_weather_raw_mae` reports weather-forecast accuracy and shadow calibration diagnostics. Home Energy Manager learns a robust 30-day median temperature bias globally and for the 0–6h, 6–12h, 12–24h, 24–36h and 36–48h forecast horizons. Sparse horizon buckets fall back to the global correction, and learned corrections are limited to ±5°C. The sensor exposes raw MAE, shadow-corrected MAE, improvement percentage, sample counts and oldest/newest calibration samples. This is diagnostic only: `calibration_applied` remains `false`, so the learned weather correction does not yet alter the production ASHP forecast.
+
+The app log also records a summary of the learned global bias and shadow improvement plus per-horizon sample counts, learned corrections, fallback source and raw/shadow MAE. This makes it possible to see immediately how much usable observation history has accumulated.
+
 ### Whole-home forecast
 
 Combines normal household load, ASHP demand, PV forecast, battery state/schedules, tariff data and optional EV Smart Charging into a forward simulation of load, SOC, import, export and cost.

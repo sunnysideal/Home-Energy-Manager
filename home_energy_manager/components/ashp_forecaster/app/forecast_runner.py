@@ -22,6 +22,7 @@ from weather_observations import (
     ensure_schema,
     raw_forecast_scores,
     record_forecast_snapshot,
+    shadow_weather_calibration,
 )
 
 LOG = logging.getLogger("ashp_forecast")
@@ -308,9 +309,15 @@ def _publish_degraded_ch_forecast(
     )
 
 
+def _fmt_metric(value) -> str:
+    return "n/a" if value is None else f"{float(value):.3f}"
+
+
 def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: ZoneInfo) -> None:
     try:
+        now = datetime.now(tz)
         scores = raw_forecast_scores(store.db)
+        calibration = shadow_weather_calibration(store.db, now=now)
         overall = scores["overall"]
         state = overall["mae_c"] if overall["mae_c"] is not None else 0.0
         client.set_sensor(
@@ -320,7 +327,7 @@ def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: Zo
                 "friendly_name": "ASHP Weather Raw Forecast MAE",
                 "unit_of_measurement": "°C",
                 "device_class": "temperature",
-                "phase": "baseline_observation_only",
+                "phase": "shadow_bias_learning",
                 "samples": overall["samples"],
                 "mean_bias_c": overall["mean_bias_c"],
                 "mae_c": overall["mae_c"],
@@ -329,7 +336,21 @@ def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: Zo
                 "max_horizon_hours": scores["max_horizon_hours"],
                 "error_definition": "actual_minus_forecast",
                 "calibration_applied": False,
-                "last_updated": datetime.now(tz).isoformat(),
+                "calibration_window_days": calibration["window_days"],
+                "calibration_samples": calibration["samples"],
+                "calibration_oldest_sample_at": calibration["oldest_sample_at"],
+                "calibration_newest_sample_at": calibration["newest_sample_at"],
+                "calibration_min_global_samples": calibration["min_global_samples"],
+                "calibration_min_horizon_samples": calibration["min_horizon_samples"],
+                "calibration_max_abs_bias_c": calibration["max_abs_bias_c"],
+                "global_median_bias_c": calibration["global_median_bias_c"],
+                "global_bias_usable": calibration["global_bias_usable"],
+                "global_shadow_correction_c": calibration["global_correction_c"],
+                "raw_window_mae_c": calibration["raw"]["mae_c"],
+                "shadow_corrected_mae_c": calibration["shadow_corrected"]["mae_c"],
+                "shadow_improvement_pct": calibration["improvement_pct"],
+                "shadow_horizons": calibration["horizons"],
+                "last_updated": now.isoformat(),
             },
         )
         if overall["samples"]:
@@ -337,8 +358,29 @@ def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, tz: Zo
                 "Weather raw baseline: samples=%d bias=%.3fC MAE=%.3fC RMSE=%.3fC",
                 overall["samples"], overall["mean_bias_c"], overall["mae_c"], overall["rmse_c"],
             )
+        LOG.info(
+            "Weather bias shadow: window=%dd samples=%d oldest=%s newest=%s global_median=%sC usable=%s correction=%sC raw_MAE=%sC shadow_MAE=%sC improvement=%s%% calibration_applied=false",
+            calibration["window_days"],
+            calibration["samples"],
+            calibration["oldest_sample_at"] or "none",
+            calibration["newest_sample_at"] or "none",
+            _fmt_metric(calibration["global_median_bias_c"]),
+            calibration["global_bias_usable"],
+            _fmt_metric(calibration["global_correction_c"]),
+            _fmt_metric(calibration["raw"]["mae_c"]),
+            _fmt_metric(calibration["shadow_corrected"]["mae_c"]),
+            _fmt_metric(calibration["improvement_pct"]),
+        )
+        horizon_log = []
+        for name, result in calibration["horizons"].items():
+            horizon_log.append(
+                f"{name}:n={result['samples']},median={_fmt_metric(result['median_bias_c'])}C,"
+                f"correction={_fmt_metric(result['correction_c'])}C,source={result['correction_source']},"
+                f"rawMAE={_fmt_metric(result['raw_mae_c'])}C,shadowMAE={_fmt_metric(result['shadow_mae_c'])}C"
+            )
+        LOG.info("Weather bias shadow horizons: %s", "; ".join(horizon_log))
     except Exception as exc:
-        LOG.warning("Could not publish raw weather forecast baseline diagnostics: %s", exc)
+        LOG.warning("Could not publish weather forecast bias diagnostics: %s", exc)
 
 
 def _complete_weather_observations(client: HorizonHAClient, store: legacy.Store, cfg, tz: ZoneInfo) -> None:

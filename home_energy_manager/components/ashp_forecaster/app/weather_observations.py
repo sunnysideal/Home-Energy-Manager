@@ -3,12 +3,17 @@ from __future__ import annotations
 import math
 import sqlite3
 from datetime import datetime, timedelta
+from statistics import median
 from typing import Any, Callable, Iterable
 
 
 DEFAULT_MATCH_TOLERANCE_MINUTES = 15
 DEFAULT_BACKFILL_LOOKBACK_HOURS = 48
 DEFAULT_SCORE_MAX_HORIZON_HOURS = 48.0
+DEFAULT_CALIBRATION_WINDOW_DAYS = 30
+DEFAULT_MIN_GLOBAL_SAMPLES = 24
+DEFAULT_MIN_HORIZON_SAMPLES = 12
+DEFAULT_MAX_ABS_BIAS_C = 5.0
 HORIZON_BUCKETS = (
     ("0_6h", 0.0, 6.0),
     ("6_12h", 6.0, 12.0),
@@ -205,6 +210,16 @@ def _score_errors(errors: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def _clamp_bias(value: float, limit: float) -> float:
+    return max(-abs(float(limit)), min(abs(float(limit)), float(value)))
+
+
+def _improvement_pct(raw_mae: float | None, corrected_mae: float | None) -> float | None:
+    if raw_mae is None or corrected_mae is None or raw_mae <= 0:
+        return None
+    return (raw_mae - corrected_mae) / raw_mae * 100.0
+
+
 def raw_forecast_scores(
     db: sqlite3.Connection,
     *,
@@ -254,4 +269,123 @@ def raw_forecast_scores(
         "max_horizon_hours": float(max_horizon_hours),
         "overall": overall,
         "horizons": buckets,
+    }
+
+
+def shadow_weather_calibration(
+    db: sqlite3.Connection,
+    *,
+    now: datetime,
+    window_days: int = DEFAULT_CALIBRATION_WINDOW_DAYS,
+    min_global_samples: int = DEFAULT_MIN_GLOBAL_SAMPLES,
+    min_horizon_samples: int = DEFAULT_MIN_HORIZON_SAMPLES,
+    max_abs_bias_c: float = DEFAULT_MAX_ABS_BIAS_C,
+    max_horizon_hours: float = DEFAULT_SCORE_MAX_HORIZON_HOURS,
+) -> dict[str, Any]:
+    """Learn robust weather bias and score it in shadow without changing production.
+
+    Bias uses the issue's ``actual - forecast`` sign convention. The robust learned
+    correction is the median completed error in the rolling window, clamped to a
+    conservative absolute limit. Horizon buckets with too few samples fall back to
+    the global median when the global sample floor is met; otherwise shadow
+    correction is zero until enough evidence exists.
+    """
+    ensure_schema(db)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+
+    effective_window_days = max(1, int(window_days))
+    cutoff = now - timedelta(days=effective_window_days)
+    rows = db.execute(
+        """
+        SELECT horizon_hours, error_c, actual_observed_at
+        FROM weather_forecast_observations
+        WHERE actual_temperature_c IS NOT NULL
+          AND error_c IS NOT NULL
+          AND actual_observed_at IS NOT NULL
+          AND actual_observed_at >= ?
+          AND actual_observed_at <= ?
+          AND horizon_hours >= 0
+          AND horizon_hours <= ?
+        ORDER BY actual_observed_at, issued_at, target_ts
+        """,
+        (_iso(cutoff), _iso(now), float(max_horizon_hours)),
+    ).fetchall()
+
+    samples: list[tuple[float, float, datetime]] = []
+    for horizon, error, observed_at in rows:
+        try:
+            h = float(horizon)
+            e = float(error)
+            stamp = _parse_dt(str(observed_at))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(h) and math.isfinite(e):
+            samples.append((h, e, stamp))
+
+    errors = [error for _, error, _ in samples]
+    raw_overall = _score_errors(errors)
+    global_median = median(errors) if errors else None
+    global_usable = len(errors) >= max(1, int(min_global_samples))
+    global_correction = (
+        _clamp_bias(float(global_median), max_abs_bias_c)
+        if global_median is not None and global_usable
+        else 0.0
+    )
+
+    horizon_results: dict[str, dict[str, Any]] = {}
+    corrected_errors: list[float] = []
+    for name, lower, upper in HORIZON_BUCKETS:
+        bucket = [(error, observed) for horizon, error, observed in samples if horizon >= lower and horizon < upper]
+        bucket_errors = [error for error, _ in bucket]
+        bucket_median = median(bucket_errors) if bucket_errors else None
+        bucket_usable = len(bucket_errors) >= max(1, int(min_horizon_samples))
+        if bucket_median is not None and bucket_usable:
+            correction = _clamp_bias(float(bucket_median), max_abs_bias_c)
+            correction_source = "horizon"
+        elif global_usable:
+            correction = global_correction
+            correction_source = "global_fallback"
+        else:
+            correction = 0.0
+            correction_source = "insufficient_samples"
+        bucket_corrected = [error - correction for error in bucket_errors]
+        corrected_errors.extend(bucket_corrected)
+        raw_score = _score_errors(bucket_errors)
+        corrected_score = _score_errors(bucket_corrected)
+        horizon_results[name] = {
+            "samples": len(bucket_errors),
+            "median_bias_c": bucket_median,
+            "usable": bucket_usable,
+            "correction_c": correction,
+            "correction_source": correction_source,
+            "raw_mean_bias_c": raw_score["mean_bias_c"],
+            "raw_mae_c": raw_score["mae_c"],
+            "raw_rmse_c": raw_score["rmse_c"],
+            "shadow_mean_bias_c": corrected_score["mean_bias_c"],
+            "shadow_mae_c": corrected_score["mae_c"],
+            "shadow_rmse_c": corrected_score["rmse_c"],
+            "improvement_pct": _improvement_pct(raw_score["mae_c"], corrected_score["mae_c"]),
+        }
+
+    corrected_overall = _score_errors(corrected_errors)
+    observed_times = [stamp for _, _, stamp in samples]
+    return {
+        "calibration_applied": False,
+        "window_days": effective_window_days,
+        "window_start": _iso(cutoff),
+        "window_end": _iso(now),
+        "samples": len(samples),
+        "oldest_sample_at": _iso(min(observed_times)) if observed_times else None,
+        "newest_sample_at": _iso(max(observed_times)) if observed_times else None,
+        "min_global_samples": max(1, int(min_global_samples)),
+        "min_horizon_samples": max(1, int(min_horizon_samples)),
+        "max_abs_bias_c": abs(float(max_abs_bias_c)),
+        "global_median_bias_c": global_median,
+        "global_bias_usable": global_usable,
+        "global_correction_c": global_correction,
+        "raw": raw_overall,
+        "shadow_corrected": corrected_overall,
+        "improvement_pct": _improvement_pct(raw_overall["mae_c"], corrected_overall["mae_c"]),
+        "horizons": horizon_results,
     }
