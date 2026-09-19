@@ -64,6 +64,21 @@ class TariffEditorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             editor.save_windows([self.window()] * 65, "Europe/London")
 
+    def test_edit_middle_slot_preserves_neighbours(self):
+        editor.save_windows([self.window(self.start, self.start + timedelta(hours=2))], "Europe/London")
+        middle = self.start + timedelta(minutes=30)
+        saved = editor.set_slot_price(middle.isoformat(), (middle + timedelta(minutes=30)).isoformat(), 12.5, "Europe/London")
+        self.assertEqual([w["rate_p"] for w in saved], [0, 12.5, 0])
+        self.assertEqual(len(saved), 3)
+        restored = editor.set_slot_price(middle.isoformat(), (middle + timedelta(minutes=30)).isoformat(), None, "Europe/London")
+        self.assertEqual(len(restored), 2)
+        self.assertEqual([w["rate_p"] for w in restored], [0, 0])
+
+    def test_reject_negative_or_non_finite_rate(self):
+        for price in (-1, float("nan"), float("inf"), True):
+            with self.subTest(price=price), self.assertRaises(ValueError):
+                editor.save_windows([{**self.window(), "rate_p": price}], "Europe/London")
+
     def test_ingress_ui_contains_working_controls(self):
         for label in ('type="datetime-local"', 'Add period', 'Remove', 'api/windows'):
             self.assertIn(label, editor.PAGE)
