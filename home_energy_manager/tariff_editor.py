@@ -6,7 +6,8 @@ import tempfile
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 STORE = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
@@ -155,5 +156,40 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+
+def _ha_tariff_command_loop():
+    """Poll a Home Assistant input_text command helper; no custom integration needed."""
+    import time
+    token = os.getenv("SUPERVISOR_TOKEN", "")
+    entity_id = os.getenv("TARIFF_EDIT_COMMAND_ENTITY", "input_text.home_energy_tariff_edit")
+    if not token:
+        return
+    last_id = None
+    while True:
+        try:
+            request = Request(
+                "http://supervisor/core/api/states/" + entity_id,
+                headers={"Authorization": "Bearer " + token},
+            )
+            with urlopen(request, timeout=5) as response:
+                state = json.load(response)
+            value = state.get("state", "")
+            if value and value not in ("unknown", "unavailable"):
+                command = json.loads(value)
+                command_id = command.get("id")
+                if command_id and command_id != last_id:
+                    last_id = command_id
+                    start = datetime.fromisoformat(command["start"])
+                    if start.tzinfo is None or start.utcoffset() is None:
+                        raise ValueError("Slot start requires UTC offset")
+                    end = (start.astimezone(timezone.utc) + timedelta(minutes=30)).isoformat()
+                    set_slot_price(command["start"], end, command.get("rate_p"), os.getenv("HA_TIMEZONE", "Europe/London"))
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Tariff edit command poll: %s", exc)
+        time.sleep(2)
+
+
 if __name__ == "__main__":
+    Thread(target=_ha_tariff_command_loop, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", 8099), Handler).serve_forever()
