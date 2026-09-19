@@ -74,6 +74,21 @@ class TariffEditorTests(unittest.TestCase):
         self.assertEqual(len(restored), 2)
         self.assertEqual([w["rate_p"] for w in restored], [0, 0])
 
+    def test_mqtt_command_save_and_restore(self):
+        start = self.start.isoformat()
+        with patch.dict(editor.os.environ, {"HA_TIMEZONE": "Europe/London"}):
+            saved = editor.apply_tariff_command(json.dumps({"id": "save-1", "start": start, "rate_p": 12.5}))
+            self.assertEqual(saved["status"], "saved")
+            self.assertEqual(saved["windows"][0]["rate_p"], 12.5)
+            restored = editor.apply_tariff_command(json.dumps({"id": "restore-1", "start": start, "rate_p": None}))
+            self.assertEqual(restored["windows"], [])
+
+    def test_mqtt_command_rejects_missing_price_and_naive_time(self):
+        with self.assertRaises(ValueError):
+            editor.apply_tariff_command(json.dumps({"id": "missing", "start": self.start.isoformat()}))
+        with self.assertRaises(ValueError):
+            editor.apply_tariff_command(json.dumps({"id": "naive", "start": "2026-09-20T09:00:00", "rate_p": 0}))
+
     def test_reject_negative_or_non_finite_rate(self):
         for price in (-1, float("nan"), float("inf"), True):
             with self.subTest(price=price), self.assertRaises(ValueError):
