@@ -1,9 +1,14 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
+import importlib.util
 import json
 
-import main as forecaster
+MODULE_PATH = Path(__file__).with_name('main.py')
+SPEC = importlib.util.spec_from_file_location('effective_import_price_forecaster', MODULE_PATH)
+forecaster = importlib.util.module_from_spec(SPEC)
+import sys
+sys.modules[SPEC.name] = forecaster
+SPEC.loader.exec_module(forecaster)
 
 
 BASE = datetime(2026, 9, 19, 12, tzinfo=timezone.utc)
