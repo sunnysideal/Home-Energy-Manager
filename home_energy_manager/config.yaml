@@ -90,6 +90,7 @@ options:
     export_current_rate: ''
     import_current_day_rates: ''
     import_next_day_rates: ''
+    manual_import_overrides_entity: ''
     export_current_day_rates: ''
     export_next_day_rates: ''
   solar:
@@ -249,6 +250,7 @@ schema:
     export_current_rate: str?
     import_current_day_rates: str?
     import_next_day_rates: str?
+    manual_import_overrides_entity: str?
     export_current_day_rates: str?
     export_next_day_rates: str?
   solar:
