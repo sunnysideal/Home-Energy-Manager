@@ -7,6 +7,7 @@ class HomeEnergyForecastCard extends HTMLElement {
       edit_entity:"text.home_energy_manager_tariff_edit",
       result_entity:"sensor.home_energy_manager_tariff_edit_result"};
     this.pending=null;
+    this._lastRenderKey=null;
   }
   static getConfigForm() {return {schema:[
     {name:"entity",required:true,selector:{entity:{domain:"sensor"}}},
@@ -24,6 +25,11 @@ class HomeEnergyForecastCard extends HTMLElement {
   escape(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
   render(){
     if(!this._hass||!this.isConnected)return;
+    const forecastState=this._hass.states[this.config.entity];
+    const resultState=this._hass.states[this.config.result_entity];
+    const renderKey=[forecastState?.last_updated,resultState?.last_updated,this.config.entity,this.config.rows,this.config.title].join("|");
+    if(this._lastRenderKey===renderKey&&this.shadowRoot.querySelector("ha-card"))return;
+    this._lastRenderKey=renderKey;
     const entity=this._hass.states[this.config.entity];
     const rows=entity?.attributes?.forecast?.slice(0,Math.max(1,Math.min(96,Number(this.config.rows)||16)))||[];
     const ack=this._hass.states[this.config.result_entity]?.attributes;
@@ -112,6 +118,7 @@ class HomeEnergyForecastCard extends HTMLElement {
       dialog.querySelector(".message").textContent="Enter a valid non-negative price";return;}
     const id=Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
     this.pending={id,saving:true,error:null};
+    this._lastRenderKey=null;
     dialog.querySelector(".message").textContent="Saving…";
     dialog.querySelectorAll("button,input").forEach(el=>el.disabled=true);
     try{
