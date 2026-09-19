@@ -229,7 +229,38 @@ def _mqtt_tariff_commands():
         Thread(target=process_message, args=(bytes(message.payload),), daemon=True).start()
 
     publisher._client.on_message = on_message
-    publisher._client.subscribe(command_topic, qos=1)
+
+    # MQTT subscriptions are session-scoped. Restore the command subscription
+    # after a broker reconnect, and republish discovery/availability as needed.
+    original_on_connect = publisher._client.on_connect
+
+    def on_connect(client, userdata, flags, reason_code, *args):
+        original_on_connect(client, userdata, flags, reason_code, *args)
+        try:
+            successful = int(reason_code) == 0
+        except (ValueError, TypeError):
+            successful = str(reason_code).lower() in ("success", "0")
+        if not successful:
+            return
+
+        def restore_subscription():
+            try:
+                result, _ = client.subscribe(command_topic, qos=1)
+                if result != 0:
+                    raise RuntimeError(f"MQTT subscribe returned {result}")
+                # Discovery is retained; reannounce the editor on reconnect
+                # in case the broker lost its retained discovery records.
+                publisher._publish_raw(discovery, json.dumps(config), retain=True)
+                publisher._publish_raw(publisher.availability_topic, "online", retain=True)
+            except Exception:
+                LOG.exception("Could not restore tariff edit MQTT subscription")
+
+        Thread(target=restore_subscription, daemon=True).start()
+
+    publisher._client.on_connect = on_connect
+    result, _ = publisher._client.subscribe(command_topic, qos=1)
+    if result != 0:
+        raise RuntimeError(f"Initial tariff edit MQTT subscribe returned {result}")
     while True:
         time.sleep(60)
 
