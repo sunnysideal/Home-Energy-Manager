@@ -1,11 +1,16 @@
 """Home Assistant ingress editor for dated free-import windows."""
 import json
+import math
 import os
 import tempfile
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
+import logging
+import time
+from common.mqtt import MQTTPublisher
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 STORE = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
@@ -39,15 +44,20 @@ def validate(windows, tz_name):
             raise ValueError("Period must have a positive duration of at most seven days")
         if a > now + timedelta(days=366):
             raise ValueError("Period is more than one year ahead")
-        parsed.append((a, b))
+        price = item.get('rate_p', 0)
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price < 0:
+            raise ValueError('Price must be a finite non-negative number')
+        parsed.append((a, b, float(price)))
     parsed.sort()
     merged = []
-    for a, b in parsed:
-        if merged and a <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(b, merged[-1][1]))
+    for a, b, price in parsed:
+        if merged and a < merged[-1][1] and price != merged[-1][2]:
+            raise ValueError('Overlapping periods with different prices')
+        if merged and a <= merged[-1][1] and price == merged[-1][2]:
+            merged[-1] = (merged[-1][0], max(b, merged[-1][1]), price)
         else:
-            merged.append((a, b))
-    return [{"start": a.isoformat(), "end": b.isoformat(), "rate_p": 0} for a, b in merged]
+            merged.append((a, b, price))
+    return [{"start": a.isoformat(), "end": b.isoformat(), "rate_p": price} for a, b, price in merged]
 
 
 def save_windows(windows, tz_name):
@@ -65,6 +75,36 @@ def save_windows(windows, tz_name):
             if os.path.exists(name):
                 os.unlink(name)
     return valid
+
+
+
+def set_slot_price(start_text, end_text, price, tz_name):
+    """Replace only the selected interval; retain prices on either side."""
+    raw_start = datetime.fromisoformat(start_text)
+    raw_end = datetime.fromisoformat(end_text)
+    if raw_start.tzinfo is None or raw_end.tzinfo is None or raw_start.utcoffset() is None or raw_end.utcoffset() is None:
+        raise ValueError("Slot timestamps require a timezone offset")
+    start = raw_start.astimezone(timezone.utc)
+    end = raw_end.astimezone(timezone.utc)
+    if end <= start or end - start != timedelta(minutes=30):
+        raise ValueError("Select exactly one half-hour slot")
+    if price is not None and (isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price < 0):
+        raise ValueError("Price must be a finite non-negative number")
+    with LOCK:
+        retained = []
+        for window in read_windows():
+            a = datetime.fromisoformat(window["start"]).astimezone(timezone.utc)
+            b = datetime.fromisoformat(window["end"]).astimezone(timezone.utc)
+            if b <= start or a >= end:
+                retained.append(window)
+                continue
+            if a < start:
+                retained.append({**window, "end": start.isoformat()})
+            if b > end:
+                retained.append({**window, "start": end.isoformat()})
+        if price is not None:
+            retained.append({"start": start.isoformat(), "end": end.isoformat(), "rate_p": price})
+        return save_windows(retained, tz_name)
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Free electricity periods</title>
@@ -100,18 +140,131 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(200, PAGE.encode(), "text/html; charset=utf-8")
 
     def do_POST(self):
-        if not self.path.rstrip("/").endswith("/api/windows"):
+        slot_request = self.path.rstrip("/").endswith("/api/slot")
+        if not slot_request and not self.path.rstrip("/").endswith("/api/windows"):
             return self.reply(404, b"{}", "application/json")
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length > 65536:
                 raise ValueError("Request too large")
             data = json.loads(self.rfile.read(length))
-            result = save_windows(data["windows"], os.getenv("HA_TIMEZONE", "Europe/London"))
+            tz = os.getenv("HA_TIMEZONE", "Europe/London")
+            result = (set_slot_price(data["start"], data["end"], data.get("rate_p"), tz)
+                      if slot_request else save_windows(data["windows"], tz))
             return self.reply(200, json.dumps({"windows": result}).encode(), "application/json")
-        except (ValueError, KeyError, TypeError, OSError) as exc:
+        except (ValueError, KeyError, TypeError, OSError, OverflowError) as exc:
             return self.reply(400, json.dumps({"error": str(exc)}).encode(), "application/json")
 
 
+
+
+
+
+LOG = logging.getLogger("home_energy_manager.tariff_editor")
+COMMAND_ENTITY = "text.home_energy_manager_tariff_edit"
+ACK_ENTITY = "sensor.home_energy_manager_tariff_edit_result"
+
+
+def apply_tariff_command(payload):
+    """Validate and apply one command; return an acknowledgement for the card."""
+    command = json.loads(payload)
+    if not isinstance(command, dict) or not isinstance(command.get("id"), str) or not command["id"]:
+        raise ValueError("Command requires an id")
+    start = datetime.fromisoformat(command["start"])
+    if start.tzinfo is None or start.utcoffset() is None:
+        raise ValueError("Slot start requires a timezone offset")
+    end = (start.astimezone(timezone.utc) + timedelta(minutes=30)).isoformat()
+    if "rate_p" not in command:
+        raise ValueError("Command requires rate_p (null to restore)")
+    windows = set_slot_price(command["start"], end, command["rate_p"], os.getenv("HA_TIMEZONE", "Europe/London"))
+    return {"id": command["id"], "status": "saved", "start": start.astimezone(timezone.utc).isoformat(),
+            "rate_p": command["rate_p"], "windows": windows}
+
+
+def _mqtt_tariff_commands():
+    """Expose an MQTT-discovered writable text entity; process broker commands directly."""
+    token = os.getenv("SUPERVISOR_TOKEN", "")
+    publisher = MQTTPublisher("tariff_editor", "Home Energy Manager – Tariff Editor",
+                              "Tariff Editor", os.getenv("HOME_ENERGY_MANAGER_VERSION", ""), token)
+    if not publisher.available or not publisher._client:
+        LOG.error("Tariff editing unavailable: MQTT connection required")
+        return
+    prefix = publisher.topic_prefix
+    command_topic = f"{prefix}/tariff_editor/import_price_edit/set"
+    state_topic = f"{prefix}/tariff_editor/import_price_edit/state"
+    discovery = f"{publisher.discovery_prefix}/text/home_energy_manager_tariff_edit/config"
+    config = {
+        "name": "Import price edit", "unique_id": "home_energy_manager_tariff_edit",
+        "default_entity_id": COMMAND_ENTITY, "command_topic": command_topic,
+        "state_topic": state_topic, "availability_topic": publisher.availability_topic,
+        "max": 255, "mode": "text", "retain": False,
+        "device": {"identifiers": ["home_energy_manager_tariff_editor"],
+                   "name": "Home Energy Manager – Tariff Editor", "manufacturer": "Home Energy Manager"}
+    }
+    publisher._publish_raw(discovery, json.dumps(config), retain=True)
+    publisher._publish_raw(state_topic, "", retain=True)
+    publisher.publish_sensor(ACK_ENTITY, "ready", {"friendly_name": "Import price edit result", "status": "ready"})
+
+    def process_message(payload):
+        command_id = None
+        try:
+            command = json.loads(payload.decode("utf-8"))
+            command_id = command.get("id") if isinstance(command, dict) else None
+            result = apply_tariff_command(message.payload.decode("utf-8"))
+            publisher._publish_raw(state_topic, message.payload.decode("utf-8"), retain=False)
+            publisher.publish_sensor(ACK_ENTITY, result["id"], {
+                "friendly_name": "Import price edit result", **result
+            })
+        except Exception as exc:
+            LOG.warning("Rejected import price edit: %s", exc)
+            publisher.publish_sensor(ACK_ENTITY, "error", {
+                "friendly_name": "Import price edit result",
+                "id": command_id,
+                "status": "error", "error": str(exc)
+            })
+
+    def on_message(client, userdata, message):
+        # Paho callbacks run on its network thread. Publishing with wait_for_publish
+        # from that thread can deadlock acknowledgement delivery.
+        Thread(target=process_message, args=(bytes(message.payload),), daemon=True).start()
+
+    publisher._client.on_message = on_message
+
+    # MQTT subscriptions are session-scoped. Restore the command subscription
+    # after a broker reconnect, and republish discovery/availability as needed.
+    original_on_connect = publisher._client.on_connect
+
+    def on_connect(client, userdata, flags, reason_code, *args):
+        original_on_connect(client, userdata, flags, reason_code, *args)
+        try:
+            successful = int(reason_code) == 0
+        except (ValueError, TypeError):
+            successful = str(reason_code).lower() in ("success", "0")
+        if not successful:
+            return
+
+        def restore_subscription():
+            try:
+                result, _ = client.subscribe(command_topic, qos=1)
+                if result != 0:
+                    raise RuntimeError(f"MQTT subscribe returned {result}")
+                # Discovery is retained; reannounce the editor on reconnect
+                # in case the broker lost its retained discovery records.
+                publisher._publish_raw(discovery, json.dumps(config), retain=True)
+                publisher._publish_raw(publisher.availability_topic, "online", retain=True)
+            except Exception:
+                LOG.exception("Could not restore tariff edit MQTT subscription")
+
+        Thread(target=restore_subscription, daemon=True).start()
+
+    publisher._client.on_connect = on_connect
+    result, _ = publisher._client.subscribe(command_topic, qos=1)
+    if result != 0:
+        raise RuntimeError(f"Initial tariff edit MQTT subscribe returned {result}")
+    while True:
+        time.sleep(60)
+
+
 if __name__ == "__main__":
+    Thread(target=_mqtt_tariff_commands, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", 8099), Handler).serve_forever()

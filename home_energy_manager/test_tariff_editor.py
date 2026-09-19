@@ -64,6 +64,42 @@ class TariffEditorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             editor.save_windows([self.window()] * 65, "Europe/London")
 
+    def test_edit_middle_slot_preserves_neighbours(self):
+        editor.save_windows([self.window(self.start, self.start + timedelta(hours=2))], "Europe/London")
+        middle = self.start + timedelta(minutes=30)
+        saved = editor.set_slot_price(middle.isoformat(), (middle + timedelta(minutes=30)).isoformat(), 12.5, "Europe/London")
+        self.assertEqual([w["rate_p"] for w in saved], [0, 12.5, 0])
+        self.assertEqual(len(saved), 3)
+        restored = editor.set_slot_price(middle.isoformat(), (middle + timedelta(minutes=30)).isoformat(), None, "Europe/London")
+        self.assertEqual(len(restored), 2)
+        self.assertEqual([w["rate_p"] for w in restored], [0, 0])
+
+    def test_mqtt_command_save_and_restore(self):
+        start = self.start.isoformat()
+        with patch.dict(editor.os.environ, {"HA_TIMEZONE": "Europe/London"}):
+            saved = editor.apply_tariff_command(json.dumps({"id": "save-1", "start": start, "rate_p": 12.5}))
+            self.assertEqual(saved["status"], "saved")
+            self.assertEqual(saved["windows"][0]["rate_p"], 12.5)
+            restored = editor.apply_tariff_command(json.dumps({"id": "restore-1", "start": start, "rate_p": None}))
+            self.assertEqual(restored["windows"], [])
+
+    def test_mqtt_command_rejects_missing_price_and_naive_time(self):
+        with self.assertRaises(ValueError):
+            editor.apply_tariff_command(json.dumps({"id": "missing", "start": self.start.isoformat()}))
+        with self.assertRaises(ValueError):
+            editor.apply_tariff_command(json.dumps({"id": "naive", "start": "2026-09-20T09:00:00", "rate_p": 0}))
+
+    def test_reject_negative_or_non_finite_rate(self):
+        for price in (-1, float("nan"), float("inf"), True):
+            with self.subTest(price=price), self.assertRaises(ValueError):
+                editor.save_windows([{**self.window(), "rate_p": price}], "Europe/London")
+
+    def test_nonzero_adjacent_prices_remain_separate(self):
+        first = {**self.window(), "rate_p": 0}
+        second = {**self.window(self.start + timedelta(hours=1)), "rate_p": 12.5}
+        saved = editor.save_windows([first, second], "Europe/London")
+        self.assertEqual([w["rate_p"] for w in saved], [0, 12.5])
+
     def test_ingress_ui_contains_working_controls(self):
         for label in ('type="datetime-local"', 'Add period', 'Remove', 'api/windows'):
             self.assertIn(label, editor.PAGE)
