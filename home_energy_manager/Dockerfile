@@ -7,6 +7,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY launcher.py /app/launcher.py
+COPY tariff_editor.py /app/tariff_editor.py
 COPY config_migration.py /app/config_migration.py
 RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runtime/axle /app/runtime/controller
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py

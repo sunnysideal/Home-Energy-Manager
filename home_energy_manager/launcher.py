@@ -212,6 +212,7 @@ def load_and_split_options():
     mqtt = raw.get("mqtt") if isinstance(raw.get("mqtt"), dict) else {}
     canonical_mqtt = canonical.get("advanced", {}).get("mqtt") if isinstance(canonical.get("advanced"), dict) else None
     if isinstance(canonical_mqtt, dict): mqtt = canonical_mqtt
+    os.environ["HA_TIMEZONE"] = raw["home_forecaster"]["settings"]["timezone"]
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = json.dumps(mqtt, separators=(",", ":"))
     print("[manager] config migration: " f"layout={diagnostics.source_layout} canonical=v{diagnostics.canonical_version} " f"moves={len(diagnostics.moves)} duplicates={len(diagnostics.duplicates)} conflicts={len(diagnostics.conflicts)}", flush=True)
     for message in diagnostics.conflicts: print(f"[manager] config conflict: {message}", flush=True)
@@ -233,6 +234,7 @@ def process_list(raw):
     elif mode == "axle_only":
         print("[manager] Axle Only selected: normal optimisation controller will not be started; writes are limited to Axle Export preparation/event handling", flush=True)
     return [
+        ("tariff_editor", [sys.executable, "-u", "/app/tariff_editor.py"]),
         ("ashp_forecaster", [sys.executable, "-u", "/app/runtime/ashp_forecaster/runner.py"]),
         ("home_forecaster", [sys.executable, "-u", "/app/runtime/home_forecaster/axle_pricing_runner.py"]),
         ("axle", [sys.executable, "-u", "/app/runtime/axle/main.py"]),

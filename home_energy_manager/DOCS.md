@@ -427,3 +427,14 @@ When reporting a problem, include:
 - what you expected to happen and what actually happened.
 
 Do not publish credentials, API keys or other secrets.
+
+
+## Free electricity periods
+
+When your supplier announces a free electricity period, open **Settings → Apps → Home Energy Manager → Open Web UI**. In **Free electricity periods**, select the start and end date/time and choose **Add period**. Repeat for separate periods. Saved periods appear below the form, where you can remove one at any time, including while it is active.
+
+Periods are one-off, not recurring. They are stored by the app and remain available after restarting Home Assistant or the app. You do not need to create a template sensor, edit YAML, or restart the app when adding or removing a period. The displayed times use your Home Assistant timezone; ensure your device is set to the same timezone when entering a period.
+
+The forecaster uses 0 p/kWh for import within a saved period and the usual supplier import price outside it. It checks for saved-period changes approximately every five seconds and updates its forecast. The regular overnight off-peak period is still identified from the supplier tariff, not these manual periods. Adding a period does not directly command the battery, hot water or calibration. Supplier billing and any later account credit are not changed by the app.
+
+If **Open Web UI** is missing, confirm you are running an app version that includes the free-electricity editor. If the forecast does not reflect a newly saved period, check the app log and `sensor.home_energy_forecast_health`.

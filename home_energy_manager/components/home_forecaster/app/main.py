@@ -742,6 +742,34 @@ def closest_rate_at(rates: list[dict[str, Any]], start: datetime, end: datetime)
     return float(nearest["rate_p"])
 
 
+def apply_manual_import_overrides(rates: list[dict[str, Any]], windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Overlay explicit, offset-aware intervals without changing the supplier tariff."""
+    result = [dict(rate) for rate in rates]
+    for window in windows:
+        if not isinstance(window, dict) or not window.get("start") or not window.get("end"):
+            raise ValueError("Manual import override requires start and end")
+        start = parse_dt(window["start"])
+        end = parse_dt(window["end"])
+        price = window.get("rate_p", 0)
+        if start is None or end is None or end <= start or (start.utcoffset() is None or end.utcoffset() is None):
+            raise ValueError("Manual import override needs offset-aware start/end with end after start")
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price < 0:
+            raise ValueError("Manual import override price must be a non-negative finite number")
+        updated = []
+        for rate in result:
+            a, b = rate["start"], rate["end"]
+            if b <= start or a >= end:
+                updated.append(rate)
+                continue
+            if a < start:
+                updated.append({**rate, "end": start})
+            updated.append({**rate, "start": max(a, start), "end": min(b, end), "rate_p": float(price)})
+            if b > end:
+                updated.append({**rate, "start": end})
+        result = updated
+    return sorted(result, key=lambda rate: rate["start"].astimezone(timezone.utc))
+
+
 def find_overnight_blocks(import_rates: list[dict[str, Any]], tz: ZoneInfo) -> list[tuple[datetime, datetime, float]]:
     if not import_rates:
         return []
@@ -1450,10 +1478,28 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
         tariff_fallback = True
         reasons.append("Tomorrow export tariff unavailable: today pattern carried forward")
 
-    overnight_blocks = find_overnight_blocks(import_rates, tz)
+    # Regular off-peak detection MUST use the unmodified supplier tariff.
+    supplier_import_rates = import_rates
+    override_windows = []
+    override_path = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
+    try:
+        if override_path.exists():
+            override_windows = json.loads(override_path.read_text())
+    except (OSError, ValueError) as exc:
+        reasons.append(f"Manual import override read failed: {exc}")
+    if override_windows:
+        try:
+            if not isinstance(override_windows, list):
+                raise ValueError("windows must be a list")
+            import_rates = apply_manual_import_overrides(supplier_import_rates, override_windows)
+        except (ValueError, TypeError, AttributeError) as exc:
+            import_rates = supplier_import_rates
+            reasons.append(f"Manual import override rejected: {exc}")
+
+    overnight_blocks = find_overnight_blocks(supplier_import_rates, tz)
     overnight_blocks.sort(key=lambda x: x[0])
-    selected_offpeak = select_controller_offpeak(import_rates, now, tz)
-    cheap_rate_p = selected_offpeak[2] if selected_offpeak else (min((r["rate_p"] for r in import_rates), default=None))
+    selected_offpeak = select_controller_offpeak(supplier_import_rates, now, tz)
+    cheap_rate_p = selected_offpeak[2] if selected_offpeak else (min((r["rate_p"] for r in supplier_import_rates), default=None))
     if selected_offpeak:
         target_start = selected_offpeak[0]
         target_end = selected_offpeak[1]
@@ -1992,8 +2038,13 @@ def wait_until_scheduled_or_refresh(
     next_slot_minutes = ((minutes_since_midnight // interval_minutes) + 1) * interval_minutes
     next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_slot_minutes)
     poll_seconds = 5.0
+    override_path = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
+    initial_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
     while True:
         now = datetime.now(tz)
+        current_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
+        if current_override_mtime != initial_override_mtime:
+            return "manual_tariff_changed", controller_refresh_request_id(client, cfg)
         remaining = (next_run - now).total_seconds()
         if remaining <= 0:
             return "scheduled", controller_refresh_request_id(client, cfg)
