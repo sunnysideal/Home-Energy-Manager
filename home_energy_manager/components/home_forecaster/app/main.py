@@ -2038,8 +2038,13 @@ def wait_until_scheduled_or_refresh(
     next_slot_minutes = ((minutes_since_midnight // interval_minutes) + 1) * interval_minutes
     next_run = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=next_slot_minutes)
     poll_seconds = 5.0
+    override_path = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
+    initial_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
     while True:
         now = datetime.now(tz)
+        current_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
+        if current_override_mtime != initial_override_mtime:
+            return "manual_tariff_changed", controller_refresh_request_id(client, cfg)
         remaining = (next_run - now).total_seconds()
         if remaining <= 0:
             return "scheduled", controller_refresh_request_id(client, cfg)
