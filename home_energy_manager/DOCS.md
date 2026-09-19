@@ -429,21 +429,12 @@ When reporting a problem, include:
 Do not publish credentials, API keys or other secrets.
 
 
-### Manual free-electricity import prices
+## Free electricity periods
 
-To enter a supplier-announced free import period, create a Home Assistant helper or template sensor whose attributes include a `windows` list, and set **Tariff → Manual import overrides entity** to that sensor's entity ID in the add-on configuration. Each window has an offset-aware ISO 8601 `start`, `end`, and optional `rate_p` (pence/kWh, default 0). For example, the sensor's `windows` attribute can contain:
+When your supplier announces a free electricity period, open **Settings → Apps → Home Energy Manager → Open Web UI**. In **Free electricity periods**, select the start and end date/time and choose **Add period**. Repeat for separate periods. Saved periods appear below the form, where you can remove one at any time, including while it is active.
 
-```yaml
-windows:
-  - start: '2026-09-19T23:00:00+01:00'
-    end: '2026-09-20T06:00:00+01:00'
-    rate_p: 0
-  - start: '2026-09-20T09:00:00+01:00'
-    end: '2026-09-20T14:00:00+01:00'
-    rate_p: 0
-  - start: '2026-09-20T15:00:00+01:00'
-    end: '2026-09-20T16:00:00+01:00'
-    rate_p: 0
-```
+Periods are one-off, not recurring. They are stored by the app and remain available after restarting Home Assistant or the app. You do not need to create a template sensor, edit YAML, or restart the app when adding or removing a period. The displayed times use your Home Assistant timezone; ensure your device is set to the same timezone when entering a period.
 
-These are **dated**, non-recurring overrides; remove expired windows when convenient. Overridden import prices affect the forecast and estimated import costs only. The supplier's original rate events still identify the controller's regular overnight off-peak window. This feature does not command extra battery charging, discharging, DHW heating, or calibration. If an override is invalid, the forecaster rejects the override list and continues with supplier rates. Supplier billing or later account credits are not modified by Home Energy Manager.
+The forecaster uses 0 p/kWh for import within a saved period and the usual supplier import price outside it. It checks for saved-period changes approximately every five seconds and updates its forecast. The regular overnight off-peak period is still identified from the supplier tariff, not these manual periods. Adding a period does not directly command the battery, hot water or calibration. Supplier billing and any later account credit are not changed by the app.
+
+If **Open Web UI** is missing, confirm you are running an app version that includes the free-electricity editor. If the forecast does not reflect a newly saved period, check the app log and `sensor.home_energy_forecast_health`.
