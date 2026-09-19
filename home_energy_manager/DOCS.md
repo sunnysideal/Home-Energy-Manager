@@ -438,3 +438,12 @@ Periods are one-off, not recurring. They are stored by the app and remain availa
 The forecaster uses 0 p/kWh for import within a saved period and the usual supplier import price outside it. It checks for saved-period changes approximately every five seconds and updates its forecast. The regular overnight off-peak period is still identified from the supplier tariff, not these manual periods. Adding a period does not directly command the battery, hot water or calibration. Supplier billing and any later account credit are not changed by the app.
 
 If **Open Web UI** is missing, confirm you are running an app version that includes the free-electricity editor. If the forecast does not reflect a newly saved period, check the app log and `sensor.home_energy_forecast_health`.
+
+
+### Current effective import price
+
+The Home Energy Forecaster publishes `sensor.home_energy_effective_import_price` with the current grid-import price in **p/kWh**. Its state incorporates configured manual import-price overrides, including free (0 p/kWh) windows. It works in forecast-only mode and does not control appliances or write inverter settings.
+
+The sensor attributes include `window_start`, `window_end`, `next_change` (offset-aware timestamps when known), `source` (`supplier`, `manual_override`, `supplier_current_rate`, or `unavailable`), and `manual_override_active`. The state is `unavailable` when the price cannot be determined. When only the supplier's current-rate entity is available, the sensor cannot predict its next change.
+
+For example, a Home Assistant automation can use a numeric-state trigger below 0.01 p/kWh to request a DHW boost when electricity becomes free, with a separate action to restore the normal DHW settings afterwards. Add your own cylinder temperature and schedule safeguards. **The sensor describes the grid price, not the source of energy currently supplying the heat pump:** a battery may still discharge during a cheap-price window unless separately configured to preserve its charge.
