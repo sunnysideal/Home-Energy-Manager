@@ -24,7 +24,7 @@ def read_windows():
 def validate(windows, tz_name):
     if not isinstance(windows, list) or len(windows) > MAX_WINDOWS:
         raise ValueError("Too many periods (maximum 64)")
-    tz = ZoneInfo(tz_name)
+    ZoneInfo(tz_name)
     parsed = []
     now = datetime.now(timezone.utc)
     for item in windows:
@@ -39,8 +39,6 @@ def validate(windows, tz_name):
             raise ValueError("Period must have a positive duration of at most seven days")
         if a > now + timedelta(days=366):
             raise ValueError("Period is more than one year ahead")
-        if start.astimezone(tz).utcoffset() != start.utcoffset() or end.astimezone(tz).utcoffset() != end.utcoffset():
-            raise ValueError("Period timezone offset does not match Home Assistant timezone")
         parsed.append((a, b))
     parsed.sort()
     merged = []
