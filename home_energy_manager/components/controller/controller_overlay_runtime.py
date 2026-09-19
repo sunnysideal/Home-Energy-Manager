@@ -10,6 +10,7 @@ from copy import deepcopy
 import legacy_minimise_export_runtime as legacy_runtime
 from controller_overlay_pipeline import apply_snapshot_overlay,note_overlay,validate_overlay_order
 from minimise_export_headroom import highest_soc_without_avoidable_export
+from controller_manual_import import apply_cheaper_manual_override
 core=legacy_runtime.core
 _LEGACY_POLICY_PLAN=core.Controller.plan
 _AXLE_OVERLAY=legacy_runtime._apply_axle_overlay
@@ -106,5 +107,5 @@ async def _plan_with_explicit_overlays(self,forecast,soc,window,fallback=False):
             minimise.update(solar_diag);minimise['required_target_soc']=final_target;minimise['strategy']='avoid_peak_import_and_preserve_pv_headroom'
         if not validate_overlay_order(plan):raise RuntimeError('Controller overlay order invariant violated')
         plan['overlay_pipeline']['order']=['power_down','axle','ev_smart_charging'];plan['overlay_pipeline']['strategy']='base_plan_then_ordered_overlays'
-        return plan
+        return await apply_cheaper_manual_override(self,forecast,plan,window,soc)
 core.Controller.plan=_plan_with_explicit_overlays
