@@ -210,8 +210,8 @@ def _mqtt_tariff_commands():
         try:
             command = json.loads(payload.decode("utf-8"))
             command_id = command.get("id") if isinstance(command, dict) else None
-            result = apply_tariff_command(message.payload.decode("utf-8"))
-            publisher._publish_raw(state_topic, message.payload.decode("utf-8"), retain=False)
+            result = apply_tariff_command(payload.decode("utf-8"))
+            publisher._publish_raw(state_topic, payload.decode("utf-8"), retain=False)
             publisher.publish_sensor(ACK_ENTITY, result["id"], {
                 "friendly_name": "Import price edit result", **result
             })
