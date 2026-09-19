@@ -427,3 +427,23 @@ When reporting a problem, include:
 - what you expected to happen and what actually happened.
 
 Do not publish credentials, API keys or other secrets.
+
+
+### Manual free-electricity import prices
+
+To enter a supplier-announced free import period, create a Home Assistant helper or template sensor whose attributes include a `windows` list, and set **Tariff → Manual import overrides entity** to that sensor's entity ID in the add-on configuration. Each window has an offset-aware ISO 8601 `start`, `end`, and optional `rate_p` (pence/kWh, default 0). For example, the sensor's `windows` attribute can contain:
+
+```yaml
+windows:
+  - start: '2026-09-19T23:00:00+01:00'
+    end: '2026-09-20T06:00:00+01:00'
+    rate_p: 0
+  - start: '2026-09-20T09:00:00+01:00'
+    end: '2026-09-20T14:00:00+01:00'
+    rate_p: 0
+  - start: '2026-09-20T15:00:00+01:00'
+    end: '2026-09-20T16:00:00+01:00'
+    rate_p: 0
+```
+
+These are **dated**, non-recurring overrides; remove expired windows when convenient. Overridden import prices affect the forecast and estimated import costs only. The supplier's original rate events still identify the controller's regular overnight off-peak window. This feature does not command extra battery charging, discharging, DHW heating, or calibration. If an override is invalid, the forecaster rejects the override list and continues with supplier rates. Supplier billing or later account credits are not modified by Home Energy Manager.
