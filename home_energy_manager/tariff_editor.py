@@ -7,6 +7,9 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import RLock, Thread
+import logging
+import time
+from common.mqtt import MQTTPublisher
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -157,39 +160,73 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
-def _ha_tariff_command_loop():
-    """Poll a Home Assistant input_text command helper; no custom integration needed."""
-    import time
+LOG = logging.getLogger("home_energy_manager.tariff_editor")
+COMMAND_ENTITY = "text.home_energy_manager_tariff_edit"
+ACK_ENTITY = "sensor.home_energy_manager_tariff_edit_result"
+
+
+def apply_tariff_command(payload):
+    """Validate and apply one command; return an acknowledgement for the card."""
+    command = json.loads(payload)
+    if not isinstance(command, dict) or not isinstance(command.get("id"), str) or not command["id"]:
+        raise ValueError("Command requires an id")
+    start = datetime.fromisoformat(command["start"])
+    if start.tzinfo is None or start.utcoffset() is None:
+        raise ValueError("Slot start requires a timezone offset")
+    end = (start.astimezone(timezone.utc) + timedelta(minutes=30)).isoformat()
+    if "rate_p" not in command:
+        raise ValueError("Command requires rate_p (null to restore)")
+    windows = set_slot_price(command["start"], end, command["rate_p"], os.getenv("HA_TIMEZONE", "Europe/London"))
+    return {"id": command["id"], "status": "saved", "start": start.astimezone(timezone.utc).isoformat(),
+            "rate_p": command["rate_p"], "windows": windows}
+
+
+def _mqtt_tariff_commands():
+    """Expose an MQTT-discovered writable text entity; process broker commands directly."""
     token = os.getenv("SUPERVISOR_TOKEN", "")
-    entity_id = os.getenv("TARIFF_EDIT_COMMAND_ENTITY", "input_text.home_energy_tariff_edit")
-    if not token:
+    publisher = MQTTPublisher("tariff_editor", "Home Energy Manager – Tariff Editor",
+                              "Tariff Editor", os.getenv("HOME_ENERGY_MANAGER_VERSION", ""), token)
+    if not publisher.available or not publisher._client:
+        LOG.error("Tariff editing unavailable: MQTT connection required")
         return
-    last_id = None
-    while True:
+    prefix = publisher.topic_prefix
+    command_topic = f"{prefix}/tariff_editor/import_price_edit/set"
+    state_topic = f"{prefix}/tariff_editor/import_price_edit/state"
+    discovery = f"{publisher.discovery_prefix}/text/home_energy_manager_tariff_edit/config"
+    config = {
+        "name": "Import price edit", "unique_id": "home_energy_manager_tariff_edit",
+        "default_entity_id": COMMAND_ENTITY, "command_topic": command_topic,
+        "state_topic": state_topic, "availability_topic": publisher.availability_topic,
+        "max": 255, "mode": "text", "retain": False,
+        "device": {"identifiers": ["home_energy_manager_tariff_editor"],
+                   "name": "Home Energy Manager – Tariff Editor", "manufacturer": "Home Energy Manager"}
+    }
+    publisher._publish_raw(discovery, json.dumps(config), retain=True)
+    publisher._publish_raw(state_topic, "", retain=True)
+
+    def on_message(client, userdata, message):
         try:
-            request = Request(
-                "http://supervisor/core/api/states/" + entity_id,
-                headers={"Authorization": "Bearer " + token},
-            )
-            with urlopen(request, timeout=5) as response:
-                state = json.load(response)
-            value = state.get("state", "")
-            if value and value not in ("unknown", "unavailable"):
-                command = json.loads(value)
-                command_id = command.get("id")
-                if command_id and command_id != last_id:
-                    last_id = command_id
-                    start = datetime.fromisoformat(command["start"])
-                    if start.tzinfo is None or start.utcoffset() is None:
-                        raise ValueError("Slot start requires UTC offset")
-                    end = (start.astimezone(timezone.utc) + timedelta(minutes=30)).isoformat()
-                    set_slot_price(command["start"], end, command.get("rate_p"), os.getenv("HA_TIMEZONE", "Europe/London"))
+            command = json.loads(message.payload.decode("utf-8"))
+            command_id = command.get("id") if isinstance(command, dict) else None
+            result = apply_tariff_command(message.payload.decode("utf-8"))
+            publisher._publish_raw(state_topic, message.payload.decode("utf-8"), retain=False)
+            publisher.publish_sensor(ACK_ENTITY, result["id"], {
+                "friendly_name": "Import price edit result", **result
+            })
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning("Tariff edit command poll: %s", exc)
-        time.sleep(2)
+            LOG.warning("Rejected import price edit: %s", exc)
+            publisher.publish_sensor(ACK_ENTITY, "error", {
+                "friendly_name": "Import price edit result",
+                "id": command_id if "command_id" in locals() else None,
+                "status": "error", "error": str(exc)
+            })
+
+    publisher._client.on_message = on_message
+    publisher._client.subscribe(command_topic, qos=1)
+    while True:
+        time.sleep(60)
 
 
 if __name__ == "__main__":
-    Thread(target=_ha_tariff_command_loop, daemon=True).start()
+    Thread(target=_mqtt_tariff_commands, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", 8099), Handler).serve_forever()
