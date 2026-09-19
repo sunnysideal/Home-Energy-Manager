@@ -746,8 +746,10 @@ def apply_manual_import_overrides(rates: list[dict[str, Any]], windows: list[dic
     """Overlay explicit, offset-aware intervals without changing the supplier tariff."""
     result = [dict(rate) for rate in rates]
     for window in windows:
-        start = parse_dt(window.get("start"))
-        end = parse_dt(window.get("end"))
+        if not isinstance(window, dict) or not window.get("start") or not window.get("end"):
+            raise ValueError("Manual import override requires start and end")
+        start = parse_dt(window["start"])
+        end = parse_dt(window["end"])
         price = window.get("rate_p", 0)
         if start is None or end is None or end <= start or (start.utcoffset() is None or end.utcoffset() is None):
             raise ValueError("Manual import override needs offset-aware start/end with end after start")
