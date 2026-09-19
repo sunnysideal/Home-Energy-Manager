@@ -1,6 +1,9 @@
 """Home Assistant ingress editor for dated free-import windows."""
 import json
 import math
+import logging
+import threading
+from urllib.request import Request, urlopen
 import os
 import tempfile
 from datetime import datetime, timezone, timedelta
@@ -11,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 STORE = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
 LOCK = RLock()
+LOG = logging.getLogger("tariff_editor")
 MAX_WINDOWS = 64
 
 
@@ -148,5 +152,43 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, json.dumps({"error": str(exc)}).encode(), "application/json")
 
 
+
+def run_mqtt_bridge():
+    """Accept HA mqtt.publish commands, never expose the editor's HTTP port to Lovelace."""
+    import paho.mqtt.client as mqtt
+    token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if not token:
+        raise RuntimeError("Supervisor token required for MQTT service discovery")
+    req = Request("http://supervisor/services/mqtt", headers={"Authorization": f"Bearer {token}"})
+    with urlopen(req, timeout=15) as response:
+        result = json.load(response)
+    cfg = result.get("data", result)
+    host = cfg.get("host")
+    if not host:
+        raise RuntimeError("MQTT broker unavailable")
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="hem_tariff_editor")
+    client.username_pw_set(cfg.get("username", ""), cfg.get("password", ""))
+    if cfg.get("ssl", cfg.get("tls", False)):
+        client.tls_set()
+    def on_connect(client, userdata, flags, reason_code, properties=None):
+        if int(reason_code) == 0:
+            client.subscribe("home_energy_manager/tariff/set_slot", qos=1)
+    def on_message(client, userdata, message):
+        try:
+            data = json.loads(message.payload)
+            if not isinstance(data, dict) or set(data) - {"start", "end", "rate_p"}:
+                raise ValueError("Invalid slot command")
+            set_slot_price(data["start"], data["end"], data.get("rate_p"), os.getenv("HA_TIMEZONE", "Europe/London"))
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            LOG.warning("Rejected tariff slot command: %s", exc)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(host, int(cfg.get("port", 1883)), keepalive=45)
+    client.loop_forever()
+
+
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    threading.Thread(target=run_mqtt_bridge, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", 8099), Handler).serve_forever()
