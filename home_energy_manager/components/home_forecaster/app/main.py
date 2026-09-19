@@ -25,6 +25,7 @@ DB_PATH = Path(os.environ.get("HOME_FORECASTER_DB_PATH", "/data/home_energy_fore
 LAST_FORECAST_PATH = Path(os.environ.get("HOME_FORECASTER_LAST_FORECAST_PATH", "/data/last_forecast.json"))
 OUTPUT_ENTITY = "sensor.home_energy_forecast"
 HEALTH_ENTITY = "sensor.home_energy_forecast_health"
+PRICE_ENTITY = "sensor.home_energy_effective_import_price"
 COMPARISON_ENTITY = "sensor.home_energy_forecast_comparison"
 
 # Fixed v1 behaviour agreed during design.
@@ -768,6 +769,61 @@ def apply_manual_import_overrides(rates: list[dict[str, Any]], windows: list[dic
                 updated.append({**rate, "start": end})
         result = updated
     return sorted(result, key=lambda rate: rate["start"].astimezone(timezone.utc))
+
+
+def effective_import_price(client: HAClient, cfg: Config, now: datetime) -> tuple[Any, dict[str, Any]]:
+    """Resolve the current price independently of battery simulation or forecast refresh."""
+    attrs = {"friendly_name": "Home Energy Effective Import Price",
+             "unit_of_measurement": "p/kWh", "icon": "mdi:currency-gbp",
+             "window_start": None, "window_end": None, "next_change": None,
+             "source": "unavailable", "manual_override_active": False}
+    tariff = cfg.section("tariff")
+    supplier = (parse_rates(client.state_optional(tariff["import_current_day_rates"])) +
+                parse_rates(client.state_optional(tariff["import_next_day_rates"])))
+    active_supplier = next((r for r in supplier if r["start"] <= now < r["end"]), None)
+    if not active_supplier:
+        # Current-rate fallback is only used when there are no usable tariff events.
+        if supplier:
+            return "unavailable", attrs
+        value = normalise_rate_p(numeric_state(client.state_optional(tariff["import_current_rate"])))
+        if value is None:
+            return "unavailable", attrs
+        attrs["source"] = "supplier_current_rate"
+        return round(value, 4), attrs
+
+    path = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
+    overrides = []
+    if path.exists():
+        try:
+            overrides = json.loads(path.read_text())
+            if not isinstance(overrides, list):
+                raise ValueError("Manual import overrides must be a list")
+            # Validate the entire set before accepting any manual price.
+            apply_manual_import_overrides(supplier, overrides)
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            LOG.warning("Current price: ignoring invalid manual overrides: %s", exc)
+            overrides = []
+    effective = apply_manual_import_overrides(supplier, overrides)
+    current = next((r for r in effective if r["start"] <= now < r["end"]), None)
+    if current is None:
+        return "unavailable", attrs
+    manual = any(
+        isinstance(w, dict) and parse_dt(w.get("start")) <= now < parse_dt(w.get("end"))
+        for w in overrides
+    )
+    # An effective window can contain a supplier boundary at which the price
+    # stays constant. The next boundary is nevertheless a safe refresh point.
+    attrs.update(window_start=current["start"].isoformat(),
+                 window_end=current["end"].isoformat(),
+                 next_change=current["end"].isoformat(),
+                 source="manual_override" if manual else "supplier",
+                 manual_override_active=manual)
+    return round(float(current["rate_p"]), 4), attrs
+
+
+def publish_effective_import_price(client: HAClient, cfg: Config, now: datetime) -> None:
+    value, attrs = effective_import_price(client, cfg, now)
+    client.publish(PRICE_ENTITY, value, attrs)
 
 
 def find_overnight_blocks(import_rates: list[dict[str, Any]], tz: ZoneInfo) -> list[tuple[datetime, datetime, float]]:
@@ -2043,6 +2099,7 @@ def wait_until_scheduled_or_refresh(
     initial_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
     while True:
         now = datetime.now(tz)
+        publish_effective_import_price(client, cfg, now)
         current_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
         if current_override_mtime != initial_override_mtime:
             return "manual_tariff_changed", controller_refresh_request_id(client, cfg)
@@ -2064,6 +2121,7 @@ def main() -> None:
     store = Store(DB_PATH)
     now = datetime.now(tz)
     LOG.info("Home Energy Forecaster v%s starting (%s)", VERSION, tz.key)
+    publish_effective_import_price(client, cfg, now)
     last_success, restored_fresh = restore_last_forecast(client, now)
     if last_success:
         LOG.info("Restored persisted forecast from %s (%s)", last_success, "fresh" if restored_fresh else "stale")
@@ -2098,6 +2156,7 @@ def main() -> None:
     while True:
         started = time.monotonic()
         now = datetime.now(tz)
+        publish_effective_import_price(client, cfg, now)
         # Capture the request ID at the START of this calculation. A request
         # arriving during calculation is deliberately left pending for another run.
         run_request_id = requested_id if requested_id is not None else controller_refresh_request_id(client, cfg)
