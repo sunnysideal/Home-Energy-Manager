@@ -1782,6 +1782,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             **today_ext,
         },
         "tomorrow": {**tomorrow_fc, **tomorrow_ext},
+        "manual_import_overrides": override_windows,
         "forecast": output_slots,
         "forecast_no_slots": no_slots_output,
         "no_slots_totals": {
