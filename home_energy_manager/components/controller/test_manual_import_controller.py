@@ -57,7 +57,7 @@ def test_future_override_defers_only_safe_charge():
         async def num(self, key, *_args):
             return {'battery_capacity_entity': 10,
                     'battery_reserve_entity': 4,
-                    'inverter_max_charge_rate_entity': 2000}[key], None
+                    'inverter_max_charge_rate_entity': 4000}[key], None
         def forecast_net_segments(self, _state, start, end, _attr):
             return [(start, end, 1., 0.)]
         def soc_at(self, *_args): return 40.
@@ -65,7 +65,7 @@ def test_future_override_defers_only_safe_charge():
         {'start': at(15).isoformat(), 'end': at(17).isoformat(), 'rate_p': 0}]}}
     window = {'start': at(10), 'end': at(12), 'rate_p': 7}
     plan = {'charge': {'start': at(10).isoformat(), 'end': at(12).isoformat(),
-                       'rate_w': 2000, 'target_soc': 100, 'planned_kwh': 6},
+                       'rate_w': 4000, 'target_soc': 100, 'planned_kwh': 6},
             'discharge': {'planned_kwh': 0}, 'calibration': {'state': 'normal'}}
     result = asyncio.run(apply_cheaper_manual_override(Fake(), state, plan, window, 40))
     assert result['manual_import_override']['action'] == 'defer_regular_charge'
@@ -82,12 +82,12 @@ def test_incomplete_future_bridge_keeps_full_regular_charge():
         async def num(self, key, *_args):
             return {'battery_capacity_entity': 10,
                     'battery_reserve_entity': 4,
-                    'inverter_max_charge_rate_entity': 2000}[key], None
+                    'inverter_max_charge_rate_entity': 4000}[key], None
         def forecast_net_segments(self, *_args): return []
     state = {'attributes': {'manual_import_overrides': [
         {'start': at(15).isoformat(), 'end': at(17).isoformat(), 'rate_p': 0}]}}
     plan = {'charge': {'start': at(10).isoformat(), 'end': at(12).isoformat(),
-                       'rate_w': 2000, 'target_soc': 100, 'planned_kwh': 6},
+                       'rate_w': 4000, 'target_soc': 100, 'planned_kwh': 6},
             'discharge': {}, 'calibration': {'state': 'normal'}}
     result = asyncio.run(apply_cheaper_manual_override(
         Fake(), state, plan, {'start': at(10), 'end': at(12), 'rate_p': 7}, 40))
