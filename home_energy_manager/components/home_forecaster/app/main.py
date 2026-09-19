@@ -2099,7 +2099,10 @@ def wait_until_scheduled_or_refresh(
     initial_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
     while True:
         now = datetime.now(tz)
-        publish_effective_import_price(client, cfg, now)
+        try:
+            publish_effective_import_price(client, cfg, now)
+        except Exception as exc:
+            LOG.warning("Current import price refresh failed: %s", exc)
         current_override_mtime = override_path.stat().st_mtime_ns if override_path.exists() else None
         if current_override_mtime != initial_override_mtime:
             return "manual_tariff_changed", controller_refresh_request_id(client, cfg)
@@ -2121,7 +2124,10 @@ def main() -> None:
     store = Store(DB_PATH)
     now = datetime.now(tz)
     LOG.info("Home Energy Forecaster v%s starting (%s)", VERSION, tz.key)
-    publish_effective_import_price(client, cfg, now)
+    try:
+        publish_effective_import_price(client, cfg, now)
+    except Exception as exc:
+        LOG.warning("Initial import price publication failed: %s", exc)
     last_success, restored_fresh = restore_last_forecast(client, now)
     if last_success:
         LOG.info("Restored persisted forecast from %s (%s)", last_success, "fresh" if restored_fresh else "stale")
@@ -2156,7 +2162,10 @@ def main() -> None:
     while True:
         started = time.monotonic()
         now = datetime.now(tz)
-        publish_effective_import_price(client, cfg, now)
+        try:
+            publish_effective_import_price(client, cfg, now)
+        except Exception as exc:
+            LOG.warning("Import price publication failed: %s", exc)
         # Capture the request ID at the START of this calculation. A request
         # arriving during calculation is deliberately left pending for another run.
         run_request_id = requested_id if requested_id is not None else controller_refresh_request_id(client, cfg)
