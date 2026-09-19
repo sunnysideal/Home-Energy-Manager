@@ -78,6 +78,9 @@ async def apply_cheaper_manual_override(controller, state, plan, window, forecas
         return plan
     discharge = plan.get('discharge') or {}
     ds, de = parse_dt(discharge.get('start')), parse_dt(discharge.get('end'))
+    if active and (plan.get('axle') or {}).get('active'):
+        diag['reason'] = 'axle_event'
+        return plan
     if active and ds and de and ds <= now < de and (as_float(discharge.get('planned_kwh')) or 0) > 0:
         diag['reason'] = 'active_forced_discharge'
         return plan
