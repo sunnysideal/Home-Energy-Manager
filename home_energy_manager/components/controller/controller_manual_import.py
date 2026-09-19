@@ -88,9 +88,77 @@ async def apply_cheaper_manual_override(controller, state, plan, window, forecas
     reserve, _ = await controller.num('battery_reserve_entity', 'battery_reserve', True)
     max_charge, _ = await controller.num('inverter_max_charge_rate_entity', 'max_charge_rate', False)
     if not active:
-        # Never reduce the overnight target on an incomplete forecast or without
-        # a validated charge-power budget. Retain the established safe plan.
-        diag['reason'] = 'future_override_regular_charge_retained'
+        # A cheaper future window can replace only the portion of the regular
+        # charge that can be delivered after safely bridging to that window.
+        # This is intentionally restricted to a single subsequent cheap window:
+        # later windows cannot pay for energy consumed before their start.
+        candidate = next((x for x in windows if x['start'] >= window['end']), None)
+        if candidate is None:
+            diag['reason'] = 'no_subsequent_override'
+            return plan
+        charge = plan.get('charge') or {}
+        cstart, cend = parse_dt(charge.get('start')), parse_dt(charge.get('end'))
+        if (cstart is None or cend is None or cend <= now or
+                cstart <= now < cend or
+                (as_float(charge.get('planned_kwh')) or 0) <= 0):
+            diag['reason'] = 'regular_charge_active_or_unneeded'
+            return plan
+        if None in (capacity, reserve, max_charge) or capacity <= 0 or max_charge <= 0:
+            diag['reason'] = 'missing_battery_inputs'
+            return plan
+        bridge = covered_segments(controller, state, window['end'], candidate['start'])
+        if bridge is None:
+            diag['reason'] = 'incomplete_intervening_forecast'
+            return plan
+        arrival = controller.soc_at(state, window['start'], 'forecast_no_slots')
+        if arrival is None:
+            diag['reason'] = 'missing_regular_arrival_soc'
+            return plan
+        safety = max(float(reserve), float(controller.c.get('safety_buffer_soc', 20)))
+        # Upper-bound battery demand: ignore PV that cannot be relied upon to
+        # coincide with load; no-slots forecast owns the load/PV quantities.
+        demand = sum(max(0., load - pv) for _a, _b, load, pv in bridge)
+        minimum = min(100., safety + demand * 100. / float(capacity))
+        # Account for demand *before* the override using only the first
+        # cheaper interval's achievable charge, never its full nominal length.
+        possible = min(float(capacity), float(max_charge) *
+                       (candidate['end'] - candidate['start']).total_seconds() /
+                       3600000. * .9)
+        target = as_float(charge.get('target_soc'))
+        if target is None or minimum >= target - .5 or possible <= .05:
+            diag['reason'] = 'no_safe_deferrable_energy'
+            return plan
+        deferred = min(float(capacity) * (target - minimum) / 100., possible)
+        revised_target = max(minimum, target - deferred * 100. / float(capacity))
+        # The original planner can have a delayed charge start. Never attempt
+        # to reduce a charge that has already started or extend the cheap slot.
+        rate = as_float(charge.get('rate_w'))
+        if rate is None or rate <= 0:
+            diag['reason'] = 'invalid_regular_charge_rate'
+            return plan
+        planned = min(as_float(charge.get('planned_kwh')) or 0.,
+                      max(0., float(capacity) * (revised_target - arrival) / 100.))
+        if planned <= .05:
+            charge['end'] = charge['start']
+            charge['planned_kwh'] = 0.
+        else:
+            # Retain the original start; shorten the slot by the deferred
+            # stored-energy equivalent, leaving the rest of the base plan intact.
+            original = as_float(charge.get('planned_kwh')) or 0.
+            saved = max(0., original - planned)
+            revised_end = cend - timedelta(hours=saved / (.9 * rate / 1000.))
+            if revised_end <= cstart:
+                diag['reason'] = 'regular_charge_duration_not_reducible'
+                return plan
+            charge['end'] = iso(revised_end.replace(second=0, microsecond=0))
+            charge['planned_kwh'] = round(planned, 3)
+        charge['target_soc'] = int(math.ceil(revised_target))
+        diag.update(action='defer_regular_charge',
+                    reason='forecast_bridge_and_cheaper_capacity_verified',
+                    deferred_kwh=round(deferred, 3),
+                    regular_target_soc=charge['target_soc'],
+                    bridge_demand_kwh=round(demand, 3),
+                    override_start=iso(candidate['start']))
         return plan
     diag.update(start=iso(active['start']), end=iso(active['end']),
                 rate_p=active['rate_p'])
