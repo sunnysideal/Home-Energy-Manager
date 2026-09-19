@@ -265,7 +265,7 @@ def main():
     if raw is None: return
     signal.signal(signal.SIGTERM, stop_all); signal.signal(signal.SIGINT, stop_all)
     for name, cmd in process_list(raw):
-        env = os.environ.copy(); env["OPTIONS_PATH"] = str(COMPONENT_OPTIONS[name]); env["PYTHONPATH"] = "/app" + ((os.pathsep + env["PYTHONPATH"]) if env.get("PYTHONPATH") else "")
+        env = os.environ.copy(); env["OPTIONS_PATH"] = str(COMPONENT_OPTIONS.get(name, OPTIONS)); env["PYTHONPATH"] = "/app" + ((os.pathsep + env["PYTHONPATH"]) if env.get("PYTHONPATH") else "")
         print(f"[manager] starting {name}", flush=True); proc = subprocess.Popen(cmd, env=env); children.append((name, proc)); time.sleep(1.0)
     while True:
         for name, proc in children:
