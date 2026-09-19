@@ -1480,9 +1480,13 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
 
     # Regular off-peak detection MUST use the unmodified supplier tariff.
     supplier_import_rates = import_rates
-    override_entity = str(t.get("manual_import_overrides_entity") or "").strip()
-    override_state = client.state_optional(override_entity) if override_entity else None
-    override_windows = (override_state or {}).get("attributes", {}).get("windows", [])
+    override_windows = []
+    override_path = Path(os.environ.get("MANUAL_TARIFF_WINDOWS_PATH", "/data/manual_tariff_windows.json"))
+    try:
+        if override_path.exists():
+            override_windows = json.loads(override_path.read_text())
+    except (OSError, ValueError) as exc:
+        reasons.append(f"Manual import override read failed: {exc}")
     if override_windows:
         try:
             if not isinstance(override_windows, list):
