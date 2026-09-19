@@ -190,5 +190,10 @@ def run_mqtt_bridge():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    threading.Thread(target=run_mqtt_bridge, daemon=True).start()
+    def start_bridge():
+        try:
+            run_mqtt_bridge()
+        except Exception:
+            LOG.exception("Tariff MQTT command bridge unavailable; ingress editor remains available")
+    threading.Thread(target=start_bridge, daemon=True).start()
     ThreadingHTTPServer(("0.0.0.0", 8099), Handler).serve_forever()
