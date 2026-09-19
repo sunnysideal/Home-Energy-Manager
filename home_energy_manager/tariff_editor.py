@@ -203,8 +203,10 @@ def _mqtt_tariff_commands():
     }
     publisher._publish_raw(discovery, json.dumps(config), retain=True)
     publisher._publish_raw(state_topic, "", retain=True)
+    publisher.publish_sensor(ACK_ENTITY, "ready", {"friendly_name": "Import price edit result", "status": "ready"})
 
     def on_message(client, userdata, message):
+        command_id = None
         try:
             command = json.loads(message.payload.decode("utf-8"))
             command_id = command.get("id") if isinstance(command, dict) else None
@@ -217,7 +219,7 @@ def _mqtt_tariff_commands():
             LOG.warning("Rejected import price edit: %s", exc)
             publisher.publish_sensor(ACK_ENTITY, "error", {
                 "friendly_name": "Import price edit result",
-                "id": command_id if "command_id" in locals() else None,
+                "id": command_id,
                 "status": "error", "error": str(exc)
             })
 
