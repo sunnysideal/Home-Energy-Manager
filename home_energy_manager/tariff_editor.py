@@ -73,6 +73,32 @@ def save_windows(windows, tz_name):
     return valid
 
 
+
+def set_slot_price(start_text, end_text, price, tz_name):
+    """Replace only the selected interval; retain prices on either side."""
+    start = datetime.fromisoformat(start_text).astimezone(timezone.utc)
+    end = datetime.fromisoformat(end_text).astimezone(timezone.utc)
+    if end <= start or end - start != timedelta(minutes=30):
+        raise ValueError("Select exactly one half-hour slot")
+    if price is not None and (isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price < 0):
+        raise ValueError("Price must be a finite non-negative number")
+    with LOCK:
+        retained = []
+        for window in read_windows():
+            a = datetime.fromisoformat(window["start"]).astimezone(timezone.utc)
+            b = datetime.fromisoformat(window["end"]).astimezone(timezone.utc)
+            if b <= start or a >= end:
+                retained.append(window)
+                continue
+            if a < start:
+                retained.append({**window, "end": start.isoformat()})
+            if b > end:
+                retained.append({**window, "start": end.isoformat()})
+        if price is not None:
+            retained.append({"start": start.isoformat(), "end": end.isoformat(), "rate_p": price})
+        return save_windows(retained, tz_name)
+
+
 PAGE = """<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Free electricity periods</title>
 <style>body{font:16px system-ui;margin:0;background:#fafafa;color:#222}main{max-width:720px;margin:auto;padding:20px}section{background:white;border-radius:12px;padding:18px;margin:16px 0;box-shadow:0 1px 5px #ddd}label{display:block;margin:12px 0}input{display:block;font:inherit;padding:8px;max-width:100%;box-sizing:border-box}button{font:inherit;border:0;border-radius:8px;padding:10px 16px;background:#03a9f4;color:white;cursor:pointer;margin:4px}button.remove{background:#666}.period{border-top:1px solid #ddd;padding:12px 0}small{color:#555}#message{min-height:1.5em}</style></head><body><main><h1>Free electricity periods</h1><p>Add or remove supplier-announced free import periods. Prices change in forecasts only; this does not command the battery.</p>
 <section><h2>Add a period</h2><label>Start <input id="start" type="datetime-local" step="1800"></label><label>End <input id="end" type="datetime-local" step="1800"></label><button id="add">Add period</button><p id="message" role="status"></p></section><section><h2>Saved periods</h2><div id="periods">Loading…</div></section></main>
