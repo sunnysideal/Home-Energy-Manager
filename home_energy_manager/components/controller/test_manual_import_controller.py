@@ -43,3 +43,53 @@ def test_incomplete_bridge_fails_closed():
         def forecast_net_segments(self, _state, _start, _end, _name):
             return [(at(10), at(11), 1, 0)]
     assert covered_segments(Fake(), {}, at(10), at(12)) is None
+
+
+import asyncio
+from controller_manual_import import apply_cheaper_manual_override
+
+
+def test_future_override_defers_only_safe_charge():
+    class Fake:
+        c = {'safety_buffer_soc': 20, 'battery_soc_entity': 'soc'}
+        def now(self): return at(9)
+        def operation_mode(self): return 'maximise_export'
+        async def num(self, key, *_args):
+            return {'battery_capacity_entity': 10,
+                    'battery_reserve_entity': 4,
+                    'inverter_max_charge_rate_entity': 2000}[key], None
+        def forecast_net_segments(self, _state, start, end, _attr):
+            return [(start, end, 1., 0.)]
+        def soc_at(self, *_args): return 40.
+    state = {'attributes': {'manual_import_overrides': [
+        {'start': at(15).isoformat(), 'end': at(17).isoformat(), 'rate_p': 0}]}}
+    window = {'start': at(10), 'end': at(12), 'rate_p': 7}
+    plan = {'charge': {'start': at(10).isoformat(), 'end': at(12).isoformat(),
+                       'rate_w': 2000, 'target_soc': 100, 'planned_kwh': 6},
+            'discharge': {'planned_kwh': 0}, 'calibration': {'state': 'normal'}}
+    result = asyncio.run(apply_cheaper_manual_override(Fake(), state, plan, window, 40))
+    assert result['manual_import_override']['action'] == 'defer_regular_charge'
+    assert result['charge']['target_soc'] >= 30
+    assert result['charge']['target_soc'] < 100
+    assert result['charge']['planned_kwh'] < 6
+
+
+def test_incomplete_future_bridge_keeps_full_regular_charge():
+    class Fake:
+        c = {'safety_buffer_soc': 20}
+        def now(self): return at(9)
+        def operation_mode(self): return 'maximise_export'
+        async def num(self, key, *_args):
+            return {'battery_capacity_entity': 10,
+                    'battery_reserve_entity': 4,
+                    'inverter_max_charge_rate_entity': 2000}[key], None
+        def forecast_net_segments(self, *_args): return []
+    state = {'attributes': {'manual_import_overrides': [
+        {'start': at(15).isoformat(), 'end': at(17).isoformat(), 'rate_p': 0}]}}
+    plan = {'charge': {'start': at(10).isoformat(), 'end': at(12).isoformat(),
+                       'rate_w': 2000, 'target_soc': 100, 'planned_kwh': 6},
+            'discharge': {}, 'calibration': {'state': 'normal'}}
+    result = asyncio.run(apply_cheaper_manual_override(
+        Fake(), state, plan, {'start': at(10), 'end': at(12), 'rate_p': 7}, 40))
+    assert result['charge']['target_soc'] == 100
+    assert result['manual_import_override']['reason'] == 'incomplete_intervening_forecast'
