@@ -79,6 +79,12 @@ class TariffEditorTests(unittest.TestCase):
             with self.subTest(price=price), self.assertRaises(ValueError):
                 editor.save_windows([{**self.window(), "rate_p": price}], "Europe/London")
 
+    def test_nonzero_adjacent_prices_remain_separate(self):
+        first = {**self.window(), "rate_p": 0}
+        second = {**self.window(self.start + timedelta(hours=1)), "rate_p": 12.5}
+        saved = editor.save_windows([first, second], "Europe/London")
+        self.assertEqual([w["rate_p"] for w in saved], [0, 12.5])
+
     def test_ingress_ui_contains_working_controls(self):
         for label in ('type="datetime-local"', 'Add period', 'Remove', 'api/windows'):
             self.assertIn(label, editor.PAGE)
