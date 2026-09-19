@@ -229,6 +229,9 @@ configuration:
       import_next_day_rates:
         name: Tomorrow's import rates
         description: Select the entity whose attributes provide tomorrow's timed import rates.
+      manual_import_overrides_entity:
+        name: Manual import-price overrides
+        description: Optional Home Assistant sensor whose windows attribute lists dated import-price overrides. These change forecast prices only, not the regular overnight charging window.
       export_current_day_rates:
         name: Today's export rates
         description: Select the entity whose attributes provide today's timed export rates.
