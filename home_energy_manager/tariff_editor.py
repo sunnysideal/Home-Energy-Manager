@@ -132,16 +132,19 @@ class Handler(BaseHTTPRequestHandler):
         return self.reply(200, PAGE.encode(), "text/html; charset=utf-8")
 
     def do_POST(self):
-        if not self.path.rstrip("/").endswith("/api/windows"):
+        slot_request = self.path.rstrip("/").endswith("/api/slot")
+        if not slot_request and not self.path.rstrip("/").endswith("/api/windows"):
             return self.reply(404, b"{}", "application/json")
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length > 65536:
                 raise ValueError("Request too large")
             data = json.loads(self.rfile.read(length))
-            result = save_windows(data["windows"], os.getenv("HA_TIMEZONE", "Europe/London"))
+            tz = os.getenv("HA_TIMEZONE", "Europe/London")
+            result = (set_slot_price(data["start"], data["end"], data.get("rate_p"), tz)
+                      if slot_request else save_windows(data["windows"], tz))
             return self.reply(200, json.dumps({"windows": result}).encode(), "application/json")
-        except (ValueError, KeyError, TypeError, OSError) as exc:
+        except (ValueError, KeyError, TypeError, OSError, OverflowError) as exc:
             return self.reply(400, json.dumps({"error": str(exc)}).encode(), "application/json")
 
 
