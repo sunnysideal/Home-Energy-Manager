@@ -76,8 +76,12 @@ def save_windows(windows, tz_name):
 
 def set_slot_price(start_text, end_text, price, tz_name):
     """Replace only the selected interval; retain prices on either side."""
-    start = datetime.fromisoformat(start_text).astimezone(timezone.utc)
-    end = datetime.fromisoformat(end_text).astimezone(timezone.utc)
+    raw_start = datetime.fromisoformat(start_text)
+    raw_end = datetime.fromisoformat(end_text)
+    if raw_start.tzinfo is None or raw_end.tzinfo is None or raw_start.utcoffset() is None or raw_end.utcoffset() is None:
+        raise ValueError("Slot timestamps require a timezone offset")
+    start = raw_start.astimezone(timezone.utc)
+    end = raw_end.astimezone(timezone.utc)
     if end <= start or end - start != timedelta(minutes=30):
         raise ValueError("Select exactly one half-hour slot")
     if price is not None and (isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price < 0):
