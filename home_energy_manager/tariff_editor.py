@@ -71,7 +71,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta name="viewport" content="wi
 <style>body{font:16px system-ui;margin:0;background:#fafafa;color:#222}main{max-width:720px;margin:auto;padding:20px}section{background:white;border-radius:12px;padding:18px;margin:16px 0;box-shadow:0 1px 5px #ddd}label{display:block;margin:12px 0}input{display:block;font:inherit;padding:8px;max-width:100%;box-sizing:border-box}button{font:inherit;border:0;border-radius:8px;padding:10px 16px;background:#03a9f4;color:white;cursor:pointer;margin:4px}button.remove{background:#666}.period{border-top:1px solid #ddd;padding:12px 0}small{color:#555}#message{min-height:1.5em}</style></head><body><main><h1>Free electricity periods</h1><p>Add or remove supplier-announced free import periods. Prices change in forecasts only; this does not command the battery.</p>
 <section><h2>Add a period</h2><label>Start <input id="start" type="datetime-local" step="1800"></label><label>End <input id="end" type="datetime-local" step="1800"></label><button id="add">Add period</button><p id="message" role="status"></p></section><section><h2>Saved periods</h2><div id="periods">Loading…</div></section></main>
 <script>
-const base = new URL('.',location.href).pathname;
+const base = location.pathname.endsWith('/') ? location.pathname : location.pathname + '/';
 let timezone='Europe/London';
 function localIso(input){const date=new Date(input);if(!Number.isFinite(date.valueOf()))throw Error('Choose a valid date and time');return date.toISOString()}
 async function api(method,body){const r=await fetch(base+'api/windows',{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const v=await r.json();if(!r.ok)throw Error(v.error||'Unable to save');return v}
