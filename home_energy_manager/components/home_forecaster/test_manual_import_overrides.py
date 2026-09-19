@@ -3,7 +3,18 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.main import apply_manual_import_overrides, select_controller_offpeak, rate_at
+import importlib.util
+import sys
+from pathlib import Path
+
+module_path = Path(__file__).resolve().parent / "app" / "main.py"
+spec = importlib.util.spec_from_file_location("home_forecaster_manual_override_test_module", module_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+apply_manual_import_overrides = module.apply_manual_import_overrides
+select_controller_offpeak = module.select_controller_offpeak
+rate_at = module.rate_at
 
 
 class ManualImportOverrideTests(unittest.TestCase):
