@@ -8,6 +8,9 @@ startup: application
 boot: auto
 init: false
 homeassistant_api: true
+ingress: true
+ingress_port: 8099
+ingress_entry: /
 hassio_api: true
 hassio_role: default
 services:
