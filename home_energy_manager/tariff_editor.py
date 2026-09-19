@@ -1,5 +1,6 @@
 """Home Assistant ingress editor for dated free-import windows."""
 import json
+import math
 import os
 import tempfile
 from datetime import datetime, timezone, timedelta
@@ -39,15 +40,20 @@ def validate(windows, tz_name):
             raise ValueError("Period must have a positive duration of at most seven days")
         if a > now + timedelta(days=366):
             raise ValueError("Period is more than one year ahead")
-        parsed.append((a, b))
+        price = item.get('rate_p', 0)
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price < 0:
+            raise ValueError('Price must be a finite non-negative number')
+        parsed.append((a, b, float(price)))
     parsed.sort()
     merged = []
-    for a, b in parsed:
-        if merged and a <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(b, merged[-1][1]))
+    for a, b, price in parsed:
+        if merged and a < merged[-1][1] and price != merged[-1][2]:
+            raise ValueError('Overlapping periods with different prices')
+        if merged and a <= merged[-1][1] and price == merged[-1][2]:
+            merged[-1] = (merged[-1][0], max(b, merged[-1][1]), price)
         else:
-            merged.append((a, b))
-    return [{"start": a.isoformat(), "end": b.isoformat(), "rate_p": 0} for a, b in merged]
+            merged.append((a, b, price))
+    return [{"start": a.isoformat(), "end": b.isoformat(), "rate_p": price} for a, b, price in merged]
 
 
 def save_windows(windows, tz_name):
