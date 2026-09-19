@@ -205,10 +205,10 @@ def _mqtt_tariff_commands():
     publisher._publish_raw(state_topic, "", retain=True)
     publisher.publish_sensor(ACK_ENTITY, "ready", {"friendly_name": "Import price edit result", "status": "ready"})
 
-    def on_message(client, userdata, message):
+    def process_message(payload):
         command_id = None
         try:
-            command = json.loads(message.payload.decode("utf-8"))
+            command = json.loads(payload.decode("utf-8"))
             command_id = command.get("id") if isinstance(command, dict) else None
             result = apply_tariff_command(message.payload.decode("utf-8"))
             publisher._publish_raw(state_topic, message.payload.decode("utf-8"), retain=False)
@@ -222,6 +222,11 @@ def _mqtt_tariff_commands():
                 "id": command_id,
                 "status": "error", "error": str(exc)
             })
+
+    def on_message(client, userdata, message):
+        # Paho callbacks run on its network thread. Publishing with wait_for_publish
+        # from that thread can deadlock acknowledgement delivery.
+        Thread(target=process_message, args=(bytes(message.payload),), daemon=True).start()
 
     publisher._client.on_message = on_message
     publisher._client.subscribe(command_topic, qos=1)
