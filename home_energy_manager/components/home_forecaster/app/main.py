@@ -1191,6 +1191,7 @@ def simulate_battery_fractional(
     soc_kwh: float,
     charge_eff: float,
     discharge_eff: float,
+    axle_event: tuple[datetime, datetime] | None = None,
 ) -> tuple[float, float, float, float, str, float | None, float | None]:
     """Simulate one output slot, splitting it at control transitions.
 
@@ -1202,6 +1203,11 @@ def simulate_battery_fractional(
     slot_start = slot["start_dt"]
     slot_end = (slot_start.astimezone(timezone.utc) + timedelta(hours=slot["duration_h"])).astimezone(slot_start.tzinfo)
     boundaries = [slot_start, *battery_control_boundaries(slot_start, slot_end, batt), slot_end]
+    if axle_event:
+        for boundary in axle_event:
+            if slot_start.astimezone(timezone.utc) < boundary.astimezone(timezone.utc) < slot_end.astimezone(timezone.utc):
+                boundaries.append(boundary.astimezone(slot_start.tzinfo))
+    boundaries = sorted(set(boundaries), key=lambda dt: dt.astimezone(timezone.utc))
 
     total_batt = total_import = total_export = 0.0
     modes: list[tuple[str, float]] = []
@@ -1224,16 +1230,28 @@ def simulate_battery_fractional(
             "pv_kwh": slot["pv_kwh"] * frac,
         }
 
-        mode = battery_mode_for_slot(a, batt)
-        charge_target = active_target(a, batt["charge_enabled"], batt["charge_slots"])
-        discharge_target = active_target(a, batt["discharge_enabled"], batt["discharge_slots"])
+        segment_batt = batt
+        axle_active = bool(axle_event and axle_event[0] <= a.astimezone(axle_event[0].tzinfo) < axle_event[1])
+        # The actual inverter schedule already models discharge when active.
+        # Never overlay a confirmed forced charge or an existing forced discharge.
+        if axle_active and active_target(a, batt["charge_enabled"], batt["charge_slots"]) is None and active_target(a, batt["discharge_enabled"], batt["discharge_slots"]) is None:
+            segment_batt = dict(batt)
+            segment_batt.update({
+                "charge_enabled": False, "discharge_enabled": True,
+                "discharge_slots": [(a.strftime("%H:%M:%S"), b.strftime("%H:%M:%S"), batt["reserve"])],
+                "discharge_rate_w": batt["max_rate_w"],
+                "pause_mode": "Disabled",
+            })
+        mode = battery_mode_for_slot(a, segment_batt)
+        charge_target = active_target(a, segment_batt["charge_enabled"], segment_batt["charge_slots"])
+        discharge_target = active_target(a, segment_batt["discharge_enabled"], segment_batt["discharge_slots"])
         if charge_target is not None:
             charge_targets.append(charge_target)
         if discharge_target is not None:
             discharge_targets.append(discharge_target)
 
         before = soc_kwh
-        soc_kwh, batt_kwh, imp, exp = simulate_battery(subslot, batt, soc_kwh, charge_eff, discharge_eff)
+        soc_kwh, batt_kwh, imp, exp = simulate_battery(subslot, segment_batt, soc_kwh, charge_eff, discharge_eff)
 
         # Preserve the explicit BMS-idle modes within a scheduled segment.
         if mode == "forced_discharge" and discharge_target is not None and abs(batt_kwh) <= 0.0005:
@@ -1586,6 +1604,19 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
     if dispatch_state is None:
         reasons.append("EV Smart Charging dispatch entity unavailable: dynamic cheap slots and EV forecast ignored")
 
+    # An Axle event is a forecast-only forced discharge: do not write inverter
+    # settings and do not contaminate the controller\'s no-slots counterfactual.
+    axle_event = None
+    axle_state = client.state_optional("sensor.home_energy_manager_axle")
+    axle_attrs = axle_state.get("attributes", {}) if isinstance(axle_state, dict) else {}
+    if isinstance(axle_attrs, dict) and axle_attrs.get("event_available") is True and str(axle_attrs.get("event_type", "")).lower() == "export":
+        try:
+            axle_start, axle_end = parse_dt(axle_attrs["start"]), parse_dt(axle_attrs["end"])
+            if axle_start < axle_end and axle_end > now and axle_start < horizon_end:
+                axle_event = (axle_start, axle_end)
+        except (KeyError, TypeError, ValueError):
+            reasons.append("Axle Export event has invalid dates: physical forecast overlay skipped")
+
     # Simulate both scenarios from the same world inputs:
     #   forecast          = current programmed inverter slots included
     #   forecast_no_slots = all forced charge/discharge slots ignored; Eco remains active
@@ -1620,7 +1651,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             overnight_start_soc = pre_soc_pct
         soc_before_kwh = soc_kwh
         soc_kwh, batt_kwh, imp, exp, mode, charge_target, discharge_target = simulate_battery_fractional(
-            slot, batt, soc_kwh, charge_eff, discharge_eff
+            slot, batt, soc_kwh, charge_eff, discharge_eff, axle_event=axle_event
         )
         soc_pct = int(round(100 * soc_kwh / batt["capacity"]))
         # EV sits outside the battery/inverter grid meter but inside the true
