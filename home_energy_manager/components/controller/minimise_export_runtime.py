@@ -105,7 +105,9 @@ def _forecast_net_kwh(controller, forecast, start, end):
 
 def _disabled_discharge(controller, plan, anchor):
     """Suppress normal forced discharge without changing the reserve target."""
-    t = anchor.replace(second=0, microsecond=0)
+    # Inverter schedules use HH:MM only. A fixed zero-length slot avoids
+    # rewriting both selectors whenever the planning clock advances.
+    t = anchor.replace(year=2000, month=1, day=1, hour=20, minute=0, second=0, microsecond=0)
     plan['discharge'] = {
         'start': core.iso(t), 'end': core.iso(t),
         'rate_w': plan.get('discharge', {}).get('rate_w', 0),
