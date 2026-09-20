@@ -1192,6 +1192,7 @@ def simulate_battery_fractional(
     charge_eff: float,
     discharge_eff: float,
     axle_event: tuple[datetime, datetime] | None = None,
+    ev_windows: list[tuple[datetime, datetime]] | None = None,
 ) -> tuple[float, float, float, float, str, float | None, float | None]:
     """Simulate one output slot, splitting it at control transitions.
 
@@ -1207,6 +1208,11 @@ def simulate_battery_fractional(
         for boundary in axle_event:
             if slot_start.astimezone(timezone.utc) < boundary.astimezone(timezone.utc) < slot_end.astimezone(timezone.utc):
                 boundaries.append(boundary.astimezone(slot_start.tzinfo))
+    if axle_event and ev_windows:
+        for ev_start, ev_end in ev_windows:
+            for boundary in (ev_start, ev_end):
+                if slot_start.astimezone(timezone.utc) < boundary.astimezone(timezone.utc) < slot_end.astimezone(timezone.utc):
+                    boundaries.append(boundary.astimezone(slot_start.tzinfo))
     boundaries = sorted(set(boundaries), key=lambda dt: dt.astimezone(timezone.utc))
 
     total_batt = total_import = total_export = 0.0
@@ -1232,6 +1238,8 @@ def simulate_battery_fractional(
 
         segment_batt = batt
         axle_active = bool(axle_event and axle_event[0] <= a.astimezone(axle_event[0].tzinfo) < axle_event[1])
+        if axle_active and ev_windows and any(start <= a.astimezone(start.tzinfo) < end for start, end in ev_windows):
+            axle_active = False
         # The actual inverter schedule already models discharge when active.
         # Never overlay a confirmed forced charge or an existing forced discharge.
         if axle_active and active_target(a, batt["charge_enabled"], batt["charge_slots"]) is None and active_target(a, batt["discharge_enabled"], batt["discharge_slots"]) is None:
@@ -1651,7 +1659,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             overnight_start_soc = pre_soc_pct
         soc_before_kwh = soc_kwh
         soc_kwh, batt_kwh, imp, exp, mode, charge_target, discharge_target = simulate_battery_fractional(
-            slot, batt, soc_kwh, charge_eff, discharge_eff, axle_event=axle_event
+            slot, batt, soc_kwh, charge_eff, discharge_eff, axle_event=axle_event, ev_windows=planned
         )
         soc_pct = int(round(100 * soc_kwh / batt["capacity"]))
         # EV sits outside the battery/inverter grid meter but inside the true
