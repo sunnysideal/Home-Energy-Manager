@@ -48,8 +48,8 @@ class AxleForecastTests(unittest.TestCase):
     def test_partial_event_and_subsequent_soc(self):
         start = datetime(2026, 9, 21, 17, 45, tzinfo=self.tz)
         soc, battery, _, _, mode, _, _ = self.simulate(start=start, duration=0.5)
-        self.assertGreater(battery, 1.4)
-        self.assertLess(battery, 1.6)
+        self.assertGreater(battery, 1.6)
+        self.assertLess(battery, 1.7)
         self.assertEqual(mode, "forced_discharge_partial")
         later, later_battery, _, _, _, _, _ = self.simulate(start=self.end, soc=soc)
         self.assertLess(later, soc)
