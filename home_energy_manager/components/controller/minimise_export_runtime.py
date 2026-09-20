@@ -177,12 +177,48 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
     axle_entity = str(controller.c.get('axle_entity', 'sensor.home_energy_manager_axle')).strip()
     axle_state = await controller.ha.state(axle_entity)
     event = _event_from_state(controller, axle_state)
+    attrs = axle_state.get('attributes', {}) if isinstance(axle_state, dict) else {}
+    now = controller.now()
     if not event:
+        core.LOG.info(
+            'Axle decision: entity=%s state=%s available=%s type=%s start=%s end=%s action=ignored reason=%s',
+            axle_entity, axle_state.get('state') if isinstance(axle_state, dict) else 'unavailable',
+            attrs.get('event_available'), attrs.get('event_type'), attrs.get('start'), attrs.get('end'),
+            'no_valid_export_event',
+        )
         return plan
 
-    now = controller.now(); start, end = event['start'], event['end']
+    start, end = event['start'], event['end']
     if end <= now:
+        core.LOG.info('Axle decision: entity=%s event=%s->%s action=ignored reason=expired',
+                      axle_entity, core.iso(start), core.iso(end))
         return plan
+
+    original_charge_target = plan.get('charge', {}).get('target_soc')
+    original_discharge = dict(plan.get('discharge', {}))
+    core.LOG.info(
+        'Axle event accepted: entity=%s state=%s event=%s->%s starts_in=%.1fh duration=%.1fh '
+        'offpeak=%s->%s initial_charge_target=%s initial_discharge=%s->%s',
+        axle_entity, axle_state.get('state') if isinstance(axle_state, dict) else 'unavailable',
+        core.iso(start), core.iso(end), (start - now).total_seconds() / 3600.0,
+        (end - start).total_seconds() / 3600.0, core.iso(window['start']), core.iso(window['end']),
+        original_charge_target, original_discharge.get('start'), original_discharge.get('end'),
+    )
+
+    def log_decision():
+        charge = plan.get('charge', {})
+        discharge = plan.get('discharge', {})
+        core.LOG.info(
+            'Axle decision: entity=%s event=%s->%s action=%s required_soc=%.1f%% '
+            'full_event_possible=%s charge_target=%s->%s discharge=%s->%s kind=%s '
+            'bridge_kwh=%s coverage=%s forecast_event_soc=%s shortfall_kwh=%s latest_charge_start=%s',
+            axle_entity, core.iso(start), core.iso(end), diagnostics['action'],
+            required_soc, full_event_possible, original_charge_target, charge.get('target_soc'),
+            discharge.get('start'), discharge.get('end'), discharge.get('kind'),
+            diagnostics.get('pre_event_bridge_net_kwh'), diagnostics.get('forecast_coverage_complete'),
+            diagnostics.get('forecast_event_start_soc'), diagnostics.get('shortfall_kwh'),
+            diagnostics.get('latest_charge_start'),
+        )
 
     discharge_eff = max(0.5, min(1.0, float(controller.c.get('axle_discharge_efficiency', 0.95))))
     charge_eff = 0.95
@@ -205,7 +241,7 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
             plan['pause'] = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}
             plan['discharge'] = {'start': core.iso(start), 'end': core.iso(end), 'rate_w': int(round(max_discharge)), 'target_soc': int(round(reserve)), 'planned_kwh': round((float(max_discharge) / 1000.0) * max(0.0, (end - now).total_seconds()) / 3600.0, 3), 'kind': 'axle_export'}
             diagnostics['action'] = 'axle_export'
-        plan['axle'] = diagnostics; return plan
+        plan['axle'] = diagnostics; log_decision(); return plan
 
     _disabled_discharge(controller, plan, now)
     cheap_before_event = window['start'] < start and window['end'] <= start
@@ -218,7 +254,7 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         existing_target = core.as_float(plan.get('charge', {}).get('target_soc')) or 0.0
         plan['charge']['target_soc'] = int(math.ceil(max(existing_target, cheap_target)))
         diagnostics.update({'action': 'prepare_in_regular_offpeak', 'pre_event_bridge_net_kwh': round(net_kwh, 3), 'forecast_coverage_complete': bool(complete), 'charge_target_soc': plan['charge']['target_soc']})
-        plan['axle'] = diagnostics; return plan
+        plan['axle'] = diagnostics; log_decision(); return plan
 
     forecast_event_soc = controller.soc_at(forecast, start, 'forecast_no_slots'); live_soc = await controller.live_soc()
     if forecast_event_soc is None:
@@ -240,7 +276,7 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         charge_end = min(start, now + timedelta(hours=charge_hours, minutes=2))
         plan['charge'] = {'start': core.iso(now.replace(second=0, microsecond=0)), 'end': core.iso(charge_end), 'rate_w': int(round(max_charge)), 'target_soc': int(math.ceil(required_soc)), 'planned_kwh': round(shortfall_kwh / charge_eff, 3)}
         plan['pause'] = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}; diagnostics['action'] = 'peak_prepare_last_resort'; diagnostics['charge_target_soc'] = plan['charge']['target_soc']
-    plan['axle'] = diagnostics; return plan
+    plan['axle'] = diagnostics; log_decision(); return plan
 
 
 async def _plan_with_policies(self, forecast, soc, window, fallback=False):
