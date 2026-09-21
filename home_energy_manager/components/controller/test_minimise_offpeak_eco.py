@@ -24,6 +24,17 @@ class Controller:
         self.current_soc = live_soc
         self.c = {'charge_safety_margin_minutes': 10,
                   'preferred_charge_c_rate': 0.5, 'max_charge_c_rate': 0.5}
+        self._battery_model_source = 'forecaster'
+        self._battery_model_attrs = {
+            'bands': [
+                {'soc_lo': lo, 'soc_hi': hi, 'effective_factor': 1.0}
+                for lo, hi in ((0, 10), (10, 20), (20, 30), (30, 40),
+                               (40, 50), (50, 60), (60, 70), (70, 80),
+                               (80, 90), (90, 95), (95, 98), (98, 99),
+                               (99, 100))
+            ],
+            'top_completion_allowance_minutes': 0.0,
+        }
 
     def now(self):
         return self.clock
