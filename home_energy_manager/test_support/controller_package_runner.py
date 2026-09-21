@@ -223,6 +223,11 @@ async def run(data):
         controller.now = lambda: now
         assert controller.discover_from_forecast(source)
 
+    if data.get("observe"):
+        # An observed reserve without an explicit request must not schedule
+        # the manual low-calibration recharge when automatic scheduling is off.
+        await controller.sample()
+
     if data.get("incorrect_patch"):
         # PR #92's regression: setting the forwarding module creates an
         # attribute there, but MUST NOT change the actual executing planner.
