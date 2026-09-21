@@ -1,101 +1,68 @@
+"""High-calibration contract: the same coordinator handles low and high intent."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PACKAGE = ROOT.parents[1]
+COORDINATOR = (ROOT / 'calibration_coordinator.py').read_text(encoding='utf-8')
 RUNTIME = (ROOT / 'manual_high_calibration_runtime.py').read_text(encoding='utf-8')
 CHARGE = (ROOT / 'calibration_charge_runtime.py').read_text(encoding='utf-8')
-LOW = (ROOT / 'manual_low_calibration_runtime.py').read_text(encoding='utf-8')
 DOCKER = (PACKAGE / 'Dockerfile').read_text(encoding='utf-8')
 
 
-def test_package_owns_high_calibration_button():
-    assert "_BUTTON_ENTITY = 'button.home_energy_manager_request_high_calibration'" in RUNTIME
-    assert "'Request High Calibration'" in RUNTIME
-    assert "'mdi:battery-arrow-up'" in RUNTIME
-    assert 'publish_command_button(' in RUNTIME
-    assert 'input_button.' not in RUNTIME
-    assert 'input_boolean.' not in RUNTIME
+def test_high_button_and_existing_persistence_contract():
+    assert "HIGH_PENDING = 'manual_high_calibration_pending'" in COORDINATOR
+    assert "HIGH_BUTTON = 'button.home_energy_manager_request_high_calibration'" in COORDINATOR
+    assert "'Request High Calibration'" in COORDINATOR
+    assert "'mdi:battery-arrow-up'" in COORDINATOR
+    assert 'publish_command_button(' in COORDINATOR
+    assert 'c.db.set(HIGH_PENDING, True)' in COORDINATOR
+    assert 'button press ignored because one is already pending' in COORDINATOR
 
 
-def test_request_is_persistent_and_duplicate_safe():
-    assert "_PENDING_KEY = 'manual_high_calibration_pending'" in RUNTIME
-    assert "controller.db.set(_PENDING_KEY, True)" in RUNTIME
-    assert 'button press ignored because one is already pending' in RUNTIME
-    assert 'if _pending(controller):' in RUNTIME
-
-
-def test_manual_high_uses_existing_top_due_planner_even_when_auto_disabled():
-    state_fn = RUNTIME.split('def _manual_high_calibration_state(self):', 1)[1].split('\ndef _request_status', 1)[0]
-    assert "if _pending(self):" in state_fn
-    assert "return 'top_due'" in state_fn
-    assert 'calibration_enabled' in state_fn
-    assert 'automatic periodic scheduling only' in state_fn
-    assert 'direct' not in state_fn.lower() or 'direct inverter' not in state_fn.lower()
-
-
-def test_deep_calibration_keeps_priority_and_high_request_remains_latched():
-    state_fn = RUNTIME.split('def _manual_high_calibration_state(self):', 1)[1].split('\ndef _request_status', 1)[0]
+def test_manual_high_uses_existing_top_due_without_overriding_deep_cycle():
+    state_fn = COORDINATOR.split('    def state(self):', 1)[1].split('\n    def _low_status', 1)[0]
     assert "if state in ('awaiting_deep_low', 'deep_recharge'):" in state_fn
-    assert 'return state' in state_fn
-    assert "return 'blocked', f'existing_{state}'" in RUNTIME
+    assert "return 'top_due' if self._pending(HIGH_PENDING) else state" in state_fn
+    assert "return 'blocked', f'existing_{state}'" in COORDINATOR
+    assert "c.c['calibration_enabled'] =" not in COORDINATOR
 
 
-def test_completion_requires_actual_100_percent_and_resets_top_timestamp():
-    sample_fn = RUNTIME.split('async def _sample_with_manual_high_calibration(self):', 1)[1]
-    assert 'if soc >= _TARGET_SOC:' in sample_fn
-    assert "_TARGET_SOC = 100.0" in RUNTIME
-    assert "self.db.set('last_full_soc_at', now_iso)" in sample_fn
-    assert "self.db.set(_PENDING_KEY, False)" in sample_fn
-    assert "self.db.set(_LAST_RESULT_KEY, 'completed')" in sample_fn
-    assert '99%' in RUNTIME
+def test_observed_100_percent_only_completes_high_request():
+    observation = COORDINATOR.split('    async def after_sample(self, before):', 1)[1]
+    assert "if before['high_pending']:" in observation
+    assert 'if soc >= 100:' in observation
+    assert "c.db.set('last_full_soc_at', now_iso)" in observation
+    assert 'c.db.set(HIGH_PENDING, False)' in observation
+    assert "c.db.set(HIGH_RESULT, 'completed')" in observation
+    assert 'never complete a high request at 99%' in observation
 
 
-def test_automatic_calibration_setting_is_not_reenabled_on_completion():
-    assert "'enabled' if self.c.get('calibration_enabled', True) else 'disabled'" in RUNTIME
-    assert "self.c['calibration_enabled']" not in RUNTIME
-    assert "self.c['calibration_enabled'] =" not in RUNTIME
-
-
-def test_request_uses_normal_charge_session_top_completion_learning_path():
-    assert 'top_due' in RUNTIME
-    assert 'charge_minutes' not in RUNTIME
-    assert 'ensure(' not in RUNTIME
-    assert '.ha.write(' not in RUNTIME
-
-
-def test_request_diagnostics_cover_button_state_reason_attempt_and_completion():
-    for field in (
-        'high_calibration_requested',
-        'high_calibration_request_button',
-        'high_calibration_request_button_available',
-        'high_calibration_requested_at',
-        'high_calibration_request_state',
-        'high_calibration_request_reason',
-        'high_calibration_request_target_soc',
-        'high_calibration_request_completed_at',
-        'high_calibration_request_last_attempt_at',
-        'high_calibration_request_last_result',
-    ):
-        assert field in RUNTIME
-    assert "return 'charging', 'user_requested'" in RUNTIME
-    assert "return 'planned', 'user_requested'" in RUNTIME
-    assert "return ('completed', 'target_observed')" in RUNTIME
-
-
-def test_existing_clear_calibration_button_clears_high_request_without_history():
-    assert "('manual_high_calibration_pending', False)" in LOW
-    assert "controller.db.set('manual_high_calibration_last_result', 'cleared')" in LOW
-    clearable = LOW.split('_CLEARABLE_CALIBRATION_STATE = (', 1)[1].split('\n)', 1)[0]
+def test_high_diagnostics_and_clear_keep_historical_state():
+    for field in ('high_calibration_requested', 'high_calibration_request_button',
+                  'high_calibration_request_button_available', 'high_calibration_requested_at',
+                  'high_calibration_request_state', 'high_calibration_request_reason',
+                  'high_calibration_request_target_soc', 'high_calibration_request_completed_at',
+                  'high_calibration_request_last_attempt_at', 'high_calibration_request_last_result'):
+        assert field in COORDINATOR
+    assert "(HIGH_PENDING, False)" in COORDINATOR
+    assert "c.db.set(HIGH_RESULT, 'cleared')" in COORDINATOR
+    clearable = COORDINATOR.split('CLEARABLE = (', 1)[1].split('\n)', 1)[0]
     assert 'last_full_soc_at' not in clearable
+    assert 'charge_minutes' not in COORDINATOR
+    assert 'ensure(' not in COORDINATOR
+    assert '.ha.write(' not in COORDINATOR
 
 
-def test_runtime_chain_loads_high_layer_before_calibration_charge_layer():
-    assert 'COPY components/controller/manual_high_calibration_runtime.py /app/runtime/controller/manual_high_calibration_runtime.py' in DOCKER
-    assert 'import manual_high_calibration_runtime as runtime' in CHARGE
+def test_high_compatibility_import_has_no_controller_patches():
     assert 'import manual_low_calibration_runtime as runtime' in RUNTIME
+    assert 'import manual_high_calibration_runtime as runtime' in CHARGE
+    assert 'COPY components/controller/manual_high_calibration_runtime.py /app/runtime/controller/manual_high_calibration_runtime.py' in DOCKER
+    assert 'core.Controller.sample =' not in RUNTIME
+    assert 'core.Controller.calibration_state =' not in RUNTIME
+    assert 'core.Controller.__init__ =' not in RUNTIME
 
 
 def test_forecast_only_path_is_unchanged_and_write_free():
-    forecast_only = (ROOT / 'forecast_only.py').read_text(encoding='utf-8')
-    assert 'manual_high_calibration_runtime' not in forecast_only
-    assert '/services/' not in forecast_only
+    passive = (ROOT / 'forecast_only.py').read_text(encoding='utf-8')
+    assert 'manual_high_calibration_runtime' not in passive
+    assert '/services/' not in passive

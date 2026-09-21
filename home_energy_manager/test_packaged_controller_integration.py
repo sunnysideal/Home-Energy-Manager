@@ -307,6 +307,73 @@ def test_incomplete_bridge_forecast_fails_safe_to_full_solar_headroom(simulate):
     assert result["plan"]["minimise_export"]["solar_headroom_forecast_complete"] is False
 
 
+
+def test_manual_high_reuses_top_due_without_automatic_calibration(simulate):
+    result = simulate(request_high=True)
+    assert result["auto_calibration_enabled"] is False
+    assert result["calibration_state"] == "top_due"
+    assert result["high_pending"] is True
+    assert result["plan"]["charge"]["target_soc"] == 100
+    assert result["calibration_attrs"]["high_calibration_request_state"] == "planned"
+    assert_no_unauthorised_target_write(result)
+
+
+def test_repeated_low_and_high_button_presses_keep_original_request_timestamps(simulate):
+    result = simulate(request=True, request_high=True, repeat_request=True)
+    assert result["request_pending"] is True
+    assert result["high_pending"] is True
+    assert result["low_requested_at"]
+    assert result["high_requested_at"]
+    assert result["calibration_state"] == "awaiting_deep_low"
+    assert result["calibration_attrs"]["high_calibration_request_state"] == "blocked"
+    assert_recharge_sequence(result, natural=True)
+
+
+def test_low_and_high_requests_survive_restart_and_keep_low_priority(simulate):
+    result = simulate(request=True, request_high=True, restart=True)
+    assert result["request_pending"] is True
+    assert result["high_pending"] is True
+    assert result["calibration_state"] == "awaiting_deep_low"
+    assert result["calibration_attrs"]["high_calibration_request_state"] == "blocked"
+    assert_recharge_sequence(result, natural=True)
+
+
+def test_manual_high_requires_observed_100_percent_not_99(simulate):
+    result = simulate("calibration_request_control", request_high=True, check_high_completion=True)
+    assert result["at_99"]["high_pending"] is True
+    assert result["at_99"]["high_completed"] is None
+    assert result["at_100"]["high_pending"] is False
+    assert result["at_100"]["high_completed"]
+    assert result["at_100"]["last_full"]
+    assert result["at_100"]["auto_enabled"] is False
+
+
+def test_clear_removes_transient_low_and_high_but_preserves_history(simulate):
+    result = simulate("calibration_request_control", request=True, request_high=True, clear=True)
+    cleared = result["after_clear"]
+    assert cleared["low_pending"] is False
+    assert cleared["high_pending"] is False
+    assert cleared["low_result"] == "cleared"
+    assert cleared["high_result"] == "cleared"
+    assert cleared["clear_result"] == "cleared"
+    assert cleared["last_below_40"] == "2026-09-20T09:00:00+01:00"
+    assert cleared["last_deep"] == "2026-09-01T05:00:00+01:00"
+    assert cleared["low_reached"] is None
+
+
+def test_simultaneous_low_high_and_clear_resolves_to_clear(simulate):
+    result = simulate("calibration_request_control", clear_same_pass=True)
+    cleared = result["after_clear"]
+    assert cleared["low_pending"] is False
+    assert cleared["high_pending"] is False
+    assert cleared["low_result"] == "cleared"
+    assert cleared["high_result"] == "cleared"
+    assert cleared["clear_result"] == "cleared"
+    assert set(cleared["cleared_keys"]) >= {
+        "manual_low_calibration_pending", "manual_high_calibration_pending",
+    }
+
+
 def test_forecast_only_loads_no_active_controller_and_performs_no_writes(simulate):
     result = simulate("forecast_only")
     assert result["active_controller_loaded"] is False

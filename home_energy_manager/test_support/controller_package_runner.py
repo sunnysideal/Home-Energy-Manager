@@ -213,9 +213,22 @@ async def run(data):
         return plan
 
     if data.get("request"):
-        # Exercise the installed manual-button event + real persisted sampler.
         controller._manual_low_calibration_press.set()
+    if data.get("request_high"):
+        controller._manual_high_calibration_press.set()
+    if data.get("request") or data.get("request_high"):
+        # One real sampling pass handles both MQTT press events.
         await controller.sample()
+    requested_at_low = db.get("manual_low_calibration_requested_at")
+    requested_at_high = db.get("manual_high_calibration_requested_at")
+    if data.get("repeat_request"):
+        if data.get("request"):
+            controller._manual_low_calibration_press.set()
+        if data.get("request_high"):
+            controller._manual_high_calibration_press.set()
+        await controller.sample()
+        assert db.get("manual_low_calibration_requested_at") == requested_at_low
+        assert db.get("manual_high_calibration_requested_at") == requested_at_high
     if data.get("restart"):
         # Do not issue a second request. A fresh controller instance must read
         # exactly the request that the first instance persisted.
@@ -251,7 +264,52 @@ async def run(data):
                "auto_calibration_enabled": controller.c["calibration_enabled"],
                "model_source": getattr(controller, "_battery_model_source", None),
                "errors": controller.errors,
-               "entities": entities}
+               "entities": entities,
+               "high_pending": db.get("manual_high_calibration_pending", False),
+               "high_result": db.get("manual_high_calibration_last_result"),
+               "low_result": db.get("manual_low_calibration_last_result"),
+               "calibration_attrs": controller.calibration_attrs(),
+               "low_requested_at": db.get("manual_low_calibration_requested_at"),
+               "high_requested_at": db.get("manual_high_calibration_requested_at")}
+    if data.get("case") == "calibration_request_control":
+        # Exercise clear ordering, 99%/100% completion, and retention of
+        # historical calibration records without fabricating BMS observations.
+        db.set("last_below_40_soc_at", "2026-09-20T09:00:00+01:00")
+        db.set("last_deep_calibration_at", "2026-09-01T05:00:00+01:00")
+        if data.get("clear"):
+            controller._clear_calibration_state_press.set()
+            await controller.sample()
+        if data.get("clear_same_pass"):
+            controller._manual_low_calibration_press.set()
+            controller._manual_high_calibration_press.set()
+            controller._clear_calibration_state_press.set()
+            await controller.sample()
+        initial["after_clear"] = {
+            "low_pending": db.get("manual_low_calibration_pending", False),
+            "high_pending": db.get("manual_high_calibration_pending", False),
+            "low_result": db.get("manual_low_calibration_last_result"),
+            "high_result": db.get("manual_high_calibration_last_result"),
+            "clear_result": db.get("calibration_state_clear_result"),
+            "cleared_keys": db.get("calibration_state_cleared_keys"),
+            "last_below_40": db.get("last_below_40_soc_at"),
+            "last_deep": db.get("last_deep_calibration_at"),
+            "low_reached": db.get("calibration_low_reached_at"),
+        }
+        if data.get("check_high_completion"):
+            ha.set(entities["battery_soc"], 99)
+            await controller.sample()
+            initial["at_99"] = {
+                "high_pending": db.get("manual_high_calibration_pending", False),
+                "high_completed": db.get("manual_high_calibration_completed_at"),
+            }
+            ha.set(entities["battery_soc"], 100)
+            await controller.sample()
+            initial["at_100"] = {
+                "high_pending": db.get("manual_high_calibration_pending", False),
+                "high_completed": db.get("manual_high_calibration_completed_at"),
+                "last_full": db.get("last_full_soc_at"),
+                "auto_enabled": controller.c["calibration_enabled"],
+            }
     if data.get("case") == "axle_sequence":
         # Exercise the *same* controller, HA readback and persisted request as
         # the Axle event approaches, runs, then expires; not three fresh plans.

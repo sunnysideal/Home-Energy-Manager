@@ -1,199 +1,102 @@
+"""Source-level contracts complement the executable packaged-controller tests.
+
+Calibration state/request observations moved to calibration_coordinator in #116
+PR 1. Scheduling stays in manual_low_calibration_runtime until PR 2.
+"""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 PACKAGE = ROOT.parents[1]
+COORDINATOR = (ROOT / 'calibration_coordinator.py').read_text(encoding='utf-8')
 RUNTIME = (ROOT / 'manual_low_calibration_runtime.py').read_text(encoding='utf-8')
+ACTIVE = (ROOT / 'active_runtime.py').read_text(encoding='utf-8')
 MQTT_BUTTON = (PACKAGE / 'common' / 'mqtt_button.py').read_text(encoding='utf-8')
 DOCKER = (PACKAGE / 'Dockerfile').read_text(encoding='utf-8')
 AGENTS = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
 
 
-def test_request_is_persisted_and_drives_existing_calibration_state():
-    assert "_PENDING_KEY = 'manual_low_calibration_pending'" in RUNTIME
-    assert "controller.db.set(_PENDING_KEY, True)" in RUNTIME
-    assert "return 'awaiting_deep_low'" in RUNTIME
-    assert 'existing planner' in RUNTIME
+def test_coordinator_owns_low_intent_and_completion():
+    assert "LOW_PENDING = 'manual_low_calibration_pending'" in COORDINATOR
+    assert "c.db.set(LOW_PENDING, True)" in COORDINATOR
+    assert "state = 'awaiting_deep_low'" in COORDINATOR
+    assert "c.db.set(LOW_PENDING, False)" in COORDINATOR
+    assert "c.db.set(LOW_COMPLETED_AT, low_reached)" in COORDINATOR
+    assert "c.db.set('calibration_low_reached_at', low_reached)" in COORDINATOR
+    assert "if before['low_pending'] and soc <= floor:" in COORDINATOR
+    assert "if state != 'deep_recharge' and c.db.ok and c.db.get('calibration_low_reached_at'):" in COORDINATOR
 
 
-def test_package_owns_low_calibration_mqtt_button():
-    assert "_BUTTON_ENTITY = 'button.home_energy_manager_request_low_calibration'" in RUNTIME
-    assert 'publish_command_button(' in RUNTIME
-    assert "'Request Low Calibration'" in RUNTIME
-    assert 'calibration_low_request_entity' not in RUNTIME
-    assert 'input_button.' not in RUNTIME
-    assert 'input_boolean.' not in RUNTIME
-
-
-def test_mqtt_button_command_is_non_retained_and_thread_safe():
-    assert '"command_topic": command_topic' in MQTT_BUTTON
+def test_coordinator_owns_nonretained_mqtt_buttons_and_duplicate_requests():
+    assert "LOW_BUTTON = 'button.home_energy_manager_request_low_calibration'" in COORDINATOR
+    assert "CLEAR_BUTTON = 'button.home_energy_manager_clear_calibration_state'" in COORDINATOR
+    assert "'Request Low Calibration'" in COORDINATOR
+    assert "'Clear Calibration State'" in COORDINATOR
+    assert 'publish_command_button(' in COORDINATOR
+    assert 'threading.Event()' in COORDINATOR
+    assert 'event.clear()' in COORDINATOR
+    assert 'button press ignored because one is already pending' in COORDINATOR
     assert '"payload_press": "PRESS"' in MQTT_BUTTON
     assert 'message_callback_add(command_topic, _message)' in MQTT_BUTTON
-    assert 'subscribe(command_topic, qos=1)' in MQTT_BUTTON
-    assert 'threading.Event()' in RUNTIME
-    assert 'event.set' in RUNTIME
-    assert 'request_event.clear()' in RUNTIME
-    assert 'clear_event.clear()' in RUNTIME
-    assert '_latch_request(self)' in RUNTIME
-    assert '_publish_raw(discovery_topic' in MQTT_BUTTON
 
 
-def test_duplicate_press_while_pending_does_not_queue_another_calibration():
-    assert 'button press ignored because one is already pending' in RUNTIME
-    assert 'if _pending(controller):' in RUNTIME
+def test_sample_and_state_are_invoked_through_one_coordinator():
+    assert 'self._calibration = calibration_coordinator.CalibrationCoordinator(' in ACTIVE
+    assert 'return self._calibration.state()' in ACTIVE
+    assert 'return self._calibration.attributes(attrs)' in ACTIVE
+    assert 'before = self._calibration.before_sample()' in ACTIVE
+    assert 'await self._calibration.after_sample(before)' in ACTIVE
+    assert 'core.Controller.sample =' not in RUNTIME
+    assert 'core.Controller.calibration_state =' not in RUNTIME
+    assert 'core.Controller.__init__ =' not in RUNTIME
+    assert 'core.Controller.calibration_attrs =' not in RUNTIME
 
 
-def test_request_only_clears_after_observed_low_soc():
-    assert 'if was_pending and soc <= floor:' in RUNTIME
-    assert "self.db.set(_PENDING_KEY, False)" in RUNTIME
-    assert "self.db.set(_COMPLETED_AT_KEY, completed_at)" in RUNTIME
-    assert 'request cleared and recharge state preserved' in RUNTIME
-
-
-def test_manual_request_diagnostics_are_exposed_on_existing_controller_sensor():
-    for field in (
-        'low_calibration_requested', 'low_calibration_request_button',
-        'low_calibration_request_button_available', 'low_calibration_requested_at',
-        'low_calibration_request_state', 'low_calibration_request_reason',
-        'low_calibration_request_target_soc', 'low_calibration_request_completed_at',
-        'low_calibration_request_last_result',
-    ):
-        assert field in RUNTIME
-
-
-def test_runtime_is_packaged_above_existing_active_controller():
-    assert 'COPY components/controller/active_runtime.py /app/runtime/controller/active_runtime.py' in DOCKER
+def test_packaged_coordinator_and_unchanged_calibration_planner():
+    assert 'COPY components/controller/calibration_coordinator.py /app/runtime/controller/calibration_coordinator.py' in DOCKER
     assert 'COPY components/controller/manual_low_calibration_runtime.py /app/runtime/controller/app.py' in DOCKER
-    assert 'COPY common /app/common' in DOCKER
     assert 'import active_runtime as runtime' in RUNTIME
-
-
-def test_hard_rule_allows_controller_requested_low_observation_to_reset_interval():
-    assert 'through a controller-requested calibration' in AGENTS
-    assert 'resets the deep-cycle interval' in AGENTS
-
-
-def test_low_point_is_latest_safe_point_not_fixed_minutes_after_cheap_start():
-    assert 'latest_safe_reserve = window[\'end\'] - timedelta(' in RUNTIME
-    assert 'hours=recharge_hours, minutes=dwell_minutes + safety_minutes' in RUNTIME
-    assert 'as late as practical within the regular off-peak window' in AGENTS
-    assert '30 minutes after the regular off-peak window begins' not in AGENTS
-
-
-def test_natural_depletion_is_evaluated_at_latest_safe_reserve_point():
-    assert "controller.soc_at(forecast, latest_safe_reserve, 'forecast_no_slots')" in RUNTIME
-    assert "strategy = 'natural_discharge'" in RUNTIME
-    assert "strategy = 'natural_plus_forced'" in RUNTIME
-    assert "strategy = 'forced_discharge'" in RUNTIME
-    assert "'projected_soc_with_pause'" in RUNTIME
-    assert "'projected_soc_without_pause'" in RUNTIME
-    assert "'predicted_natural_depletion_soc'" in RUNTIME
-
-
-def test_forced_discharge_is_only_residual_after_natural_depletion():
-    assert 'residual_soc = max(0.0, projected_without_pause - float(reserve))' in RUNTIME
-    assert 'residual_kwh = float(capacity) * residual_soc / 100.0' in RUNTIME
-    assert "'residual_forced_discharge_kwh': round(residual_kwh, 3)" in RUNTIME
-    assert "'planned_kwh': round(residual_kwh, 3)" in RUNTIME
-
-
-def test_natural_calibration_disables_preservation_and_schedules_no_export():
-    assert "plan['pause'] = {'mode': 'Disabled'" in RUNTIME
-    assert "plan['discharge']['kind'] = 'calibration_natural_depletion'" in RUNTIME
-    assert "diagnostics['action'] = 'allow_natural_discharge'" in RUNTIME
-
-
-def test_small_forecast_noise_has_bounded_margin():
-    assert '_NATURAL_MARGIN_SOC = 0.5' in RUNTIME
-    assert 'if residual_soc <= _NATURAL_MARGIN_SOC and coverage_complete:' in RUNTIME
-
-
-def test_automatic_and_manual_low_calibration_share_strategy_function():
     assert '_calibration_policy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge' in RUNTIME
     assert "if controller.calibration_state() != 'awaiting_deep_low':" in RUNTIME
 
 
-def test_manual_request_overrides_automatic_calibration_disabled_state():
-    state_fn = RUNTIME.split('def _manual_calibration_state(self):', 1)[1].split('\ndef _request_status', 1)[0]
-    assert "if _pending(self):" in state_fn
-    assert "return 'awaiting_deep_low'" in state_fn
-    assert "if state == 'disabled':" not in state_fn
-    assert 'automatic ``disabled`` state' in state_fn
+def test_low_depletion_rule_and_recharge_timing_unchanged():
+    assert "latest_safe_reserve = window['end'] - timedelta(" in RUNTIME
+    assert 'hours=recharge_hours, minutes=dwell_minutes + safety_minutes' in RUNTIME
+    assert "controller.soc_at(forecast, latest_safe_reserve, 'forecast_no_slots')" in RUNTIME
+    assert "strategy = 'natural_discharge'" in RUNTIME
+    assert "strategy = 'natural_plus_forced'" in RUNTIME
+    assert "strategy = 'forced_discharge'" in RUNTIME
+    assert "residual_soc = max(0.0, projected_without_pause - float(reserve))" in RUNTIME
+    assert "'planned_kwh': round(residual_kwh, 3)" in RUNTIME
+    assert "plan['pause'] = {'mode': 'Disabled'" in RUNTIME
+    assert "plan['discharge']['kind'] = 'calibration_natural_depletion'" in RUNTIME
+    assert '_NATURAL_MARGIN_SOC = 0.5' in RUNTIME
+    assert 'as late as practical within the regular off-peak window' in AGENTS
+
+
+def test_clear_only_transient_state_preserves_history():
+    clearable = COORDINATOR.split('CLEARABLE = (', 1)[1].split('\n)', 1)[0]
+    for key in ('manual_low_calibration_pending', 'manual_high_calibration_pending',
+                'high_calibration_requested', 'manual_high_calibration_requested',
+                'calibration_low_reached_at'):
+        assert key in COORDINATOR
+    for key in ('last_full_soc_at', 'last_deep_calibration_at',
+                'last_below_40_soc_at', 'last_below_20_soc_at',
+                'last_low_soc_at', 'soc_crossing_40', 'soc_crossing_20'):
+        assert key not in clearable
+    assert 'historical calibration timestamps and learning preserved' in COORDINATOR
+    assert '.ha.write(' not in COORDINATOR
+    assert '.ensure(' not in COORDINATOR
+
+
+def test_manual_low_status_preserves_user_facing_entities():
+    for field in ('low_calibration_requested', 'low_calibration_request_button',
+                  'low_calibration_request_button_available', 'low_calibration_requested_at',
+                  'low_calibration_request_state', 'low_calibration_request_reason',
+                  'low_calibration_request_target_soc', 'low_calibration_request_completed_at',
+                  'low_calibration_request_last_result', 'calibration_clear_button',
+                  'calibration_clear_button_available', 'calibration_state_cleared_at',
+                  'calibration_state_clear_result', 'calibration_state_cleared_keys'):
+        assert field in COORDINATOR
     assert 'automatic periodic calibration scheduling only' in AGENTS
-
-
-def test_disabled_automatic_calibration_is_not_reported_as_manual_request_blocker():
-    status_fn = RUNTIME.split('def _request_status(controller):', 1)[1].split('\ndef _calibration_attrs_with_manual_request', 1)[0]
-    assert 'calibration_disabled' not in status_fn
-    assert "return 'planned', 'user_requested'" in status_fn
-
-
-def test_manual_low_endpoint_preserves_deep_recharge_when_auto_is_disabled():
-    assert "self.db.set('calibration_low_reached_at', low_reached)" in RUNTIME
-    assert "if self.db.ok and self.db.get('calibration_low_reached_at'):" in RUNTIME
-    assert "return 'deep_recharge'" in RUNTIME
-    assert 'preserving normal deep-recharge completion' in RUNTIME
-
-
-def test_manual_recharge_completion_does_not_reenable_automatic_calibration():
-    assert "if not self.c.get('calibration_enabled', True) and low_reached and soc >= 100:" in RUNTIME
-    assert "self.db.set('last_full_soc_at', now_iso)" in RUNTIME
-    assert "self.db.set('last_deep_calibration_at', now_iso)" in RUNTIME
-    assert "self.db.set('calibration_low_reached_at', None)" in RUNTIME
-    assert 'automatic calibration remains disabled' in RUNTIME
-
-
-def test_package_owns_clear_calibration_state_button():
-    assert "_CLEAR_BUTTON_ENTITY = 'button.home_energy_manager_clear_calibration_state'" in RUNTIME
-    assert "'Clear Calibration State'" in RUNTIME
-    assert "'mdi:battery-off-outline'" in RUNTIME
-    assert '_clear_calibration_state_press' in RUNTIME
-    assert '_clear_calibration_state(self)' in RUNTIME
-
-
-def test_clear_action_removes_transient_low_and_high_request_state():
-    for key in (
-        'manual_low_calibration_pending',
-        'manual_high_calibration_pending',
-        'high_calibration_requested',
-        'manual_high_calibration_requested',
-        'calibration_low_reached_at',
-    ):
-        assert key in RUNTIME
-    clear_fn = RUNTIME.split('def _clear_calibration_state(controller):', 1)[1].split('\ndef _install_request_button', 1)[0]
-    assert 'for key, cleared_value in _CLEARABLE_CALIBRATION_STATE:' in clear_fn
-    assert 'controller.db.set(key, cleared_value)' in clear_fn
-
-
-def test_clear_action_preserves_calibration_history_and_learning():
-    clearable = RUNTIME.split('_CLEARABLE_CALIBRATION_STATE = (', 1)[1].split('\n)', 1)[0]
-    for historical_key in (
-        'last_full_soc_at',
-        'last_deep_calibration_at',
-        'last_below_40_soc_at',
-        'last_below_20_soc_at',
-        'last_low_soc_at',
-        'soc_crossing_40',
-        'soc_crossing_20',
-    ):
-        assert historical_key not in clearable
-    assert 'historical calibration timestamps and learning preserved' in RUNTIME
-
-
-def test_clear_action_is_transport_only_until_normal_controller_pass():
-    sample_fn = RUNTIME.split('async def _sample_with_manual_low_calibration(self):', 1)[1]
-    assert 'clear_event.clear()' in sample_fn
-    assert '_clear_calibration_state(self)' in sample_fn
-    assert 'next normal planner/apply pass converges any stale inverter schedule' in sample_fn
-    assert '.ensure(' not in RUNTIME.split('def _clear_calibration_state(controller):', 1)[1].split('\ndef _install_request_button', 1)[0]
-
-
-def test_clear_action_exposes_diagnostics():
-    for field in (
-        'calibration_clear_button',
-        'calibration_clear_button_available',
-        'calibration_state_cleared_at',
-        'calibration_state_clear_result',
-        'calibration_state_cleared_keys',
-    ):
-        assert field in RUNTIME
-    assert "result = 'cleared' if cleared else 'nothing_to_clear'" in RUNTIME
+    assert 'resets the deep-cycle interval' in AGENTS
