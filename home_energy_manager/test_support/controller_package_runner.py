@@ -158,6 +158,11 @@ async def run(data):
     ha = FakeHA()
     entities = prepare_entities(ha, controller_discovery.ENTITY_MAPPING,
                                 soc=data.get("soc", 82))
+    if data.get("active_existing_discharge"):
+        # 18:35–19:30 is already running at 18:45. The Axle planner requests
+        # 18:30, but the applier must preserve the observed inverter start.
+        ha.set(entities["discharge_slot_1_start"], "18:35:00")
+        ha.set(entities["discharge_slot_1_end"], "19:30:00")
     ha.set("sensor.home_energy_manager_battery_model", "ready", battery_model(now)
            if not data.get("invalid_model") else {"schema_version": 0})
     ev_entity = "switch.integration_ev_active"
@@ -242,6 +247,24 @@ async def run(data):
                "model_source": getattr(controller, "_battery_model_source", None),
                "errors": controller.errors,
                "entities": entities}
+    if data.get("case") == "axle_sequence":
+        # Exercise the *same* controller, HA readback and persisted request as
+        # the Axle event approaches, runs, then expires; not three fresh plans.
+        assert data.get("request") and data.get("axle") == "future"
+        now = BASE + timedelta(minutes=4 * 60 + 45)
+        ha.set("sensor.home_energy_manager_battery_model", "ready", battery_model(now))
+        source["attributes"]["forecast_generated_at"] = instant(now)
+        ha.writes.clear()
+        active = await compute()
+        initial["sequence_active"] = {"plan": active, "writes": list(ha.writes)}
+        now = BASE + timedelta(hours=6)
+        ha.set("sensor.home_energy_manager_battery_model", "ready", battery_model(now))
+        source["attributes"]["forecast_generated_at"] = instant(now)
+        # A past event must not hold a snapshot or stale Axle discharge.
+        ha.writes.clear()
+        after = await compute()
+        initial["sequence_after"] = {"plan": after, "writes": list(ha.writes)}
+        initial["request_pending_after"] = db.get("manual_low_calibration_pending", False)
     if data.get("case") == "lifecycle":
         now = datetime(2026, 9, 22, 3, 25, tzinfo=TZ)
         ha.set(entities["battery_soc"], 4)
