@@ -50,7 +50,7 @@ def _strategy_with_forecast_recharge(controller, plan, window, capacity, reserve
     return diagnostics
 
 
-_legacy_runtime._minimise_calibration_discharge = _strategy_with_forecast_recharge
+runtime.runtime._calibration_policy_runtime._minimise_calibration_discharge = _strategy_with_forecast_recharge
 
 if __name__ == '__main__':
     try:
