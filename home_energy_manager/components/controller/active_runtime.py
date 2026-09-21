@@ -7,8 +7,11 @@ from datetime import timedelta, timezone
 from pathlib import Path
 
 import minimise_export_runtime as runtime
+import calibration_coordinator
 
 core = runtime.core
+_original_init = core.Controller.__init__
+_original_calibration_state = core.Controller.calibration_state
 _original_ensure = core.Controller.ensure
 _original_publish = core.Controller.publish
 _original_sample = core.Controller.sample
@@ -198,10 +201,21 @@ def _log_calibration_status(controller):
     return d
 
 
+def _init_with_calibration_coordinator(self, *args, **kwargs):
+    _original_init(self, *args, **kwargs)
+    self._calibration = calibration_coordinator.CalibrationCoordinator(
+        self, _original_calibration_state
+    )
+
+
+def _calibration_state_from_coordinator(self):
+    return self._calibration.state()
+
+
 def _calibration_attrs_with_diagnostics(self):
     attrs = _original_calibration_attrs(self)
     attrs.update(_calibration_diagnostics(self))
-    return attrs
+    return self._calibration.attributes(attrs)
 
 
 def _complete_energy_window(controller, pending, sample, capacity_kwh):
@@ -265,7 +279,7 @@ async def _ensure_without_charge_target(self, field, entity, desired, window_end
     return await _original_ensure(self, field, entity, desired, window_end)
 
 
-async def _sample_with_soc_calibration_observation(self):
+async def _sample_soc_calibration_observation_core(self):
     before_full = self.db.get('last_full_soc_at') if self.db.ok else None
     before_deep = self.db.get('last_deep_calibration_at') if self.db.ok else None
     before_low_reached = self.db.get('calibration_low_reached_at') if self.db.ok else None
@@ -378,8 +392,18 @@ async def _publish_with_calibration_sensors(self, plan=None):
             await self.ha.publish(entity_id, state, attrs)
 
 
+async def _sample_with_calibration_coordinator(self):
+    # One explicit request/observation path. The existing automatic/crossing
+    # sampler remains intact until the final calibration packaging stage.
+    before = self._calibration.before_sample()
+    await _sample_soc_calibration_observation_core(self)
+    await self._calibration.after_sample(before)
+
+
+core.Controller.__init__ = _init_with_calibration_coordinator
+core.Controller.calibration_state = _calibration_state_from_coordinator
 core.Controller.ensure = _ensure_without_charge_target
-core.Controller.sample = _sample_with_soc_calibration_observation
+core.Controller.sample = _sample_with_calibration_coordinator
 core.Controller.calibration_attrs = _calibration_attrs_with_diagnostics
 core.Controller.publish = _publish_with_calibration_sensors
 
