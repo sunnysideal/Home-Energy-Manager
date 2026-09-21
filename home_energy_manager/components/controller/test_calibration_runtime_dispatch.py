@@ -35,7 +35,7 @@ class DummyController:
 
 
 def _import_path(monkeypatch, name, path):
-    spec = importlib.util.spec_from_file_location(name, ROOT / path)
+    spec = importlib.util.spec_from_file_location(name, ROOT / Path(path).name)
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, name, module)
     spec.loader.exec_module(module)
@@ -91,14 +91,14 @@ def runtime(monkeypatch):
     monkeypatch.setitem(sys.modules, 'common.mqtt_button', mqtt)
 
     low = _import_path(monkeypatch, 'manual_low_calibration_runtime',
-                       'components/controller/manual_low_calibration_runtime.py')
+                       'manual_low_calibration_runtime.py')
     assert effective._minimise_calibration_discharge is low._natural_first_calibration_discharge
     assert '_minimise_calibration_discharge' not in rollover.__dict__
 
     _import_path(monkeypatch, 'manual_high_calibration_runtime',
-                 'components/controller/manual_high_calibration_runtime.py')
+                 'manual_high_calibration_runtime.py')
     recharge = _import_path(monkeypatch, 'calibration_charge_runtime',
-                            'components/controller/calibration_charge_runtime.py')
+                            'calibration_charge_runtime.py')
     assert effective._minimise_calibration_discharge is recharge._strategy_with_forecast_recharge
     assert '_minimise_calibration_discharge' not in rollover.__dict__
     return effective, recharge
