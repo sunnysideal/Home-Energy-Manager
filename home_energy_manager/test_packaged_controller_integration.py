@@ -146,7 +146,8 @@ def test_effective_planner_dispatch_is_required_for_recharge(simulate):
     # the actual planner still produces its original no-recharge schedule.
     assert result["calibration_state"] == "awaiting_deep_low"
     assert result["plan"]["charge"].get("kind") != "calibration_forecast_recharge"
-    assert result["plan"]["pause"]["mode"] != "Disabled"
+    # Normal minimise-export no longer pauses Eco during the cheap window.
+    assert result["plan"]["charge"].get("kind") != "calibration_forecast_recharge"
 
 
 def test_low_request_survives_fresh_controller_instance_and_db(simulate):
@@ -254,16 +255,15 @@ def test_expired_or_absent_axle_restores_underlying_calibration_planner(simulate
         assert result["plan"]["discharge"]["target_soc"] == 4
 
 
-def test_normal_minimise_export_preservation_and_charge_have_no_overlap(simulate):
+def test_normal_minimise_export_eco_remains_available_before_charge(simulate):
     result = simulate(natural_soc=18)
     assert result["calibration_state"] == "disabled"
     assert result["plan"]["discharge"]["planned_kwh"] == 0
-    assert result["plan"]["pause"]["mode"] == "PauseBoth"
+    assert result["plan"]["pause"]["mode"] == "Disabled"
     assert fields(result)["eco_mode"] == "on"
+    assert fields(result)["pause_mode"] == "Disabled"
     charge = result["plan"]["charge"]
-    if charge["planned_kwh"] > 0:
-        assert result["plan"]["pause"]["end"] == datetime.fromisoformat(
-            charge["start"]).strftime("%H:%M:%S")
+    assert datetime.fromisoformat(charge["start"]) <= datetime.fromisoformat(charge["end"])
     assert_no_unauthorised_target_write(result)
 
 

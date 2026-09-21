@@ -21,7 +21,7 @@ Designed to retain solar locally:
 
 - no forced evening export
 - normal daytime Eco/self-consumption is left available so solar can charge the battery
-- during the cheap overnight window the controller uses `PauseDischarge`, preserving stored battery energy while the house uses cheap grid electricity
+- during the regular cheap overnight window, normal Eco/self-consumption remains enabled until a scheduled charge begins; charging accounts for forecast household load/PV before the charge start and is corrected using live SOC during the window
 - if `overnight_start_soc_no_slots` is at or above `minimise_export_min_soc`, no forced overnight charge is scheduled
 - if it is below that threshold, the controller charges only to the threshold (default 25%), not to 100%
 
@@ -48,7 +48,7 @@ If 100% has not been observed for the configured number of days, the next suitab
 
 When a deep calibration becomes due:
 
-- in `minimise_export`, the normal 25% overnight minimum top-up is temporarily suppressed, allowing ordinary household use to take the battery down toward the configured floor; overnight `PauseDischarge` remains active so cheap-rate energy is still preferred overnight
+- in `minimise_export`, the normal overnight minimum top-up may be temporarily suppressed during the relevant calibration preparation; normal Eco/self-consumption remains available during cheap rate, with required overnight charging still planned separately
 - in `maximise_export`, the evening forced-export reserve is temporarily lowered to the configured deep-cycle floor, allowing the scheduled export to reach the low endpoint
 
 Once the actual battery SOC reaches the configured floor, the controller records the low endpoint. The next charging opportunity is then forced to 100%. Reaching 100% completes the deep calibration and resets both calibration state and full-charge timer.

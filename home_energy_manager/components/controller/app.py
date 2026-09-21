@@ -71,7 +71,7 @@ class Controller(_legacy.Controller):
     def pause_plan(self, window, state=None):
         plan = super().pause_plan(window, state)
         if self.operation_mode() == 'minimise_export' and plan.get('mode') == 'PauseDischarge':
-            plan = dict(plan); plan['mode'] = 'PauseBoth'
+            plan = dict(plan); plan['mode'] = 'Disabled'; plan['start'] = '00:00:00'; plan['end'] = '00:00:00'
         return plan
     async def learn_pending(self):
         """Controller no longer owns or updates the physical battery model."""

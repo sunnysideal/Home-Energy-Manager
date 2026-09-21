@@ -64,9 +64,9 @@ Any person or AI modifying this project MUST read this file before changing cont
    - The solar-headroom calculation may conservatively assume unity battery efficiency; this can leave slightly more empty capacity than strictly necessary but must never justify a higher target than the forecast can safely absorb.
    - The peak-import calculation must use the forecaster's no-slots load/PV curve and must account for energy demand hidden after forecast SOC reaches inverter reserve; arrival SOC alone is insufficient because it is clamped at reserve.
    - If the no-slots forecast does not fully cover the required bridge, or required battery inputs are unavailable, the regular target must fail safe to 100% rather than risk deliberate peak-rate import or unsupported solar-headroom assumptions.
-   - In `minimise_export`, regular cheap-window preservation and charging are one coordinated plan. `PauseBoth` preserves the battery until charging is required; a required regular charge starts when preservation ends and must not overlap `PauseBoth`.
-   - The charge duration must be sized from the SOC that the controller expects `PauseBoth` to preserve (live SOC when already inside the regular cheap window, otherwise forecast SOC at its start), not from a later no-slots SOC that assumes Eco discharge continues during the pause.
-   - If the preserved SOC already meets or exceeds the calculated overnight target, no regular charge is scheduled and `PauseBoth` may continue through the cheap window.
+   - In `minimise_export`, do not schedule a regular overnight preservation pause: allow Eco/self-consumption to supply household load during the cheap window until an actual charging slot begins. This does not override higher-priority Axle, calibration, or confirmed EV Smart Charging controls.
+   - Size and time the regular charge from the forecast SOC at its proposed start, including household load/PV before charging. When already in the cheap window, anchor that projection to live SOC; update on subsequent planning cycles. The charge must still finish before the regular cheap window ends, accounting for the configured charging safety margin.
+   - When projected SOC at cheap-window end already meets the overnight target without forced charging, schedule no regular charge. If forecast coverage is missing, prefer charging promptly over assuming the battery will retain SOC without a pause.
 
 8. **No overnight pre-export of forecast solar**
    - The regular overnight cheap period must not be used to pre-export the current day's forecast solar generation.
