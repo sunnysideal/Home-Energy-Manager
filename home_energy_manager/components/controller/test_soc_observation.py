@@ -1,5 +1,5 @@
-import asyncio
 """Exercise packaged SOC observation independently of automatic calibration."""
+import asyncio
 import importlib.util
 import sys
 import types
@@ -143,7 +143,7 @@ def test_missing_energy_meters_do_not_prevent_crossing_or_soc_window(observer, e
     c = Controller(enabled=enabled, energy=False)
     asyncio.run(reading(observer, c, 0, 60))
     asyncio.run(reading(observer, c, 5, 45))
-    asyncio.run(reading(observer, c, 6, 15)  # Both thresholds in one sample.
+    asyncio.run(reading(observer, c, 6, 15))  # Both thresholds in one sample.
     asyncio.run(reading(observer, c, 11, 10))
     for threshold in (40, 20):
         key = f"soc_crossing_{threshold}"
