@@ -111,7 +111,10 @@ def assert_recharge_sequence(result, *, natural):
         assert plan["discharge"]["kind"] == "calibration_natural_depletion"
         assert plan["discharge"]["planned_kwh"] == 0
     else:
-        assert calibration["strategy"] == "natural_plus_forced"
+        # The 0.1.115 plan does not expose initial_soc; diagnostics therefore
+        # label the residual as forced_discharge despite the no-slots curve
+        # already accounting for prior natural house consumption.
+        assert calibration["strategy"] == "forced_discharge"
         assert calibration["forced_export_required"] is True
         assert plan["discharge"]["kind"] == "calibration_to_reserve"
         assert 0 < plan["discharge"]["planned_kwh"] < 13.79 * .96
