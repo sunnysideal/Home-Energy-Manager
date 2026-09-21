@@ -126,7 +126,8 @@ def prepare_entities(ha, mapping, *, soc=82):
 
 async def run(data):
     package = Path(sys.argv[1]).resolve()
-    sys.path.insert(0, str(package))
+    sys.path.insert(0, str(package / "runtime" / "controller"))
+    sys.path.insert(1, str(package))
     os.environ["HOME_ENERGY_MQTT_CONFIG"] = '{"enabled":false}'
     os.environ["SUPERVISOR_TOKEN"] = "test-supervisor-token"
 
