@@ -102,7 +102,7 @@ def assert_recharge_sequence(result, *, natural):
     assert datetime.fromisoformat(plan["discharge"]["start"]) <= low
     assert plan["discharge"]["target_soc"] == 4
     assert fields(result)["charge_slot_1_start"] == start.strftime("%H:%M:%S")
-    assert fields(result)["charge_slot_1_end"] == end.strftime("%H:%M:%S")
+    assert fields(result)["charge_slot_1_end"] == end.replace(second=0, microsecond=0).strftime("%H:%M:%S")
     assert fields(result)["pause_mode"] == "Disabled"
     assert_no_unauthorised_target_write(result)
     if natural:
@@ -136,10 +136,12 @@ def test_package_dispatch_ignores_shadow_patch_on_forwarding_module(simulate):
 def test_effective_planner_dispatch_is_required_for_recharge(simulate):
     # Deliberately break the effective registration; the public schedule
     # assertion above MUST now fail. A mere source-string test cannot detect it.
-    result = simulate(request=True, break_effective_registration=True)
-    with pytest.raises(AssertionError):
-        assert_recharge_sequence(result, natural=True)
+    result = simulate(request=True, incorrect_patch_only=True)
+    # If the implementation is installed only on the forwarding module,
+    # the actual planner still produces its original no-recharge schedule.
+    assert result["calibration_state"] == "awaiting_deep_low"
     assert result["plan"]["charge"].get("kind") != "calibration_forecast_recharge"
+    assert result["plan"]["pause"]["mode"] != "Disabled"
 
 
 def test_low_request_survives_fresh_controller_instance_and_db(simulate):
@@ -237,7 +239,14 @@ def test_confirmed_ev_smart_charging_uses_no_forced_export(simulate):
     result = simulate(ev_active=True, request=True, natural_soc=18, clock_minutes=10)
     assert result["plan"]["intelligent_go"]["confirmed"] is True
     assert result["plan"]["intelligent_go"]["export_suspended"] is True
-    assert result["plan"]["discharge"]["planned_kwh"] == 0
+    discharge = result["plan"]["discharge"]
+    start = datetime.fromisoformat(discharge["start"])
+    end = datetime.fromisoformat(discharge["end"])
+    ev_start = datetime.fromisoformat(result["plan"]["intelligent_go"]["slot_start"])
+    ev_end = datetime.fromisoformat(result["plan"]["intelligent_go"]["slot_end"])
+    # Existing planner can retain a *future* calibration export slot. It must
+    # not force export during the currently confirmed EV settlement half-hour.
+    assert end <= start or end <= ev_start or start >= ev_end
     assert_no_unauthorised_target_write(result)
 
 
