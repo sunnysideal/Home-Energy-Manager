@@ -63,9 +63,22 @@ async def coordinate_minimise_offpeak(controller, state, plan, window, fallback=
     projected_end_soc = controller.projected_charge_start_soc(
         state, charge_end, adjustment, float(reserve)
     )
+    # soc_at() returns the last known point even when the forecast ends early.
+    # Require forecast coverage through the full remaining cheap interval.
+    forecast_intervals = controller.intervals(state, 'forecast_no_slots')
+    covered_until = earliest
+    for segment_start, segment_end, _rate, _slot in forecast_intervals:
+        if segment_end <= covered_until:
+            continue
+        if segment_start > covered_until + timedelta(seconds=1):
+            break
+        covered_until = max(covered_until, segment_end)
+        if covered_until >= charge_end:
+            break
+    forecast_complete = covered_until >= charge_end
     # No reliable projection: charge promptly instead of assuming the battery
     # will retain energy without a preservation pause.
-    forecast_missing = projected_end_soc is None or (active and (observed_soc is None or forecast_now is None))
+    forecast_missing = not forecast_complete or projected_end_soc is None or (active and (observed_soc is None or forecast_now is None))
     needs_charge = forecast_missing or target > projected_end_soc + 0.5
     if not needs_charge:
         fallback_rate = max_charge if max_charge is not None else capacity * 250.0
