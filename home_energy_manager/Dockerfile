@@ -65,6 +65,7 @@ COPY components/controller/minimise_export_runtime.py /app/runtime/controller/le
 COPY components/controller/minimise_export_runtime.py /app/runtime/controller/minimise_export_core.py
 COPY components/controller/offpeak_rollover_runtime.py /app/runtime/controller/legacy_minimise_export_runtime.py
 COPY components/controller/controller_overlay_runtime.py /app/runtime/controller/minimise_export_runtime.py
+COPY components/controller/calibration_coordinator.py /app/runtime/controller/calibration_coordinator.py
 COPY components/controller/active_runtime.py /app/runtime/controller/app.py
 COPY components/controller/active_runtime.py /app/runtime/controller/active_runtime.py
 COPY components/controller/manual_low_calibration_runtime.py /app/runtime/controller/app.py
