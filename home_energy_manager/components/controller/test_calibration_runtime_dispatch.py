@@ -84,7 +84,7 @@ def runtime(monkeypatch):
         clamp=lambda value, low, high: max(low, min(high, value)),
     )
     active.core = core
-    active.runtime = types.SimpleNamespace(runtime=overlays)
+    active.runtime = overlays
     monkeypatch.setitem(sys.modules, 'active_runtime', active)
     mqtt = types.ModuleType('common.mqtt_button')
     mqtt.publish_command_button = lambda *_args: True
