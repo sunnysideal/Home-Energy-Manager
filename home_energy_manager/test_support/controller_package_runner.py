@@ -225,8 +225,13 @@ async def run(data):
         assert legacy_minimise_export_runtime.runtime is minimise_export_core
         assert legacy_minimise_export_runtime._minimise_calibration_discharge is not (
             minimise_export_core._minimise_calibration_discharge)
-    if data.get("break_effective_registration"):
+    if data.get("incorrect_patch_only"):
+        # Reproduce the PR #92 failure: register a valid replacement on the
+        # forwarding module, leaving the effective planner unmodified.
+        correct = minimise_export_core._minimise_calibration_discharge
         minimise_export_core._minimise_calibration_discharge = lambda *_args: None
+        legacy_minimise_export_runtime._minimise_calibration_discharge = correct
+        assert legacy_minimise_export_runtime.runtime is minimise_export_core
 
     plan = await compute()
     initial = {"plan": plan, "writes": list(ha.writes),
