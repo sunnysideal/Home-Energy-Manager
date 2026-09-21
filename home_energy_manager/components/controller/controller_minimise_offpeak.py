@@ -23,12 +23,10 @@ def active_or_next_offpeak(controller, window):
 
 
 async def coordinate_minimise_offpeak(controller, state, plan, window, fallback=False):
-    """Plan regular cheap-rate preservation and charging as one sequence.
+    """Schedule cheap-rate charging while ordinary Eco discharge remains enabled.
 
-    PauseBoth means household load does not consume battery energy. Therefore a
-    delayed charge is sized from the SOC being preserved, not from the no-slots
-    SOC later in the cheap window. The resulting sequence is PauseBoth -> Charge,
-    with either phase allowed to have zero duration.
+    The no-slots forecast includes household load/PV before charge start; when
+    already in the cheap period, correct that forecast using current live SOC.
     """
     if fallback or not plan or controller.operation_mode() != 'minimise_export':
         return plan
@@ -48,59 +46,72 @@ async def coordinate_minimise_offpeak(controller, state, plan, window, fallback=
     if capacity is None or capacity <= 0 or reserve is None:
         return plan
 
-    preserved_soc = await controller.live_soc() if active else None
-    if preserved_soc is None:
-        preserved_soc = as_float(state.get('attributes', {}).get('overnight_start_soc_no_slots'))
-    if preserved_soc is None:
-        preserved_soc = controller.soc_at(state, control_window['start'], 'forecast_no_slots')
-    if preserved_soc is None:
-        return plan
-    preserved_soc = clamp(float(preserved_soc), float(reserve), 100.0)
-    target = clamp(float(target), float(reserve), 100.0)
-
     now = controller.now()
     earliest = max(control_window['start'], now) if active else control_window['start']
     charge = dict(plan.get('charge') or {})
-    safety_minutes = max(0.0, float(controller.c.get('charge_safety_margin_minutes', 10)))
-    needs_charge = target > preserved_soc + 0.5
+    target = clamp(float(target), float(reserve), 100.0)
+    charge_end = control_window['end'].replace(second=0, microsecond=0)
 
-    if needs_charge:
-        rate = controller.choose_rate(preserved_soc, target, capacity, control_window, max_charge)
-        charge_minutes = controller.charge_minutes(preserved_soc, target, rate, capacity) + safety_minutes
-        charge_start = max(earliest, control_window['end'] - timedelta(minutes=charge_minutes))
-        charge_end = control_window['end'].replace(second=0, microsecond=0)
-        planned_kwh = capacity * max(0.0, target - preserved_soc) / 100.0
-    else:
+    # Correct the no-forced-slots trajectory with current battery SOC during
+    # the active cheap period, including real household consumption to date.
+    adjustment = 0.0
+    observed_soc = await controller.live_soc() if active else None
+    forecast_now = controller.soc_at(state, now, 'forecast_no_slots') if active else None
+    if observed_soc is not None and forecast_now is not None:
+        adjustment = float(forecast_now) - float(observed_soc)
+
+    projected_end_soc = controller.projected_charge_start_soc(
+        state, charge_end, adjustment, float(reserve)
+    )
+    # No reliable projection: charge promptly instead of assuming the battery
+    # will retain energy without a preservation pause.
+    forecast_missing = projected_end_soc is None or (active and (observed_soc is None or forecast_now is None))
+    needs_charge = forecast_missing or target > projected_end_soc + 0.5
+    if not needs_charge:
         fallback_rate = max_charge if max_charge is not None else capacity * 250.0
         rate = int(round(as_float(charge.get('rate_w')) or fallback_rate))
-        charge_start = control_window['end'].replace(second=0, microsecond=0)
-        charge_end = charge_start
+        charge_start = charge_end
+        start_soc = projected_end_soc
         planned_kwh = 0.0
-
-    pause_start = control_window['start'].replace(second=0, microsecond=0)
-    pause_end = charge_start.replace(second=0, microsecond=0)
-    if pause_end > pause_start:
-        pause = {'mode': 'PauseBoth', 'start': controller.tstr(pause_start), 'end': controller.tstr(pause_end)}
+    elif forecast_missing:
+        # Missing forecast requires a conservative immediate cheap-rate charge.
+        start_soc = clamp(float(observed_soc) if observed_soc is not None else float(reserve), float(reserve), 100.0)
+        rate = controller.choose_rate(float(reserve), target, capacity, control_window, max_charge)
+        charge_start = earliest.replace(second=0, microsecond=0)
+        planned_kwh = capacity * max(0.0, target - start_soc) / 100.0
     else:
-        pause = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}
+        # Solve start and rate against projected SOC at that actual start,
+        # accounting for household load and solar prior to charging.
+        rate, charge_start, start_soc, feasible = controller.choose_rate_and_start(
+            state, control_window, target, capacity, float(reserve), adjustment,
+            max_charge, earliest=earliest,
+        )
+        if start_soc is None:
+            start_soc = float(reserve)
+        if not feasible:
+            # An unachievable target must not result in a late charge slot.
+            charge_start = earliest
+        charge_start = charge_start.replace(second=0, microsecond=0)
+        planned_kwh = capacity * max(0.0, target - start_soc) / 100.0
 
     charge.update({
-        'start': iso(charge_start.replace(second=0, microsecond=0)),
+        'start': iso(charge_start),
         'end': iso(charge_end),
         'rate_w': int(round(rate)),
         'target_soc': int(round(target)),
         'planned_kwh': round(planned_kwh, 3),
     })
-    plan['pause'] = pause
+    plan['pause'] = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}
     plan['charge'] = charge
     forecast = dict(plan.get('forecast') or {})
-    forecast['preserved_offpeak_start_soc'] = round(preserved_soc, 1)
     forecast['joint_pause_charge_plan'] = True
     forecast['joint_pause_charge_needs_charge'] = bool(needs_charge)
+    forecast['projected_cheap_end_soc_no_charge'] = round(projected_end_soc, 1) if projected_end_soc is not None else None
+    forecast['projected_charge_start_soc'] = round(start_soc, 1) if start_soc is not None else None
     plan['forecast'] = forecast
     controller.LOG.info(
-        'Minimise export joint offpeak plan: preserved_soc=%.1f%% target=%.1f%% pause=%s-%s charge=%s-%s rate=%dW planned=%.2fkWh',
-        preserved_soc, target, pause['start'], pause['end'],
+        'Minimise export Eco offpeak plan: live_soc=%s projected_end_soc=%s target=%.1f%% charge=%s-%s rate=%dW planned=%.2fkWh',
+        observed_soc, projected_end_soc, target,
         charge_start.strftime('%H:%M'), charge_end.strftime('%H:%M'), int(round(rate)), planned_kwh,
     )
     return plan
