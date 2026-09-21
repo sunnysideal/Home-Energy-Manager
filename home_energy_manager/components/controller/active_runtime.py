@@ -285,7 +285,9 @@ async def _sample_soc_calibration_observation_core(self):
     before_low_reached = self.db.get('calibration_low_reached_at') if self.db.ok else None
     previous_soc = core.as_float(self.db.get('calibration_previous_soc')) if self.db.ok else None
     await _original_sample(self)
-    if not self.db.ok or not self.discovery_ready or not self.c.get('calibration_enabled', True):
+    # SOC history and threshold observations must continue when automatic
+    # periodic calibration is disabled (including during manual cycles).
+    if not self.db.ok or not self.discovery_ready:
         return
     st = await self.ha.state(self.c.get('battery_soc_entity', ''))
     soc = core.as_float(st.get('state')) if st else None
@@ -304,6 +306,12 @@ async def _sample_soc_calibration_observation_core(self):
     if previous_at is not None:
         try: elapsed_seconds = max(0.0, (now - previous_at.astimezone(now.tzinfo)).total_seconds())
         except Exception: pass
+
+    # The legacy automatic sampler owns full-charge accounting while enabled.
+    # Observe genuine full-charge arrivals independently when it is disabled.
+    if (soc >= 100 and not self.c.get('calibration_enabled', True)
+            and (previous_soc is None or previous_soc < 100)):
+        self.db.set('last_full_soc_at', now_iso)
 
     after_full = self.db.get('last_full_soc_at')
     after_deep = self.db.get('last_deep_calibration_at')
