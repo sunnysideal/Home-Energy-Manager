@@ -19,6 +19,9 @@ _original_sample = core.Controller.sample
 _original_calibration_state = core.Controller.calibration_state
 _original_calibration_attrs = core.Controller.calibration_attrs
 _legacy_runtime = runtime.runtime.legacy_runtime
+# offpeak_rollover_runtime forwards reads via __getattr__, but assignments to
+# that wrapper do not update the actual minimise_export_core planner globals.
+_calibration_policy_runtime = _legacy_runtime.runtime
 
 _PENDING_KEY = 'manual_low_calibration_pending'
 _REQUESTED_AT_KEY = 'manual_low_calibration_requested_at'
@@ -365,7 +368,7 @@ async def _sample_with_manual_low_calibration(self):
 
 # Patch the legacy policy function used by the active overlay pipeline. This is
 # policy only: forecast physics still comes from the Home Forecaster entity/API.
-_legacy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge
+_calibration_policy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge
 core.Controller.__init__ = _init_with_calibration_buttons
 core.Controller.calibration_state = _manual_calibration_state
 core.Controller.calibration_attrs = _calibration_attrs_with_manual_request
