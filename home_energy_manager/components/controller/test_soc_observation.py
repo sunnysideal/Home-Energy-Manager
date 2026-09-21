@@ -1,3 +1,4 @@
+import asyncio
 """Exercise packaged SOC observation independently of automatic calibration."""
 import importlib.util
 import sys
@@ -115,17 +116,16 @@ async def reading(observer, controller, minutes, soc, discharged_kwh=None):
     await observer._sample_soc_calibration_observation_core(controller)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_crossings_recorded_and_energy_window_completed_with_or_without_automatic_calibration(observer, enabled):
+def test_crossings_recorded_and_energy_window_completed_with_or_without_automatic_calibration(observer, enabled):
     c = Controller(enabled=enabled, energy=True)
-    await reading(observer, c, 0, 60, 0)
-    await reading(observer, c, 5, 46, 0.4)
-    await reading(observer, c, 6, 39, 0.5)
-    await reading(observer, c, 7, 35, 0.6)
-    await reading(observer, c, 10, 30, 0.9)
-    await reading(observer, c, 11, 18, 1.0)
-    await reading(observer, c, 16, 12, 1.3)
+    asyncio.run(reading(observer, c, 0, 60, 0))
+    asyncio.run(reading(observer, c, 5, 46, 0.4))
+    asyncio.run(reading(observer, c, 6, 39, 0.5))
+    asyncio.run(reading(observer, c, 7, 35, 0.6))
+    asyncio.run(reading(observer, c, 10, 30, 0.9))
+    asyncio.run(reading(observer, c, 11, 18, 1.0))
+    asyncio.run(reading(observer, c, 16, 12, 1.3))
     assert c.db.get("last_below_40_soc_at") == (START + timedelta(minutes=6)).isoformat()
     assert c.db.get("last_below_20_soc_at") == (START + timedelta(minutes=11)).isoformat()
     for threshold in (40, 20):
@@ -138,14 +138,13 @@ async def test_crossings_recorded_and_energy_window_completed_with_or_without_au
     assert not c.writes
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_missing_energy_meters_do_not_prevent_crossing_or_soc_window(observer, enabled):
+def test_missing_energy_meters_do_not_prevent_crossing_or_soc_window(observer, enabled):
     c = Controller(enabled=enabled, energy=False)
-    await reading(observer, c, 0, 60)
-    await reading(observer, c, 5, 45)
-    await reading(observer, c, 6, 15)  # Both thresholds in one sample.
-    await reading(observer, c, 11, 10)
+    asyncio.run(reading(observer, c, 0, 60))
+    asyncio.run(reading(observer, c, 5, 45))
+    asyncio.run(reading(observer, c, 6, 15)  # Both thresholds in one sample.
+    asyncio.run(reading(observer, c, 11, 10))
     for threshold in (40, 20):
         key = f"soc_crossing_{threshold}"
         assert c.db.get(f"last_below_{threshold}_soc_at") == (START + timedelta(minutes=6)).isoformat()
@@ -156,37 +155,35 @@ async def test_missing_energy_meters_do_not_prevent_crossing_or_soc_window(obser
         assert c.db.get(f"{key}_window_correction_pp") is None
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_full_and_low_endpoints_observed_without_forcing_automatic_recharge(observer, enabled):
+def test_full_and_low_endpoints_observed_without_forcing_automatic_recharge(observer, enabled):
     c = Controller(enabled=enabled, energy=False)
-    await reading(observer, c, 0, 25)
-    await reading(observer, c, 1, 4)
+    asyncio.run(reading(observer, c, 0, 25))
+    asyncio.run(reading(observer, c, 1, 4))
     low = c.db.get("last_low_soc_at")
     assert low == (START + timedelta(minutes=1)).isoformat()
     assert c.db.get("last_deep_calibration_at") == low
     assert c.db.get("calibration_low_reached_at") is None
-    await reading(observer, c, 2, 4)
+    asyncio.run(reading(observer, c, 2, 4))
     assert c.db.get("last_low_soc_at") == low
-    await reading(observer, c, 3, 5)
-    await reading(observer, c, 4, 4)
+    asyncio.run(reading(observer, c, 3, 5))
+    asyncio.run(reading(observer, c, 4, 4))
     assert c.db.get("last_low_soc_at") == (START + timedelta(minutes=4)).isoformat()
-    await reading(observer, c, 5, 99)
+    asyncio.run(reading(observer, c, 5, 99))
     assert c.db.get("last_full_soc_at") is None
-    await reading(observer, c, 6, 100)
+    asyncio.run(reading(observer, c, 6, 100))
     full = c.db.get("last_full_soc_at")
     assert full == (START + timedelta(minutes=6)).isoformat()
-    await reading(observer, c, 7, 100)
+    asyncio.run(reading(observer, c, 7, 100))
     if not enabled:
         assert c.db.get("last_full_soc_at") == full
     assert not c.writes
 
 
-@pytest.mark.asyncio
-async def test_disabled_automatic_calibration_does_not_complete_deep_recharge_by_observation_alone(observer):
+def test_disabled_automatic_calibration_does_not_complete_deep_recharge_by_observation_alone(observer):
     c = Controller(enabled=False, energy=False)
     c.db.set("calibration_low_reached_at", START.isoformat())
-    await reading(observer, c, 1, 100)
+    asyncio.run(reading(observer, c, 1, 100))
     assert c.db.get("last_full_soc_at") == (START + timedelta(minutes=1)).isoformat()
     assert c.db.get("calibration_low_reached_at") == START.isoformat()
     assert c.db.get("last_deep_calibration_at") is None
