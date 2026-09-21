@@ -7,9 +7,10 @@ APPLIER = (ROOT / "controller_plan_applier.py").read_text(encoding="utf-8")
 AGENTS = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
 
-def test_minimise_export_uses_pause_both_for_zero_flow_preservation():
+def test_minimise_export_does_not_pause_normal_cheap_window():
     assert "self.operation_mode() == 'minimise_export'" in APP
-    assert "plan['mode'] = 'PauseBoth'" in APP
+    assert "plan['mode'] = 'PauseBoth'" not in APP
+    assert "plan['mode'] = 'Disabled'" in APP
 
 
 def test_confirmed_cheap_idle_overlay_is_promoted_to_pause_both():
@@ -19,22 +20,15 @@ def test_confirmed_cheap_idle_overlay_is_promoted_to_pause_both():
     assert "pause={'mode':mode" in APPLIER
 
 
-def test_minimise_export_coordinates_pause_and_charge_as_one_plan():
+def test_minimise_export_forecasts_discharge_before_charge():
     assert "coordinate_minimise_offpeak as _coordinate_minimise_offpeak" in APP
     assert "await _coordinate_minimise_offpeak(self, state, plan, window, fallback)" in APP
     assert "async def coordinate_minimise_offpeak" in JOINT
-    assert "preserved_soc = await controller.live_soc() if active else None" in JOINT
-    assert "charge_minutes = controller.charge_minutes(preserved_soc, target, rate, capacity)" in JOINT
-    assert "pause_end = charge_start.replace(second=0, microsecond=0)" in JOINT
+    assert "controller.choose_rate_and_start(" in JOINT
+    assert "controller.soc_at(state, now, 'forecast_no_slots')" in JOINT
+    assert "controller.live_soc()" in JOINT
     assert "forecast['joint_pause_charge_plan'] = True" in JOINT
-    assert "PauseBoth -> Charge" in JOINT
-
-
-def test_minimise_export_does_not_schedule_charge_when_preserved_soc_meets_target():
-    assert "needs_charge = target > preserved_soc + 0.5" in JOINT
-    assert "charge_start = control_window['end'].replace(second=0, microsecond=0)" in JOINT
-    assert "charge_end = charge_start" in JOINT
-    assert "planned_kwh = 0.0" in JOINT
+    assert "plan['pause'] = {'mode': 'Disabled'" in JOINT
 
 
 def test_joint_plan_is_not_applied_to_calibration_or_confirmed_ev_overlay():
@@ -42,7 +36,7 @@ def test_joint_plan_is_not_applied_to_calibration_or_confirmed_ev_overlay():
     assert "controller.calibration_state() in ('awaiting_deep_low', 'deep_recharge')" in JOINT
 
 
-def test_joint_pause_charge_rule_is_documented_as_invariant():
-    assert "regular cheap-window preservation and charging are one coordinated plan" in AGENTS
-    assert "must not overlap `PauseBoth`" in AGENTS
-    assert "SOC that the controller expects `PauseBoth` to preserve" in AGENTS
+def test_overnight_eco_rule_is_documented_as_invariant():
+    assert "do not schedule a regular overnight preservation pause" in AGENTS
+    assert "including household load/PV before charging" in AGENTS
+    assert "anchor that projection to live SOC" in AGENTS
