@@ -351,6 +351,8 @@ The controller never uses the inverter charge-target SOC setting as a normal pla
 
 When calibration is enabled, Home Energy Manager can periodically plan top-end and low-end battery calibration opportunities.
 
+**SoC monitoring remains active when automatic calibration is disabled.** Home Energy Manager records observed full (100%), low (the configured low endpoint, normally 4%), and downward 40%/20% crossings without starting an automatic calibration cycle. In Home Assistant, inspect `sensor.home_energy_manager_last_full_charge`, `sensor.home_energy_manager_last_low_soc`, `sensor.home_energy_manager_last_below_40_soc`, and `sensor.home_energy_manager_last_below_20_soc`. The latter two sensors include each crossing's SoC step and a ten-minute energy comparison when the corresponding cumulative battery charge and discharge energy meters are configured. Without those cumulative kWh meters, the crossing timestamps and SoC changes still update but the energy-based correction remains unavailable. These observations do not initiate a discharge or recharge; a manually requested low or high calibration still follows its existing completion rules.
+
 For low calibration in `minimise_export`, the controller prefers natural household consumption to reduce SOC. Forced discharge/export is used only for the remaining shortfall when required, and the controller plans the recharge within the same cheap period when practical. If there is not enough cheap-rate time for the required low dwell and recharge, calibration is postponed rather than deliberately extending the recharge into peak-rate time.
 
 # Troubleshooting
