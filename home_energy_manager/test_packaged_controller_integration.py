@@ -217,6 +217,32 @@ def test_active_axle_overlays_low_calibration_and_confirmed_ev_blocks_export(sim
     assert ev["plan"]["intelligent_go"]["export_suspended"] is True
 
 
+def test_axle_lifecycle_replans_same_controller_without_losing_calibration(simulate):
+    result = simulate("axle_sequence", request=True, natural_soc=18, axle="future")
+    assert result["plan"]["discharge"]["kind"] != "calibration_to_reserve"
+    assert result["plan"]["charge"]["kind"] == "calibration_forecast_recharge"
+    active = result["sequence_active"]
+    assert active["plan"]["axle"]["action"] == "axle_export"
+    assert active["plan"]["discharge"]["kind"] == "axle_export"
+    after = result["sequence_after"]
+    assert after["plan"]["discharge"]["kind"] == "calibration_to_reserve"
+    assert after["plan"]["charge"]["kind"] == "calibration_forecast_recharge"
+    assert result["request_pending_after"] is True
+    charge_entity = result["entities"]["charge_slot_1_target"]
+    assert all(write["entity"] != charge_entity for stage in (
+        result["writes"], active["writes"], after["writes"]) for write in stage)
+
+
+def test_active_axle_discharge_preserves_existing_inverter_slot_start(simulate):
+    result = simulate(request=True, natural_soc=18, axle="active",
+                      clock_minutes=4 * 60 + 45, active_existing_discharge=True)
+    assert datetime.fromisoformat(result["plan"]["discharge"]["start"]).strftime(
+        "%H:%M:%S") == "18:30:00"
+    assert fields(result)["discharge_slot_1_start"] == "18:35:00"
+    assert fields(result)["discharge_slot_1_end"] == "19:30:00"
+    assert_no_unauthorised_target_write(result)
+
+
 def test_expired_or_absent_axle_restores_underlying_calibration_planner(simulate):
     for axle in ("expired", "none"):
         result = simulate(request=True, natural_soc=18, axle=axle,
