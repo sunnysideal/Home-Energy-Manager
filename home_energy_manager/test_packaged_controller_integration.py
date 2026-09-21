@@ -99,6 +99,8 @@ def assert_recharge_sequence(result, *, natural):
     end = datetime.fromisoformat(plan["charge"]["end"])
     assert start >= low + timedelta(minutes=14)  # minute-truncated start
     assert start < end <= OFFPEAK_END
+    # Calibration discharge (if any) finishes before recharge starts.
+    assert datetime.fromisoformat(plan["discharge"]["end"]) <= start
     assert datetime.fromisoformat(plan["discharge"]["start"]) <= low
     assert plan["discharge"]["target_soc"] == 4
     assert fields(result)["charge_slot_1_start"] == start.strftime("%H:%M:%S")
@@ -176,7 +178,7 @@ def test_low_observation_transitions_to_full_recharge_without_reenabling_automat
 
 
 def test_no_request_and_spontaneous_low_do_not_force_calibration_recharge(simulate):
-    result = simulate(soc=4, natural_soc=4)
+    result = simulate(soc=4, natural_soc=4, observe=True)
     assert result["calibration_state"] == "disabled"
     assert result["request_pending"] is False
     assert result["low_reached_at"] is None
@@ -257,6 +259,7 @@ def test_normal_minimise_export_preservation_and_charge_have_no_overlap(simulate
     assert result["calibration_state"] == "disabled"
     assert result["plan"]["discharge"]["planned_kwh"] == 0
     assert result["plan"]["pause"]["mode"] == "PauseBoth"
+    assert fields(result)["eco_mode"] == "on"
     charge = result["plan"]["charge"]
     if charge["planned_kwh"] > 0:
         assert result["plan"]["pause"]["end"] == datetime.fromisoformat(
