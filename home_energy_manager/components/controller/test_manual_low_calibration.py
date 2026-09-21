@@ -108,7 +108,7 @@ def test_small_forecast_noise_has_bounded_margin():
 
 
 def test_automatic_and_manual_low_calibration_share_strategy_function():
-    assert '_legacy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge' in RUNTIME
+    assert '_calibration_policy_runtime._minimise_calibration_discharge = _natural_first_calibration_discharge' in RUNTIME
     assert "if controller.calibration_state() != 'awaiting_deep_low':" in RUNTIME
 
 
