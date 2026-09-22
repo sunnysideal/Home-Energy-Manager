@@ -108,6 +108,47 @@ async def charge_end_with_live_extension(controller, plan, log, step_minutes=5):
     return extended
 
 
+async def locked_minimise_charge_slot(controller, plan, log):
+    """Keep an already-running regular Minimise Export charge slot unchanged.
+
+    This reads the inverter's actual active schedule/rate, not a fresh forecast.
+    Explicit priority interventions must remain free to replace that schedule.
+    """
+    if (plan.get('operation') or {}).get('mode') != 'minimise_export':
+        return None
+    if (plan.get('intelligent_go') or {}).get('confirmed'):
+        return None
+    if (plan.get('calibration') or {}).get('state') not in ('disabled', 'normal'):
+        return None
+    if (plan.get('axle') or {}).get('action') not in (None, 'ignored'):
+        return None
+    if plan.get('power_down'):
+        return None
+    offpeak = plan.get('offpeak') or {}
+    off_start = parse_dt(offpeak.get('start'))
+    off_end = parse_dt(offpeak.get('end'))
+    if not off_start or not off_end or not (off_start <= controller.now() < off_end):
+        return None
+    charge = plan.get('charge') or {}
+    if str(charge.get('kind') or '') not in ('', 'regular', 'minimise_export', 'overnight'):
+        return None
+    start_state = await controller.ha.state(controller.c['charge_slot_1_start_entity'])
+    end_state = await controller.ha.state(controller.c['charge_slot_1_end_entity'])
+    rate_state = await controller.ha.state(controller.c['charge_rate_entity'])
+    start = str((start_state or {}).get('state') or '')
+    end = str((end_state or {}).get('state') or '')
+    rate = as_float((rate_state or {}).get('state'))
+    if rate is None or rate <= 0 or not controller.daily_slot_active(start, end):
+        return None
+    # Only lock the normal slot that ends at the regular cheap-rate boundary.
+    # A distinct active charge schedule must remain manageable by its owner.
+    if end != controller.tstr(off_end):
+        return None
+    log.info('Preserving active minimise-export charge slot: start=%s end=%s rate=%.0fW; ignoring routine replan start=%s end=%s rate=%sW',
+             start, end, rate, charge.get('start'), charge.get('end'), charge.get('rate_w'))
+    return start, end, int(round(rate))
+
+
 async def desired_inverter_fields(controller, plan, log):
     """Translate a calculated plan to desired inverter fields without writing."""
     repair_disabled_discharge(controller,plan,log); repair_expired_charge(controller,plan,log)
@@ -120,10 +161,17 @@ async def desired_inverter_fields(controller, plan, log):
         else:pause={'mode':'Disabled','start':'00:00:00','end':'00:00:00'}
     pause=resolve_pause_transfer_conflicts(controller,plan,pause,log)
     pause_start=await controller.preserve_active_slot_start('pause',controller.c['pause_start_entity'],controller.c['pause_end_entity'],pause['start'])
-    charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(parse_dt(plan['charge']['start'])))
-    charge_end=await charge_end_with_live_extension(controller,plan,log)
+    locked_charge=await locked_minimise_charge_slot(controller,plan,log)
+    if locked_charge is not None:
+        charge_start,charge_end_time,charge_rate=locked_charge
+        charge_end=parse_dt(plan['offpeak']['end'])
+    else:
+        charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(parse_dt(plan['charge']['start'])))
+        charge_end=await charge_end_with_live_extension(controller,plan,log)
+        charge_end_time=controller.tstr(charge_end)
+        charge_rate=plan['charge']['rate_w']
     discharge_start=await controller.preserve_active_slot_start('discharge',controller.c['discharge_slot_1_start_entity'],controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['start'])))
-    fields=[('eco',controller.c['eco_mode_entity'],'on',None),('charge_enable',controller.c['charge_schedule_enable_entity'],'on',None),('discharge_enable',controller.c['discharge_schedule_enable_entity'],'on',None),('pause_mode',controller.c['pause_mode_entity'],pause['mode'],wend),('pause_start',controller.c['pause_start_entity'],pause_start,wend),('pause_end',controller.c['pause_end_entity'],pause['end'],wend),('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,wend),('charge_end',controller.c['charge_slot_1_end_entity'],controller.tstr(charge_end),wend),('charge_target',controller.c['charge_slot_1_target_entity'],plan['charge']['target_soc'],wend),('charge_rate',controller.c['charge_rate_entity'],plan['charge']['rate_w'],wend),('discharge_start',controller.c['discharge_slot_1_start_entity'],discharge_start,parse_dt(plan['offpeak']['start'])),('discharge_end',controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['end'])),parse_dt(plan['offpeak']['start'])),('discharge_rate',controller.c['discharge_rate_entity'],plan['discharge']['rate_w'],parse_dt(plan['offpeak']['start']))]
+    fields=[('eco',controller.c['eco_mode_entity'],'on',None),('charge_enable',controller.c['charge_schedule_enable_entity'],'on',None),('discharge_enable',controller.c['discharge_schedule_enable_entity'],'on',None),('pause_mode',controller.c['pause_mode_entity'],pause['mode'],wend),('pause_start',controller.c['pause_start_entity'],pause_start,wend),('pause_end',controller.c['pause_end_entity'],pause['end'],wend),('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,wend),('charge_end',controller.c['charge_slot_1_end_entity'],charge_end_time,wend),('charge_target',controller.c['charge_slot_1_target_entity'],plan['charge']['target_soc'],wend),('charge_rate',controller.c['charge_rate_entity'],charge_rate,wend),('discharge_start',controller.c['discharge_slot_1_start_entity'],discharge_start,parse_dt(plan['offpeak']['start'])),('discharge_end',controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['end'])),parse_dt(plan['offpeak']['start'])),('discharge_rate',controller.c['discharge_rate_entity'],plan['discharge']['rate_w'],parse_dt(plan['offpeak']['start']))]
     reserve,_=await controller.num('battery_reserve_entity','battery_reserve',False)
     if reserve is not None:fields.append(('discharge_target',controller.c['discharge_slot_1_target_entity'],int(round(reserve)),parse_dt(plan['offpeak']['start'])))
     return fields
