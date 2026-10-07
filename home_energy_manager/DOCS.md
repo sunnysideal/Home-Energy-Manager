@@ -286,10 +286,13 @@ Useful entities include:
 - `sensor.ashp_forecast_ch_next_48h`
 - `sensor.ashp_forecast_dhw_next_48h`
 - `sensor.ashp_forecast_kwh_per_degree_day`
+- `sensor.ashp_ch_forecast_mae`
 - `sensor.ashp_forecast_health`
 - `sensor.ashp_dhw_production_source`
 
 The detailed 48-hour forecast is exposed in the `forecast` attribute and contains half-hour rows including `ch_kwh`, `dhw_kwh`, temperature and heating state.
+
+`sensor.ashp_ch_forecast_mae` validates the CH electrical-energy forecast against completed measured CH energy. It stores the forecast as originally issued, then scores it after the target 30-minute slot completes, so later coefficient or configuration changes cannot rewrite historical accuracy. The sensor state is rolling CH MAE in kWh; attributes include signed bias (`forecast - actual`), RMSE, WAPE, forecast-horizon buckets, a heating-active summary and dynamic outdoor-temperature bands. This is diagnostic only and does not alter the learned kWh/DD coefficient.
 
 A healthy forecast should update regularly. If DHW becomes unavailable, `sensor.ashp_forecast_health` reports degraded DHW status while CH may remain fresh.
 
