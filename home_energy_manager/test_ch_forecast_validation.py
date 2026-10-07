@@ -278,7 +278,7 @@ def test_accuracy_summary_reports_metrics_horizons_temperature_bands_and_heating
     assert result["temperature_analysis"]["bands"]["8_10c"]["samples"] == 1
     assert result["temperature_analysis"]["bands"]["10_11c"]["samples"] == 1
     assert result["heating_active"]["samples"] == 3
-    assert result["heating_active"]["definition"] == "forecast_heating_enabled"
+    assert result["heating_active"]["definition"] == "latest_forecast_before_target_start_with_heating_enabled"
     assert result["error_definition"] == "forecast_minus_actual"
 
 
@@ -314,7 +314,7 @@ def test_accuracy_summary_deduplicates_repeated_forecasts_per_target() -> None:
             heating=True,
         )
 
-    result = accuracy_summary(db, now=now, winter_threshold_c=13.0)
+    result = accuracy_summary(db, now=now, winter_threshold_c=11.0)
     assert result["raw_observations"] == 3
     assert result["overall"]["raw_observations"] == 3
     assert result["overall"]["samples"] == 1
