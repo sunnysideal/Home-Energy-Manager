@@ -108,6 +108,8 @@ def test_ch_accuracy_entity_contains_end_to_end_validation_fields(monkeypatch) -
     assert attrs["phase"] == "issued_forecast_validation"
     assert attrs["error_definition"] == "forecast_minus_actual"
     assert attrs["samples"] == 1
+    assert attrs["raw_observations"] == 1
+    assert attrs["selection_definition"] == "latest_forecast_per_target_for_headline_checkpoint_per_target_for_horizons"
     assert attrs["mean_bias_kwh"] == 0.1
     assert attrs["horizons"]["0_6h"]["samples"] == 1
     assert "temperature_analysis" in attrs
