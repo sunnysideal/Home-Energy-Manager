@@ -268,7 +268,7 @@ def test_accuracy_summary_reports_metrics_horizons_temperature_bands_and_heating
     assert overall["mean_bias_kwh"] == pytest_approx(-0.02)
     assert overall["mae_kwh"] == pytest_approx(0.10)
     assert overall["rmse_kwh"] == pytest_approx(math.sqrt(0.07 / 5))
-    assert overall["wape_pct"] == pytest_approx(1.0 / 1.5 * 100)
+    assert overall["wape_pct"] == pytest_approx(0.5 / 1.5 * 100)
     assert result["horizons"]["0_6h"]["samples"] == 1
     assert result["horizons"]["6_12h"]["samples"] == 1
     assert result["horizons"]["12_24h"]["samples"] == 1
