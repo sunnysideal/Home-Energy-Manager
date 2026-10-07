@@ -8,11 +8,11 @@ from typing import Any, Callable, Iterable
 from temperature_bias import temperature_bands
 
 HORIZON_BUCKETS = (
-    ("0_6h", 0.0, 6.0),
-    ("6_12h", 6.0, 12.0),
-    ("12_24h", 12.0, 24.0),
-    ("24_36h", 24.0, 36.0),
-    ("36_48h", 36.0, 48.000001),
+    ("0_6h", 0.0, 6.0, 3.0),
+    ("6_12h", 6.0, 12.0, 9.0),
+    ("12_24h", 12.0, 24.0, 18.0),
+    ("24_36h", 24.0, 36.0, 30.0),
+    ("36_48h", 36.0, 48.000001, 42.0),
 )
 DEFAULT_WINDOW_DAYS = 30
 DEFAULT_LOOKBACK_HOURS = 72
@@ -278,6 +278,57 @@ def complete_pending_actuals(
     return completed, invalid, missing
 
 
+def _latest_per_target(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select the newest issued forecast for each realised target slot."""
+    selected: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        target = str(row["target"])
+        current = selected.get(target)
+        if current is None or (
+            float(row["horizon"]),
+            str(row["issued"]),
+        ) < (
+            float(current["horizon"]),
+            str(current["issued"]),
+        ):
+            selected[target] = row
+    return sorted(selected.values(), key=lambda row: (str(row["target"]), str(row["issued"])))
+
+
+def _one_per_target_for_horizon(
+    rows: list[dict[str, Any]],
+    *,
+    lower: float,
+    upper: float,
+    checkpoint: float,
+) -> tuple[list[dict[str, Any]], int]:
+    """Select one representative issued forecast per target within a horizon bucket."""
+    bucket = [row for row in rows if float(row["horizon"]) >= lower and float(row["horizon"]) < upper]
+    selected: dict[str, dict[str, Any]] = {}
+    for row in bucket:
+        target = str(row["target"])
+        current = selected.get(target)
+        candidate_key = (
+            abs(float(row["horizon"]) - checkpoint),
+            float(row["horizon"]),
+            str(row["issued"]),
+        )
+        if current is None:
+            selected[target] = row
+            continue
+        current_key = (
+            abs(float(current["horizon"]) - checkpoint),
+            float(current["horizon"]),
+            str(current["issued"]),
+        )
+        if candidate_key < current_key:
+            selected[target] = row
+    return (
+        sorted(selected.values(), key=lambda row: (str(row["target"]), str(row["issued"]))),
+        len(bucket),
+    )
+
+
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {
@@ -366,33 +417,57 @@ def accuracy_summary(
             }
         )
 
-    overall = _metrics(rows)
+    scored_rows = _latest_per_target(rows)
+    overall = _metrics(scored_rows)
+    overall["raw_observations"] = len(rows)
+
     horizons: dict[str, Any] = {}
-    for name, lower, upper in HORIZON_BUCKETS:
-        bucket = [row for row in rows if row["horizon"] >= lower and row["horizon"] < upper]
-        horizons[name] = _metrics(bucket)
+    for name, lower, upper, checkpoint in HORIZON_BUCKETS:
+        selected, raw_count = _one_per_target_for_horizon(
+            rows,
+            lower=lower,
+            upper=upper,
+            checkpoint=checkpoint,
+        )
+        result = _metrics(selected)
+        result["raw_observations"] = raw_count
+        result["checkpoint_hours"] = checkpoint
+        horizons[name] = result
 
     bands: dict[str, Any] = {}
     for name, lower, upper in temperature_bands(float(winter_threshold_c)):
         selected = [
+            row for row in scored_rows
+            if (lower is None or row["temperature"] >= lower)
+            and (upper is None or row["temperature"] < upper)
+        ]
+        raw_band = [
             row for row in rows
             if (lower is None or row["temperature"] >= lower)
             and (upper is None or row["temperature"] < upper)
         ]
         result = _metrics(selected)
-        result.update({"lower_c": lower, "upper_c": upper, "evidence": _evidence(result["samples"], result["distinct_days"])})
+        result.update({
+            "raw_observations": len(raw_band),
+            "lower_c": lower,
+            "upper_c": upper,
+            "evidence": _evidence(result["samples"], result["distinct_days"]),
+        })
         bands[name] = result
 
-    heating_rows = [row for row in rows if row["heating_enabled"]]
+    heating_rows = [row for row in scored_rows if row["heating_enabled"]]
     heating = _metrics(heating_rows)
+    heating["raw_observations"] = sum(1 for row in rows if row["heating_enabled"])
     heating["evidence"] = _evidence(heating["samples"], heating["distinct_days"])
-    heating["definition"] = "forecast_heating_enabled"
+    heating["definition"] = "latest_forecast_before_target_start_with_heating_enabled"
 
     return {
         "window_days": max(1, int(window_days)),
         "window_start": _iso(cutoff),
         "window_end": _iso(now),
         "error_definition": "forecast_minus_actual",
+        "selection_definition": "latest_forecast_per_target_for_headline_checkpoint_per_target_for_horizons",
+        "raw_observations": len(rows),
         "overall": overall,
         "horizons": horizons,
         "temperature_analysis": {
@@ -400,6 +475,6 @@ def accuracy_summary(
             "bands": bands,
         },
         "heating_active": heating,
-        "oldest_target": rows[0]["target"] if rows else None,
-        "newest_target": rows[-1]["target"] if rows else None,
+        "oldest_target": scored_rows[0]["target"] if scored_rows else None,
+        "newest_target": scored_rows[-1]["target"] if scored_rows else None,
     }

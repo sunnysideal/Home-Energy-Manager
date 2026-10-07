@@ -278,7 +278,7 @@ def test_accuracy_summary_reports_metrics_horizons_temperature_bands_and_heating
     assert result["temperature_analysis"]["bands"]["8_10c"]["samples"] == 1
     assert result["temperature_analysis"]["bands"]["10_11c"]["samples"] == 1
     assert result["heating_active"]["samples"] == 3
-    assert result["heating_active"]["definition"] == "forecast_heating_enabled"
+    assert result["heating_active"]["definition"] == "latest_forecast_before_target_start_with_heating_enabled"
     assert result["error_definition"] == "forecast_minus_actual"
 
 
@@ -294,3 +294,86 @@ def test_accuracy_summary_uses_dynamic_threshold_bands_and_rolling_window() -> N
     assert "8_9c" in result["temperature_analysis"]["bands"]
     assert "9_13c" in result["temperature_analysis"]["bands"]
     assert "10_11c" not in result["temperature_analysis"]["bands"]
+
+def test_accuracy_summary_deduplicates_repeated_forecasts_per_target() -> None:
+    db = _db()
+    now = datetime(2026, 10, 7, 17, 0, tzinfo=timezone.utc)
+    target = datetime(2026, 10, 7, 16, 0, tzinfo=timezone.utc)
+    for horizon, forecast in [
+        (0.4667, 0.082),
+        (0.3000, 0.083),
+        (0.1333, 0.084),
+    ]:
+        _insert_completed(
+            db,
+            issued=target - timedelta(hours=horizon),
+            target=target,
+            forecast=forecast,
+            actual=0.102,
+            temperature=12.0,
+            heating=True,
+        )
+
+    result = accuracy_summary(db, now=now, winter_threshold_c=11.0)
+    assert result["raw_observations"] == 3
+    assert result["overall"]["raw_observations"] == 3
+    assert result["overall"]["samples"] == 1
+    assert result["overall"]["mean_bias_kwh"] == pytest_approx(-0.018)
+    assert result["horizons"]["0_6h"]["raw_observations"] == 3
+    assert result["horizons"]["0_6h"]["samples"] == 1
+    assert result["temperature_analysis"]["bands"]["11_13c"]["raw_observations"] == 3
+    assert result["temperature_analysis"]["bands"]["11_13c"]["samples"] == 1
+    assert result["heating_active"]["raw_observations"] == 3
+    assert result["heating_active"]["samples"] == 1
+
+
+def test_horizon_bucket_uses_one_forecast_per_target_nearest_checkpoint() -> None:
+    db = _db()
+    now = datetime(2026, 10, 9, 12, tzinfo=timezone.utc)
+    target = datetime(2026, 10, 9, 10, tzinfo=timezone.utc)
+    for horizon, forecast in [
+        (5.5, 0.90),
+        (3.2, 0.60),
+        (2.8, 0.40),
+        (0.5, 0.10),
+        (9.4, 0.70),
+        (8.7, 0.30),
+    ]:
+        _insert_completed(
+            db,
+            issued=target - timedelta(hours=horizon),
+            target=target,
+            forecast=forecast,
+            actual=0.50,
+            temperature=8.0,
+            heating=True,
+        )
+
+    result = accuracy_summary(db, now=now, winter_threshold_c=11.0)
+    zero_six = result["horizons"]["0_6h"]
+    six_twelve = result["horizons"]["6_12h"]
+    assert zero_six["raw_observations"] == 4
+    assert zero_six["samples"] == 1
+    assert zero_six["checkpoint_hours"] == 3.0
+    assert zero_six["mean_bias_kwh"] == pytest_approx(-0.10)
+    assert six_twelve["raw_observations"] == 2
+    assert six_twelve["samples"] == 1
+    assert six_twelve["checkpoint_hours"] == 9.0
+    assert six_twelve["mean_bias_kwh"] == pytest_approx(-0.20)
+
+
+def test_existing_completed_rows_need_no_migration_for_rescoring() -> None:
+    db = _db()
+    now = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+    target = now - timedelta(hours=1)
+    _insert_completed(db, issued=target - timedelta(minutes=25), target=target, forecast=0.42, actual=0.50, temperature=9.0)
+    _insert_completed(db, issued=target - timedelta(minutes=10), target=target, forecast=0.47, actual=0.50, temperature=9.0)
+
+    before = db.execute("SELECT COUNT(*) FROM ch_forecast_observations").fetchone()[0]
+    result = accuracy_summary(db, now=now, winter_threshold_c=11.0)
+    after = db.execute("SELECT COUNT(*) FROM ch_forecast_observations").fetchone()[0]
+
+    assert before == after == 2
+    assert result["raw_observations"] == 2
+    assert result["overall"]["samples"] == 1
+    assert result["overall"]["mean_bias_kwh"] == pytest_approx(-0.03)
