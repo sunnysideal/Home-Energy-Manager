@@ -16,6 +16,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import main as legacy
 from active_dd_training import build_training as build_active_dd_training
 from common.forecast_slots import production_slot_start
+from ch_forecast_validation import (
+    accuracy_summary as ch_accuracy_summary,
+    complete_pending_actuals as complete_pending_ch_actuals,
+    ensure_schema as ensure_ch_validation_schema,
+    record_published_forecast,
+)
 from dhw_production_selector import SelectionResult, select_dhw_forecast
 from temperature_bias import temperature_shadow_analysis
 from weather_observations import (
@@ -30,6 +36,7 @@ LOG = logging.getLogger("ashp_forecast")
 SOURCE_ENTITY = "sensor.ashp_dhw_production_source"
 HEALTH_ENTITY = "sensor.ashp_forecast_health"
 WEATHER_SCORE_ENTITY = "sensor.ashp_weather_raw_mae"
+CH_SCORE_ENTITY = "sensor.ashp_ch_forecast_mae"
 THERMAL_REFRESH_WAIT_SECONDS = 8.0
 THERMAL_REFRESH_POLL_SECONDS = 0.25
 
@@ -70,6 +77,32 @@ class HorizonHAClient(legacy.HAClient):
         self.forecast_hours = max(1, int(forecast_hours))
         self.tz = ZoneInfo(timezone_name)
         self.weather_observation_db = None
+        self.ch_validation_db = None
+        self.ch_forecast_interval_minutes = 30
+
+    def set_sensor(self, entity_id: str, state, attributes: dict) -> None:
+        super().set_sensor(entity_id, state, attributes)
+        if entity_id != "sensor.ashp_forecast_next_48h":
+            return
+        validation_db = getattr(self, "ch_validation_db", None)
+        forecast = attributes.get("forecast") if isinstance(attributes, dict) else None
+        if validation_db is None or not isinstance(forecast, list):
+            return
+        try:
+            stored = record_published_forecast(
+                validation_db,
+                issued_at=datetime.now(self.tz),
+                forecast=forecast,
+                interval_minutes=int(getattr(self, "ch_forecast_interval_minutes", 30)),
+                coefficient_kwh_per_dd=attributes.get("kwh_per_degree_day"),
+                winter_mode_below_c=attributes.get("winter_mode_below_c"),
+                summer_mode_above_c=attributes.get("summer_mode_above_c"),
+                forecast_status=str(attributes.get("aggregate_status") or "healthy"),
+            )
+            if stored:
+                LOG.debug("Stored %d published CH forecast validation rows", stored)
+        except Exception as exc:
+            LOG.warning("Could not store published CH forecast validation snapshot: %s", exc)
 
     def get_hourly_weather(self, entity_id: str):
         raw = super().get_hourly_weather(entity_id)
@@ -425,6 +458,97 @@ def _publish_weather_scores(client: HorizonHAClient, store: legacy.Store, cfg, t
         LOG.warning("Could not publish weather forecast bias diagnostics: %s", exc)
 
 
+def _publish_ch_scores(client: HorizonHAClient, store: legacy.Store, cfg, tz: ZoneInfo, *, log_summary: bool) -> None:
+    try:
+        now = datetime.now(tz)
+        summary = ch_accuracy_summary(
+            store.db,
+            now=now,
+            winter_threshold_c=cfg.winter_mode_below_c,
+        )
+        overall = summary["overall"]
+        state = overall["mae_kwh"] if overall["mae_kwh"] is not None else 0.0
+        client.set_sensor(
+            CH_SCORE_ENTITY,
+            round(float(state), 4),
+            {
+                "friendly_name": "ASHP CH Forecast MAE",
+                "unit_of_measurement": "kWh",
+                "device_class": "energy",
+                "phase": "issued_forecast_validation",
+                "samples": overall["samples"],
+                "distinct_days": overall["distinct_days"],
+                "mean_bias_kwh": overall["mean_bias_kwh"],
+                "mae_kwh": overall["mae_kwh"],
+                "rmse_kwh": overall["rmse_kwh"],
+                "wape_pct": overall["wape_pct"],
+                "evaluated_forecast_kwh": overall["forecast_kwh"],
+                "evaluated_actual_kwh": overall["actual_kwh"],
+                "error_definition": summary["error_definition"],
+                "window_days": summary["window_days"],
+                "horizons": summary["horizons"],
+                "temperature_analysis": summary["temperature_analysis"],
+                "heating_active": summary["heating_active"],
+                "oldest_target": summary["oldest_target"],
+                "newest_target": summary["newest_target"],
+                "last_updated": now.isoformat(),
+            },
+        )
+        if log_summary and overall["samples"]:
+            LOG.info(
+                "CH forecast accuracy: window=%dd samples=%d days=%d bias=%skWh MAE=%skWh RMSE=%skWh WAPE=%s%%",
+                summary["window_days"],
+                overall["samples"],
+                overall["distinct_days"],
+                _fmt_metric(overall["mean_bias_kwh"]),
+                _fmt_metric(overall["mae_kwh"]),
+                _fmt_metric(overall["rmse_kwh"]),
+                _fmt_metric(overall["wape_pct"]),
+            )
+            horizon_log = []
+            for name, result in summary["horizons"].items():
+                horizon_log.append(
+                    f"{name}:n={result['samples']},days={result['distinct_days']},"
+                    f"bias={_fmt_metric(result['mean_bias_kwh'])},MAE={_fmt_metric(result['mae_kwh'])},"
+                    f"WAPE={_fmt_metric(result['wape_pct'])}%"
+                )
+            LOG.info("CH forecast accuracy horizons: %s", "; ".join(horizon_log))
+            heating = summary["heating_active"]
+            LOG.info(
+                "CH forecast accuracy heating-active: samples=%d days=%d evidence=%s bias=%skWh MAE=%skWh WAPE=%s%%",
+                heating["samples"],
+                heating["distinct_days"],
+                heating["evidence"],
+                _fmt_metric(heating["mean_bias_kwh"]),
+                _fmt_metric(heating["mae_kwh"]),
+                _fmt_metric(heating["wape_pct"]),
+            )
+    except Exception as exc:
+        LOG.warning("Could not publish CH forecast accuracy diagnostics: %s", exc)
+
+
+def _complete_ch_observations(client: HorizonHAClient, store: legacy.Store, cfg, tz: ZoneInfo) -> None:
+    try:
+        completed, invalid, missing = complete_pending_ch_actuals(
+            store.db,
+            get_history=client.get_history,
+            ch_energy_entity=cfg.ch_energy_entity,
+            outdoor_temperature_entity=cfg.outdoor_temperature_entity,
+            now=datetime.now(tz),
+        )
+    except Exception as exc:
+        LOG.warning("Could not complete CH forecast validation observations: %s", exc)
+        return
+    if completed or invalid or missing:
+        LOG.debug(
+            "CH validation backfill: completed_rows=%d invalid_slots=%d missing_slots=%d",
+            completed,
+            invalid,
+            missing,
+        )
+    _publish_ch_scores(client, store, cfg, tz, log_summary=bool(completed or invalid))
+
+
 def _complete_weather_observations(client: HorizonHAClient, store: legacy.Store, cfg, tz: ZoneInfo) -> None:
     try:
         completed, unmatched = complete_pending_actuals(store.db, get_history=client.get_history, actual_entity=cfg.outdoor_temperature_entity, now=datetime.now(tz))
@@ -446,7 +570,10 @@ def main() -> None:
     tz = client.tz
     store = legacy.Store(legacy.DB_PATH)
     ensure_schema(store.db)
+    ensure_ch_validation_schema(store.db)
     client.weather_observation_db = store.db
+    client.ch_validation_db = store.db
+    client.ch_forecast_interval_minutes = cfg.forecast_interval_minutes
     _install_dhw_selector(client, store)
     legacy.build_training = build_active_dd_training
     legacy.ceil_time = production_slot_start
@@ -454,6 +581,7 @@ def main() -> None:
     LOG.info("CH=%s temperature=%s weather=%s", cfg.ch_energy_entity, cfg.outdoor_temperature_entity, cfg.weather_entity)
     while True:
         try:
+            _complete_ch_observations(client, store, cfg, tz)
             _complete_weather_observations(client, store, cfg, tz)
             try:
                 legacy.run_once(client, store, cfg, tz)
