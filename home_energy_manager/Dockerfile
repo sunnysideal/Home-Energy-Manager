@@ -13,6 +13,7 @@ RUN mkdir -p /app/runtime/ashp_forecaster /app/runtime/home_forecaster /app/runt
 COPY components/ashp_forecaster/app/main.py /app/runtime/ashp_forecaster/main.py
 COPY components/ashp_forecaster/app/active_dd_training.py /app/runtime/ashp_forecaster/active_dd_training.py
 COPY components/ashp_forecaster/app/forecast_runner.py /app/runtime/ashp_forecaster/forecast_runner.py
+COPY components/ashp_forecaster/app/ch_forecast_validation.py /app/runtime/ashp_forecaster/ch_forecast_validation.py
 COPY components/ashp_forecaster/app/weather_observations.py /app/runtime/ashp_forecaster/weather_observations.py
 COPY components/ashp_forecaster/app/temperature_bias.py /app/runtime/ashp_forecaster/temperature_bias.py
 COPY components/ashp_forecaster/app/runner.py /app/runtime/ashp_forecaster/runner.py
