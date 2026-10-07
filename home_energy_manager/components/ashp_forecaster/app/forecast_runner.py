@@ -477,6 +477,7 @@ def _publish_ch_scores(client: HorizonHAClient, store: legacy.Store, cfg, tz: Zo
                 "device_class": "energy",
                 "phase": "issued_forecast_validation",
                 "samples": overall["samples"],
+                "raw_observations": summary["raw_observations"],
                 "distinct_days": overall["distinct_days"],
                 "mean_bias_kwh": overall["mean_bias_kwh"],
                 "mae_kwh": overall["mae_kwh"],
@@ -485,6 +486,7 @@ def _publish_ch_scores(client: HorizonHAClient, store: legacy.Store, cfg, tz: Zo
                 "evaluated_forecast_kwh": overall["forecast_kwh"],
                 "evaluated_actual_kwh": overall["actual_kwh"],
                 "error_definition": summary["error_definition"],
+                "selection_definition": summary["selection_definition"],
                 "window_days": summary["window_days"],
                 "horizons": summary["horizons"],
                 "temperature_analysis": summary["temperature_analysis"],
@@ -496,8 +498,9 @@ def _publish_ch_scores(client: HorizonHAClient, store: legacy.Store, cfg, tz: Zo
         )
         if log_summary and overall["samples"]:
             LOG.info(
-                "CH forecast accuracy: window=%dd samples=%d days=%d bias=%skWh MAE=%skWh RMSE=%skWh WAPE=%s%%",
+                "CH forecast accuracy: window=%dd raw=%d samples=%d days=%d bias=%skWh MAE=%skWh RMSE=%skWh WAPE=%s%%",
                 summary["window_days"],
+                summary["raw_observations"],
                 overall["samples"],
                 overall["distinct_days"],
                 _fmt_metric(overall["mean_bias_kwh"]),
@@ -508,14 +511,15 @@ def _publish_ch_scores(client: HorizonHAClient, store: legacy.Store, cfg, tz: Zo
             horizon_log = []
             for name, result in summary["horizons"].items():
                 horizon_log.append(
-                    f"{name}:n={result['samples']},days={result['distinct_days']},"
+                    f"{name}:raw={result['raw_observations']},n={result['samples']},days={result['distinct_days']},"
                     f"bias={_fmt_metric(result['mean_bias_kwh'])},MAE={_fmt_metric(result['mae_kwh'])},"
                     f"WAPE={_fmt_metric(result['wape_pct'])}%"
                 )
             LOG.info("CH forecast accuracy horizons: %s", "; ".join(horizon_log))
             heating = summary["heating_active"]
             LOG.info(
-                "CH forecast accuracy heating-active: samples=%d days=%d evidence=%s bias=%skWh MAE=%skWh WAPE=%s%%",
+                "CH forecast accuracy heating-active: raw=%d samples=%d days=%d evidence=%s bias=%skWh MAE=%skWh WAPE=%s%%",
+                heating["raw_observations"],
                 heating["samples"],
                 heating["distinct_days"],
                 heating["evidence"],
