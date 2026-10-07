@@ -35,7 +35,7 @@ The app log records the global/horizon summary plus three additional temperature
 
 All weather-bias learning remains diagnostic only. `calibration_applied` remains `false`, so neither the global/horizon correction nor any temperature-dependent candidate changes the production ASHP temperature forecast yet.
 
-`sensor.ashp_ch_forecast_mae` provides separate end-to-end CH electrical-energy validation. Each published 30-minute CH forecast is retained in the ASHP database and later compared with measured CH electrical energy for the same completed slot. Its state is rolling MAE in kWh; attributes include forecast-minus-actual bias, RMSE, WAPE, 0–6/6–12/12–24/24–36/36–48 hour horizon summaries, heating-active accuracy and the same dynamic temperature-band structure used by the weather diagnostics. These metrics are diagnostic only and do not change the production kWh/DD model.
+`sensor.ashp_ch_forecast_mae` provides separate end-to-end CH electrical-energy validation. Each published 30-minute CH forecast is retained in the ASHP database and later compared with measured CH electrical energy for the same completed slot. Repeated refreshes do not overweight a target: headline, heating-active and temperature-band metrics use the latest forecast before the slot, while each horizon bucket scores one forecast per target nearest that bucket's midpoint checkpoint. Its state is rolling MAE in kWh; attributes include raw observation count, scored sample count, forecast-minus-actual bias, RMSE, WAPE, 0–6/6–12/12–24/24–36/36–48 hour horizon summaries, heating-active accuracy and the same dynamic temperature-band structure used by the weather diagnostics. These metrics are diagnostic only and do not change the production kWh/DD model.
 
 ### Whole-home forecast
 
