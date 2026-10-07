@@ -40,8 +40,11 @@ The add-on publishes these state entities through Home Assistant's REST API:
 - `sensor.ashp_forecast_next_24h`
 - `sensor.ashp_forecast_next_48h`
 - `sensor.ashp_forecast_kwh_per_degree_day`
+- `sensor.ashp_ch_forecast_mae`
 
 The `sensor.ashp_forecast_next_24h` attributes include the half-hour forecast series.
+
+`sensor.ashp_ch_forecast_mae` is a diagnostic end-to-end accuracy sensor for space-heating electrical energy. Published CH forecasts are persisted before their target slots complete, then compared with the measured CH cumulative-energy delta and actual mean outdoor temperature for the same slot. The state is rolling MAE in kWh. Attributes expose signed forecast-minus-actual bias, RMSE, WAPE, forecast-horizon buckets, heating-active accuracy and dynamic outdoor-temperature bands. The validation never reconstructs old forecasts using a newer coefficient and does not change production forecasting behaviour.
 
 These are REST-created states rather than entities supplied by a custom integration. They are republished by the add-on after Home Assistant/add-on restarts.
 
