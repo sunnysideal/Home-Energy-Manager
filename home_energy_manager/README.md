@@ -45,7 +45,7 @@ Combines normal household load, ASHP demand, PV forecast, battery state/schedule
 
 ### Battery model diagnostics
 
-`sensor.home_energy_manager_battery_model` exposes the Home Forecaster's learned SOC-band charging model. The Controller uses this model for charge-duration planning when it is valid and fresh. If it is missing, stale, invalid or incompatible, the Controller automatically falls back to its existing local learned/generic calculation without changing inverter-write semantics.
+`sensor.home_energy_manager_battery_model` exposes the Home Forecaster's learned SOC-band charging model. The Controller uses this model for charge-duration planning when it is valid and fresh. Charging time is calculated from the SOC-band model without any additional top-completion dwell; the independent configured charge safety margin still applies. If it is missing, stale, invalid or incompatible, the Controller automatically falls back to its existing local learned/generic calculation without changing inverter-write semantics.
 
 `sensor.home_energy_manager_battery_model_parity` shows which source supplied the Controller calculation (`forecaster` or `fallback`) and compares the resulting charge duration with the currently published Forecaster model whenever a charge is planned. A state of `match` means the calculations agree within the diagnostic tolerance; `difference` exposes both durations, the delta and the SOC-band factors involved; `unavailable` includes the reason, such as no active charge plan or unusable model data.
 
