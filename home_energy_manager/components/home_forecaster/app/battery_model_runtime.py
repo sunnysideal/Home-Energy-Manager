@@ -273,13 +273,12 @@ def _observe(client, store, cfg, now: datetime) -> None:
 
 
 def _top_completion(store, cfg) -> tuple[float, dict[str, Any]]:
-    generic = float(cfg.section("controller").get("generic_dwell_minutes", 15) or 15)
-    raw = store.meta_get("battery_model_top_completion_allowance_minutes")
-    try:
-        learned = float(raw) if raw is not None else generic
-    except (TypeError, ValueError):
-        learned = generic
-    return max(generic, learned), {
+    # The SOC-band curve already models near-full charging. Do not add the
+    # legacy top-completion dwell (including migrated values such as 35 min).
+    # Keep the historical metadata intact so existing installations migrate
+    # safely without resetting any learned SOC-band observations.
+    return 0.0, {
+        "enabled": False,
         "attempts": int(store.meta_get("battery_model_top_completion_attempts", "0") or 0),
         "successes": int(store.meta_get("battery_model_top_completion_successes", "0") or 0),
         "misses": int(store.meta_get("battery_model_top_completion_misses", "0") or 0),
@@ -312,7 +311,7 @@ def _model_attributes(store, cfg, now: datetime) -> dict[str, Any]:
         generated_at=now.astimezone(timezone.utc).isoformat(),
         bands=bands,
         top_completion_allowance_minutes=top,
-        generic_top_completion_minutes=float(cfg.section("controller").get("generic_dwell_minutes", 15) or 15),
+        generic_top_completion_minutes=0.0,
         diagnostics={
             "mode": "shadow",
             "controller_consumes_model": False,
