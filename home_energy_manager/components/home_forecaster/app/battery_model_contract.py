@@ -33,7 +33,7 @@ def build_battery_model_attributes(
     generated_at: str,
     bands: list[dict],
     top_completion_allowance_minutes: float,
-    generic_top_completion_minutes: float = 15.0,
+    generic_top_completion_minutes: float = 0.0,
     source: str = "home_forecaster",
     diagnostics: dict | None = None,
 ) -> dict:
