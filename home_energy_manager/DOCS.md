@@ -196,6 +196,7 @@ Important settings:
 | `preferred_charge_c_rate` | 0.25 | Preferred battery charge rate as a fraction of battery capacity per hour. |
 | `max_charge_c_rate` | 0.4 | Normal maximum charge C-rate used by planning. |
 | `charge_safety_margin_minutes` | 10 | Margin kept when sizing timed charging. |
+| `generic_dwell_minutes` | 15 | Legacy configuration value; no additional top-completion dwell is applied by the current battery model. |
 | `forecast_stale_minutes` | 15 | Forecast age after which controller data is treated as stale. |
 | `write_retry_attempts` | 4 | Number of attempts for inverter writes. |
 | `write_retry_delay_seconds` | 10 | Delay between write retries. |
@@ -452,3 +453,4 @@ The Home Energy Forecaster publishes `sensor.home_energy_effective_import_price`
 The sensor attributes include `window_start`, `window_end`, `next_change` (offset-aware timestamps when known), `source` (`supplier`, `manual_override`, `supplier_current_rate`, or `unavailable`), and `manual_override_active`. The state is `unavailable` when the price cannot be determined. When only the supplier's current-rate entity is available, the sensor cannot predict its next change.
 
 For example, a Home Assistant automation can use a numeric-state trigger below 0.01 p/kWh to request a DHW boost when electricity becomes free, with a separate action to restore the normal DHW settings afterwards. Add your own cylinder temperature and schedule safeguards. **The sensor describes the grid price, not the source of energy currently supplying the heat pump:** a battery may still discharge during a cheap-price window unless separately configured to preserve its charge.
+
