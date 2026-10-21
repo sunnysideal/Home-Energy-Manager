@@ -112,3 +112,64 @@ def test_shadow_runtime_is_the_packaged_home_forecaster_entrypoint():
     assert "COPY components/home_forecaster/app/battery_model_contract.py /app/runtime/home_forecaster/battery_model_contract.py" in dockerfile
     assert "COPY components/home_forecaster/app/battery_model_runtime.py /app/runtime/home_forecaster/axle_pricing_runner.py" in dockerfile
     assert "/app/runtime/home_forecaster/axle_pricing_runner.py" in launcher
+
+
+def test_charge_learning_reads_configured_charge_rate_w_and_records_observation():
+    runtime = _load_runtime()
+    runtime.base.LOG = types.SimpleNamespace(info=lambda *args: None, warning=lambda *args: None)
+    runtime.base.bool_state = lambda state, fallback: state is not None and state.get("state") == "on"
+    runtime.base.numeric_state = lambda state: float(state["state"]) if state else None
+    runtime.base.in_daily_window = lambda now, start, end: True
+    runtime.base.parse_hhmm = lambda value: tuple(map(int, value.split(":")[:2]))
+    runtime.base.latest_before = lambda states, boundary: next(
+        (float(item["state"]) for item in states if item["last_changed"] <= boundary.isoformat()), None
+    )
+    runtime.base.parse_dt = datetime.fromisoformat
+
+    now = datetime(2026, 10, 22, 2, 0, tzinfo=timezone.utc)
+    states = {
+        "enabled": "on", "rate": "3450", "start": "01:00", "end": "06:00",
+        "soc": "52", "capacity": "13.77",
+    }
+    class Client:
+        def state_optional(self, entity):
+            return {"state": states[entity]} if entity in states else None
+
+        def history(self, entities, start, end, timeout=45):
+            return {"soc": [
+                {"state": "50", "last_changed": (now - timedelta(minutes=5)).isoformat()},
+                {"state": "52", "last_changed": now.isoformat()},
+            ]}
+
+    class Config:
+        def section(self, name):
+            return {"charge_schedule_enabled": "enabled", "charge_rate_w": "rate",
+                    "charge_start_1": "start", "charge_end_1": "end",
+                    "soc": "soc", "capacity_kwh": "capacity"}
+
+    store = Store()
+    runtime._ensure_schema(store)
+    runtime._observe(Client(), store, Config(), now)
+    rows = store.db.execute("SELECT * FROM battery_charge_observations").fetchall()
+    assert rows
+    assert all(row["requested_rate_w"] == 3450 for row in rows)
+    assert store.db.execute("SELECT COUNT(*) FROM battery_charge_bands WHERE learned_factor IS NOT NULL").fetchone()[0] > 0
+
+
+def test_charge_learning_warns_for_missing_rate_in_active_window():
+    runtime = _load_runtime()
+    warnings = []
+    runtime.base.LOG = types.SimpleNamespace(info=lambda *args: None, warning=lambda *args: warnings.append(args))
+    runtime.base.bool_state = lambda state, fallback: state is not None and state.get("state") == "on"
+    runtime.base.numeric_state = lambda state: float(state["state"]) if state else None
+    runtime.base.in_daily_window = lambda now, start, end: True
+    class Client:
+        def state_optional(self, entity):
+            return {"state": {"enabled": "on", "start": "01:00", "end": "06:00"}[entity]} if entity in ("enabled", "start", "end") else None
+    class Config:
+        def section(self, name):
+            return {"charge_schedule_enabled": "enabled", "charge_rate_w": "rate",
+                    "charge_start_1": "start", "charge_end_1": "end"}
+    assert runtime._active_charge_window(Client(), Config(), datetime(2026, 10, 22, 2, tzinfo=timezone.utc)) is None
+    assert warnings
+    assert "charge_rate_unavailable" in warnings[0][0]
