@@ -59,3 +59,18 @@ def test_validation_rejects_stale_incomplete_and_incompatible_models():
     stale=model(now-timedelta(minutes=16)); assert validate_battery_model_attributes(stale,now=now)==(False,'stale')
     incomplete=model(now); incomplete['bands']=incomplete['bands'][:-1]; assert validate_battery_model_attributes(incomplete,now=now)==(False,'bands')
     incompatible=model(now); incompatible['schema_version']=999; assert validate_battery_model_attributes(incompatible,now=now)==(False,'schema_version')
+
+
+def test_model_without_extra_top_dwell_keeps_charge_duration_band_only():
+    now = datetime(2026, 10, 21, 22, 0, tzinfo=timezone.utc)
+    attrs = build_battery_model_attributes(
+        generated_at=now.isoformat(),
+        bands=generic_bands(),
+        top_completion_allowance_minutes=0,
+    )
+    assert attrs["generic_top_completion_minutes"] == 0
+    assert validate_battery_model_attributes(attrs, now=now) == (True, "ok")
+    from components.controller.controller_battery import forecaster_charge_minutes
+    duration = forecaster_charge_minutes(99, 100, 3442, 13.77, attrs)
+    band_only = (13.77 * 0.01) / (3442 / 1000 * .35) * 60
+    assert abs(duration - band_only) < 1e-9
