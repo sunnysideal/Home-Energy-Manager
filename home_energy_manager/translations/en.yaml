@@ -64,8 +64,8 @@ configuration:
         name: Charge safety margin
         description: Extra charging time added to controller calculations so the requested target is reached before the required deadline.
       generic_dwell_minutes:
-        name: Generic dwell allowance
-        description: Additional dwell allowance in minutes used when no more specific battery completion allowance is available.
+        name: Legacy dwell allowance (unused)
+        description: Retained for compatibility. The Home Forecaster battery model applies no separate top-completion dwell; the charge safety margin remains active.
       forecast_stale_minutes:
         name: Forecast stale limit
         description: Maximum forecast age in minutes accepted by the controller before it treats the forecast as stale.
