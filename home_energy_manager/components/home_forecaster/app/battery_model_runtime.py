@@ -84,9 +84,10 @@ def _active_charge_window(client, cfg, now: datetime) -> tuple[datetime, datetim
     enabled = base.bool_state(client.state_optional(str(battery.get("charge_schedule_enabled") or "")), False)
     if not enabled:
         return None
-    rate = base.numeric_state(client.state_optional(str(battery.get("charge_rate") or "")))
-    if rate is None or rate <= 0:
-        return None
+    # The Home Forecaster battery configuration calls this input charge_rate_w.
+    # Looking up charge_rate silently disabled all post-migration observations.
+    rate_entity = str(battery.get("charge_rate_w") or "").strip()
+    rate = base.numeric_state(client.state_optional(rate_entity))
     for index in (1, 2):
         start_state = client.state_optional(str(battery.get(f"charge_start_{index}") or ""))
         end_state = client.state_optional(str(battery.get(f"charge_end_{index}") or ""))
@@ -94,6 +95,15 @@ def _active_charge_window(client, cfg, now: datetime) -> tuple[datetime, datetim
         end_s = str(end_state.get("state", "00:00")) if end_state else "00:00"
         if not base.in_daily_window(now, start_s, end_s):
             continue
+        if rate is None or rate <= 0:
+            base.LOG.warning(
+                "Battery charge learning rejected: reason=charge_rate_unavailable "
+                "configured_key=charge_rate_w entity=%s value=%s slot=%d",
+                rate_entity or "<not configured>",
+                (client.state_optional(rate_entity) or {}).get("state") if rate_entity else "<not configured>",
+                index,
+            )
+            return None
         start = base.parse_hhmm(start_s)
         end = base.parse_hhmm(end_s)
         if not start or not end:
@@ -208,23 +218,58 @@ def _observe(client, store, cfg, now: datetime) -> None:
     soc_entity = str(battery.get("soc") or "").strip()
     capacity_entity = str(battery.get("capacity_kwh") or "").strip()
     if not soc_entity or not capacity_entity:
+        base.LOG.warning(
+            "Battery charge learning rejected: reason=missing_entity_configuration "
+            "soc_entity=%s capacity_entity=%s",
+            soc_entity or "<not configured>", capacity_entity or "<not configured>",
+        )
         return
     capacity = base.numeric_state(client.state_optional(capacity_entity))
     if capacity is None or capacity <= 0:
+        base.LOG.warning(
+            "Battery charge learning rejected: reason=invalid_capacity "
+            "capacity_entity=%s value=%s",
+            capacity_entity, capacity,
+        )
         return
-    hist = client.history([soc_entity], sample_start - timedelta(minutes=5), now, timeout=45)
+    try:
+        hist = client.history([soc_entity], sample_start - timedelta(minutes=5), now, timeout=45)
+    except Exception as exc:
+        base.LOG.warning("Battery charge learning rejected: reason=history_unavailable error=%s", exc)
+        return
     points = _soc_points(hist.get(soc_entity, []), sample_start, now)
     current_soc = base.numeric_state(client.state_optional(soc_entity))
     if current_soc is not None:
         points.append((now, float(current_soc)))
-    for obs in _derive_observations(points, rate_w, float(capacity)):
-        store.db.execute(
+    observations = _derive_observations(points, rate_w, float(capacity))
+    accepted = 0
+    for obs in observations:
+        cursor = store.db.execute(
             "INSERT OR IGNORE INTO battery_charge_observations(observed_at,band_lo,band_hi,coverage,effective_factor,requested_rate_w) "
             "VALUES(?,?,?,?,?,?)",
             (obs["observed_at"], obs["band_lo"], obs["band_hi"], obs["coverage"], obs["effective_factor"], obs["requested_rate_w"]),
         )
+        accepted += max(0, cursor.rowcount)
     store.db.commit()
-    _learn_bands(store, now)
+    if accepted:
+        _learn_bands(store, now)
+        base.LOG.info(
+            "Battery charge learning accepted: observations=%d already_recorded=%d "
+            "soc_points=%d charge_rate=%.0fW capacity=%.2fkWh",
+            accepted, len(observations) - accepted, len(points), rate_w, capacity,
+        )
+    else:
+        reason = (
+            "already_recorded" if observations else
+            "insufficient_soc_points" if len(points) < 2 else
+            "no_usable_soc_progression"
+        )
+        base.LOG.info(
+            "Battery charge learning rejected: reason=%s soc_points=%d "
+            "soc_start=%s soc_end=%s charge_rate=%.0fW",
+            reason, len(points), points[0][1] if points else None,
+            points[-1][1] if points else None, rate_w,
+        )
 
 
 def _top_completion(store, cfg) -> tuple[float, dict[str, Any]]:
