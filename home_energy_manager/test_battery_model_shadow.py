@@ -173,3 +173,43 @@ def test_charge_learning_warns_for_missing_rate_in_active_window():
     assert runtime._active_charge_window(Client(), Config(), datetime(2026, 10, 22, 2, tzinfo=timezone.utc)) is None
     assert warnings
     assert "charge_rate_unavailable" in warnings[0][0]
+
+
+def test_migrated_top_completion_allowance_is_disabled_without_changing_soc_bands():
+    runtime = _load_runtime()
+    store = Store()
+    runtime._ensure_schema(store)
+    store.meta_set("battery_model_top_completion_allowance_minutes", "35")
+    store.meta_set("battery_model_top_completion_attempts", "2")
+    store.meta_set("battery_model_top_completion_misses", "2")
+    now = datetime(2026, 10, 21, 22, 0, tzinfo=timezone.utc)
+    store.db.execute(
+        "INSERT INTO battery_charge_bands(band_lo,band_hi,learned_factor,confidence,full_equiv,obs_count,updated_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (90, 95, .70, .5, 2.0, 2, now.isoformat()),
+    )
+    store.db.commit()
+
+    class Config:
+        def section(self, name):
+            return {"generic_dwell_minutes": 15} if name == "controller" else {}
+
+    attrs = runtime._model_attributes(store, Config(), now)
+    assert attrs["top_completion_allowance_minutes"] == 0.0
+    assert attrs["generic_top_completion_minutes"] == 0.0
+    assert attrs["diagnostics"]["top_completion"]["enabled"] is False
+    assert attrs["diagnostics"]["top_completion"]["attempts"] == 2
+    assert store.meta_get("battery_model_top_completion_allowance_minutes") == "35"
+    assert next(b for b in attrs["bands"] if b["soc_lo"] == 90)["effective_factor"] == .79
+    assert contract.validate_battery_model_attributes(attrs, now=now) == (True, "ok")
+
+    from components.controller import controller_battery
+    ok, reason, _age = controller_battery.validate_forecaster_model(attrs, now)
+    assert ok, reason
+    actual = controller_battery.forecaster_charge_minutes(4, 100, 3442, 13.77, attrs)
+    expected = sum(
+        (13.77 * (max(0, min(100, b["soc_hi"]) - max(4, b["soc_lo"])) / 100.0))
+        / (3442 / 1000.0 * b["effective_factor"]) * 60
+        for b in attrs["bands"]
+    )
+    assert abs(actual - expected) < 1e-9
