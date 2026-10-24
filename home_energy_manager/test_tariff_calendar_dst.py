@@ -63,8 +63,7 @@ def test_transitions_contain_exact_utc_halfhours(source,target,count):
     assert rows[0]["start"]==datetime.combine(target,datetime.min.time(),tzinfo=TZ).astimezone(UTC)
     assert rows[-1]["end"]==datetime.combine(target+timedelta(days=1),datetime.min.time(),tzinfo=TZ).astimezone(UTC)
     assert all(rows[i]["end"]==rows[i+1]["start"] for i in range(len(rows)-1))
-    assert calendar().covers_window(rows,stamp(source,23) if False else
-           datetime.combine(source,datetime.min.time(),tzinfo=TZ).replace(hour=23).astimezone(UTC),
+    assert calendar().covers_window(rows,datetime.combine(target,datetime.min.time(),tzinfo=TZ).astimezone(UTC),
            datetime.combine(target,datetime.min.time(),tzinfo=TZ).replace(hour=6).astimezone(UTC),6.66)
 
 
