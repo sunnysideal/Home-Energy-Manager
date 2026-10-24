@@ -282,6 +282,32 @@ def test_confirmed_ev_smart_charging_uses_no_forced_export(simulate):
     assert_no_unauthorised_target_write(result)
 
 
+def test_confirmed_edf_slot_recharges_when_arrival_below_buffer(simulate):
+    result = simulate(ev_active=True, arrival_soc=4, soc=65, clock_minutes=11)
+    plan = result["plan"]
+    ig = plan["intelligent_go"]
+    assert ig["confirmed"] is True
+    assert ig["charge_reason"] == "protect_offpeak_arrival"
+    assert ig["intelligent_charge_target_soc"] > 65
+    assert plan["charge"]["planned_kwh"] > 0
+    start = datetime.fromisoformat(plan["charge"]["start"])
+    end = datetime.fromisoformat(plan["charge"]["end"])
+    assert start < end
+    assert start.strftime("%H:%M") == "14:12"
+    assert end.strftime("%H:%M") == "14:30"
+    assert fields(result)["charge_slot_1_start"] == "14:12:00"
+    assert fields(result)["charge_slot_1_end"] == "14:30:00"
+    assert fields(result)["charge_rate"] > 0
+    assert_no_unauthorised_target_write(result)
+
+
+def test_confirmed_edf_slot_skips_topup_when_arrival_buffer_sufficient(simulate):
+    result = simulate(ev_active=True, arrival_soc=35, soc=65, clock_minutes=11)
+    assert result["plan"]["intelligent_go"]["confirmed"] is True
+    assert result["plan"]["intelligent_go"]["intelligent_charge_target_soc"] is None
+    assert result["plan"]["intelligent_go"]["charge_reason"] == "battery_energy_sufficient"
+
+
 def test_power_down_uses_existing_controller_overlay_without_target_write(simulate):
     result = simulate(power_down=True, natural_soc=18)
     assert result["plan"].get("power_down")
