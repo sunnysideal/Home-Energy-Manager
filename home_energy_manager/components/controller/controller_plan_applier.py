@@ -6,7 +6,7 @@ existing retry, readback, audit and runtime charge-target suppression semantics
 remain unchanged.
 """
 import asyncio
-from datetime import timedelta
+from datetime import timedelta, timezone
 from controller_utils import parse_dt, iso, as_float
 
 
@@ -159,7 +159,7 @@ async def desired_inverter_fields(controller, plan, log):
         charge=plan.get('charge') or {}
         cs=parse_dt(charge.get('start'));ce=parse_dt(charge.get('end'))
         now=controller.now()
-        if not cs or not ce or cs.astimezone(__import__('datetime').timezone.utc)>=ce.astimezone(__import__('datetime').timezone.utc) or ce.astimezone(__import__('datetime').timezone.utc)<=now.astimezone(__import__('datetime').timezone.utc):
+        if not cs or not ce or cs.astimezone(timezone.utc)>=ce.astimezone(timezone.utc) or ce.astimezone(timezone.utc)<=now.astimezone(timezone.utc):
             log.error('EV smart charging: rejecting stale/invalid top-up start=%s end=%s now=%s',cs,ce,now)
             charge['start']=charge['end']=iso(now.replace(second=0,microsecond=0))
             charge['planned_kwh']=0.0
