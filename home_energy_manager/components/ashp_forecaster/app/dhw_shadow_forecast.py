@@ -264,8 +264,12 @@ def build_shadow_forecast(
     mode = mode.strip().lower()
     max_step_kwh = model.typical_power_kw * step_minutes / 60.0
 
+    # Advance physical elapsed time in UTC. Local datetime arithmetic skips
+    # the repeated autumn hour and invents the nonexistent spring hour.
+    # Convert each instant back to local time for the DHW weekday/schedule logic.
+    start_utc = start.astimezone(timezone.utc)
     for index in range(steps):
-        local_dt = start + timedelta(minutes=index * step_minutes)
+        local_dt = (start_utc + timedelta(minutes=index * step_minutes)).astimezone(start.tzinfo)
         draw_kwh = _expected_draw_step(model, local_dt, step_minutes)
         state = step_tank(
             state,
