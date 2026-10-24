@@ -23,6 +23,7 @@ def offpeak_from_forecast(controller, state):
         'start': start.astimezone(controller.tz),
         'end': end.astimezone(controller.tz),
         'rate_p': rate,
+        'source': str(offpeak.get('source') or 'unverified'),
     }
 
 
