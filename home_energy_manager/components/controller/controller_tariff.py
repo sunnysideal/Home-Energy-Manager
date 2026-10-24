@@ -19,6 +19,17 @@ def offpeak_from_forecast(controller, state):
     rate = as_float(offpeak.get('rate_p'))
     if not start or not end or rate is None or end <= start:
         return None
+    # Incomplete next-day tariff data may expose only a cheap 23:00-00:00
+    # fragment. Reject it before planning or persisting an inverter window.
+    # Compare real UTC duration so spring/autumn transitions remain valid.
+    elapsed = end.astimezone(timezone.utc) - start.astimezone(timezone.utc)
+    local_start, local_end = start.astimezone(controller.tz), end.astimezone(controller.tz)
+    overnight = local_start.date() < local_end.date() or (
+        local_start.date() == local_end.date() and local_start.hour < 3
+    )
+    if not (timedelta(hours=2) <= elapsed <= timedelta(hours=10)
+            and local_end.hour <= 8 and overnight):
+        return None
     return {
         'start': start.astimezone(controller.tz),
         'end': end.astimezone(controller.tz),
