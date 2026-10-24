@@ -1557,19 +1557,33 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
         else:
             reasons.append("Export tariff unavailable: export income outputs incomplete")
 
-    # If next-day tariff entity is missing, carry today's 24h tariff pattern forward for tomorrow.
-    if import_rates and not parse_rates(import_next_day):
-        today_only = parse_rates(import_current_day)
-        copied = [{"start": r["start"] + timedelta(days=1), "end": r["end"] + timedelta(days=1), "rate_p": r["rate_p"]} for r in today_only]
-        import_rates.extend(copied)
+    # Next-day fallback must advance *local clock dates*, not fixed-offset
+    # instants. A validated recurring import profile excludes one-off EV
+    # discounts; unverified profiles cannot authorise inverter scheduling.
+    import tariff_calendar
+    supplier_tomorrow = parse_rates(import_next_day)
+    tariff_source = "supplier" if supplier_tomorrow else "unverified"
+    if import_rates and not supplier_tomorrow:
+        copied, copy_reason = tariff_calendar.project_next_local_day(
+            parse_rates(import_current_day), now.astimezone(tz).date(), tz)
+        if copied:
+            import_rates.extend(copied)
+            tariff_source = "calendar_projection"
+            LOG.warning("Tomorrow import tariff missing: using DST-safe local-calendar projection: %s first=%s last=%s",
+                        copy_reason, copied[0]["start"].isoformat(), copied[-1]["end"].isoformat())
+        else:
+            LOG.warning("Tomorrow import tariff missing: calendar projection rejected: %s", copy_reason)
         tariff_fallback = True
-        reasons.append("Tomorrow import tariff unavailable: today pattern carried forward")
+        reasons.append("Tomorrow import tariff unavailable: " + copy_reason)
     if export_rates and not parse_rates(export_next_day):
-        today_only = parse_rates(export_current_day)
-        copied = [{"start": r["start"] + timedelta(days=1), "end": r["end"] + timedelta(days=1), "rate_p": r["rate_p"]} for r in today_only]
-        export_rates.extend(copied)
+        # Export-rate projection is an estimate for financial simulation only,
+        # never a basis for choosing regular cheap import hours.
+        copied, export_reason = tariff_calendar.project_next_local_day(
+            parse_rates(export_current_day), now.astimezone(tz).date(), tz)
+        if copied:
+            export_rates.extend(copied)
         tariff_fallback = True
-        reasons.append("Tomorrow export tariff unavailable: today pattern carried forward")
+        reasons.append("Tomorrow export tariff unavailable: " + export_reason)
 
     # Regular off-peak detection MUST use the unmodified supplier tariff.
     supplier_import_rates = import_rates
@@ -1596,13 +1610,17 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
     if selected_offpeak:
         target_start = selected_offpeak[0]
         target_end = selected_offpeak[1]
-    else:
-        # Preserve the existing degraded fallback if tariff events are not rich
-        # enough to identify the controller-facing morning block.
-        target_day = now.date() if now.time() < dtime(23, 30) else now.date() + timedelta(days=1)
-        target_start = datetime.combine(target_day, dtime(23, 30), tzinfo=tz)
-        target_end = target_start + timedelta(hours=6)
-        reasons.append("Regular overnight cheap block could not be identified reliably: 23:30-05:30 fallback used")
+        if not tariff_calendar.covers_window(supplier_import_rates, target_start, target_end, float(cheap_rate_p)):
+            LOG.error("Regular offpeak rejected: incomplete or inconsistent cheap coverage: %s->%s",target_start,target_end)
+            selected_offpeak = None
+        else:
+            LOG.info("Regular offpeak: source=%s start=%s end=%s duration_hours=%.1f rate_p=%.3f",
+                     tariff_source, target_start.isoformat(),target_end.isoformat(),
+                     (target_end.astimezone(timezone.utc)-target_start.astimezone(timezone.utc)).total_seconds()/3600.0,
+                     float(cheap_rate_p))
+    if selected_offpeak is None:
+        # Never manufacture supplier-independent tariff hours from missing data.
+        raise HAError("Regular overnight tariff unavailable or incomplete; preserving previously verified inverter schedule")
 
     ev_cfg = cfg.section("ev")
     dispatch_entity = str(ev_cfg.get("smart_charging_dispatch_entity") or "").strip()
@@ -1830,6 +1848,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             "start": target_start.isoformat(),
             "end": target_end.isoformat(),
             "rate_p": round(float(cheap_rate_p), 4) if cheap_rate_p is not None else None,
+            "source": tariff_source,
         },
         "overnight_start_soc": int(overnight_start_soc),
         "overnight_start_soc_no_slots": int(overnight_start_soc_no_slots),

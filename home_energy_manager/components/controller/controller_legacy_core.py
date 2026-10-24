@@ -1761,15 +1761,31 @@ class Controller:
             if valid:
                 self.last_source_forecast_sequence=seq
                 if self.db.ok:self.db.set('last_source_forecast_sequence',seq)
+            persisted=self.fallback_offpeak()
+            if live and live.get('source')=='calendar_projection' and persisted and persisted.get('source')=='supplier':
+                expected_start=persisted['start'].astimezone(self.tz)
+                expected_end=persisted['end'].astimezone(self.tz)
+                candidate_start=live['start'].astimezone(self.tz)
+                candidate_end=live['end'].astimezone(self.tz)
+                if (expected_start.hour,expected_start.minute,expected_end.hour,expected_end.minute)!=(candidate_start.hour,candidate_start.minute,candidate_end.hour,candidate_end.minute):
+                    LOG.warning('Unverified calendar tariff conflicts with verified supplier schedule; retaining persisted %s-%s rather than %s-%s',
+                                iso(expected_start),iso(expected_end),iso(candidate_start),iso(candidate_end))
+                    live=None
             if live:self.persist_offpeak(live)
-            w=live or self.fallback_offpeak()
+            w=live or persisted
             if not valid:
-                self.err('planning','forecast',why,85); cap,_=await self.num('battery_capacity_entity','battery_capacity',False); hw,_=await self.num('inverter_max_charge_rate_entity','max_charge_rate',False); ok=await self.safe(w,cap,hw); self.health='degraded' if ok else 'error'; await self.publish(); return
+                # Do not rewrite an existing inverter schedule from an
+                # unverified or absent forecast on startup/degraded conditions.
+                self.err('planning','forecast',why,85)
+                LOG.warning('Forecast invalid: retaining existing programmed charge schedule (%s)',why)
+                self.health='degraded'; await self.publish(); return
             self.last_attempt=self.now()
             phase=loop.time(); await self.learn_pending()
             LOG.info('Process timing: sequence=%d phase=learn_pending elapsed=%.3fs',seq,loop.time()-phase)
             if not w:
-                self.err('tariff','offpeak','No complete live morning tariff window and no persisted fallback',95); ok=await self.safe(None); self.health='degraded' if ok else 'error'; await self.publish(); return
+                self.err('tariff','offpeak','No verified offpeak window; retaining current inverter schedule',95)
+                LOG.warning('Tariff window unavailable: preserving existing charge/discharge settings')
+                self.health='degraded'; await self.publish(); return
             phase=loop.time(); p=await self.plan(s,soc,w)
             LOG.info('Process timing: sequence=%d phase=plan elapsed=%.3fs',seq,loop.time()-phase)
             if not p:

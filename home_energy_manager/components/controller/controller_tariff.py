@@ -5,7 +5,7 @@ This controller-local module only validates, persists, restores and identifies
 the tariff-derived off-peak window supplied through the forecast interface.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from controller_utils import as_float, iso, parse_dt
 
@@ -23,6 +23,7 @@ def offpeak_from_forecast(controller, state):
         'start': start.astimezone(controller.tz),
         'end': end.astimezone(controller.tz),
         'rate_p': rate,
+        'source': str(offpeak.get('source') or 'unverified'),
     }
 
 
@@ -33,6 +34,7 @@ def persist_offpeak(controller, window):
             'start': iso(window['start']),
             'end': iso(window['end']),
             'rate_p': window['rate_p'],
+            'source': window.get('source', 'unverified'),
         },
     )
 
@@ -49,12 +51,12 @@ def fallback_offpeak(controller):
     start = start.astimezone(controller.tz)
     end = end.astimezone(controller.tz)
     now = controller.now()
-    while end <= now:
+    while end.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
         start_day = start.date() + timedelta(days=1)
         end_day = end.date() + timedelta(days=1)
         start = datetime.combine(start_day, start.timetz().replace(tzinfo=None), controller.tz)
         end = datetime.combine(end_day, end.timetz().replace(tzinfo=None), controller.tz)
-    return {'start': start, 'end': end, 'rate_p': rate}
+    return {'start': start, 'end': end, 'rate_p': rate, 'source': str(row.get('source') or 'unverified')}
 
 
 def current_active_offpeak(controller):

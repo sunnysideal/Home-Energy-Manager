@@ -119,7 +119,7 @@ Home Energy Manager can use current rates plus richer current-day/next-day rate 
 | `tariff.export_current_day_rates` | Entity whose attributes contain today's export rate periods. |
 | `tariff.export_next_day_rates` | Entity whose attributes contain tomorrow's export rate periods. |
 
-The detailed day-rate entities give the forecaster enough information to identify cheap/off-peak periods and model costs accurately. If they are unavailable, current-rate data is only a degraded fallback.
+The detailed day-rate entities give the forecaster enough information to identify cheap/off-peak periods and model costs accurately. If tomorrow's import rates are missing, the forecaster can project only a complete, validated recurring tariff pattern using local clock time, including the spring and autumn clock changes. Temporary EDF smart charging discounts are not copied into tomorrow's regular tariff. Forecasts expose whether the selected overnight period is supplier-sourced or projected. If the source tariff is incomplete or contradictory, the add-on does not invent fixed overnight hours; the controller retains its previously programmed charge schedule rather than replacing it with an unverified window. Current-rate data alone is only a degraded fallback.
 
 ## 5. Solar
 
