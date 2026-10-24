@@ -5,7 +5,7 @@ This controller-local module only validates, persists, restores and identifies
 the tariff-derived off-peak window supplied through the forecast interface.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from controller_utils import as_float, iso, parse_dt
 
