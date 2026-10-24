@@ -1610,13 +1610,17 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
     if selected_offpeak:
         target_start = selected_offpeak[0]
         target_end = selected_offpeak[1]
-    else:
-        # Preserve the existing degraded fallback if tariff events are not rich
-        # enough to identify the controller-facing morning block.
-        target_day = now.date() if now.time() < dtime(23, 30) else now.date() + timedelta(days=1)
-        target_start = datetime.combine(target_day, dtime(23, 30), tzinfo=tz)
-        target_end = target_start + timedelta(hours=6)
-        reasons.append("Regular overnight cheap block could not be identified reliably: 23:30-05:30 fallback used")
+        if not tariff_calendar.covers_window(supplier_import_rates, target_start, target_end, float(cheap_rate_p)):
+            LOG.error("Regular offpeak rejected: incomplete or inconsistent cheap coverage: %s->%s",target_start,target_end)
+            selected_offpeak = None
+        else:
+            LOG.info("Regular offpeak: source=%s start=%s end=%s duration_hours=%.1f rate_p=%.3f",
+                     tariff_source, target_start.isoformat(),target_end.isoformat(),
+                     (target_end.astimezone(timezone.utc)-target_start.astimezone(timezone.utc)).total_seconds()/3600.0,
+                     float(cheap_rate_p))
+    if selected_offpeak is None:
+        # Never manufacture supplier-independent tariff hours from missing data.
+        raise HAError("Regular overnight tariff unavailable or incomplete; preserving previously verified inverter schedule")
 
     ev_cfg = cfg.section("ev")
     dispatch_entity = str(ev_cfg.get("smart_charging_dispatch_entity") or "").strip()
