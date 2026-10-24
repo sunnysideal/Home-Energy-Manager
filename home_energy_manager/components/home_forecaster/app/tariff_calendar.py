@@ -69,9 +69,13 @@ def project_next_local_day(rates, source_day, tz):
     if early < 4 or late < 1 or early + late >= 48:
         return [], "recurring_overnight_pattern_not_established"
 
-    regular = set(slot_keys[:early]) | set(slot_keys[-late:])
+    morning_end = slot_keys[early]
+    evening_start = slot_keys[-late]
+    def is_regular(key):
+        return key < morning_end or key >= evening_start
+
     peak = [price for key, price in source.items()
-            if key not in regular and price > cheap + EPS]
+            if not is_regular(key) and price > cheap + EPS]
     if not peak:
         return [], "daytime_rate_not_established"
     nominal_day_price = float(median(peak))
@@ -90,7 +94,7 @@ def project_next_local_day(rates, source_day, tz):
                 return [], "unresolvable_spring_missing_hour"
             value = previous
             missing += 1
-        if key not in regular and value <= cheap + EPS:
+        if not is_regular(key) and value <= cheap + EPS:
             value = nominal_day_price
         projected.append({"start": start, "end": end, "rate_p": value})
 
