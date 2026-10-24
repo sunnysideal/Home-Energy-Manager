@@ -51,7 +51,7 @@ def fallback_offpeak(controller):
     start = start.astimezone(controller.tz)
     end = end.astimezone(controller.tz)
     now = controller.now()
-    while end <= now:
+    while end.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
         start_day = start.date() + timedelta(days=1)
         end_day = end.date() + timedelta(days=1)
         start = datetime.combine(start_day, start.timetz().replace(tzinfo=None), controller.tz)
