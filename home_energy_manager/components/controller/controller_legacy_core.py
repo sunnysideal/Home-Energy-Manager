@@ -826,8 +826,8 @@ class Controller:
         for x in s.get('attributes',{}).get(attr,[]):
             st=parse_dt(x.get('start')); rate=as_float(x.get('import_rate_p'))
             if st:rows.append((st.astimezone(self.tz),rate,x))
-        rows.sort(key=lambda z:z[0]); out=[]
-        for i,(st,r,x) in enumerate(rows):out.append((st,rows[i+1][0] if i+1<len(rows) else st+timedelta(minutes=30),r,x))
+        rows.sort(key=lambda z:z[0].astimezone(timezone.utc)); out=[]
+        for i,(st,r,x) in enumerate(rows):out.append((st,rows[i+1][0] if i+1<len(rows) else (st.astimezone(timezone.utc)+timedelta(minutes=30)).astimezone(self.tz),r,x))
         return out
     def offpeak_from_forecast(self,s):
         off=s.get('attributes',{}).get('offpeak')
@@ -849,8 +849,8 @@ class Controller:
         best=None
         for a,b,r,x in self.intervals(s,attr):
             v=as_float(x.get('soc'))
-            if v is not None and a<=when:best=v
-            if v is not None and (a<=when<b or abs((a-when).total_seconds())<=60):return v
+            if v is not None and a.astimezone(timezone.utc)<=when.astimezone(timezone.utc):best=v
+            if v is not None and (a.astimezone(timezone.utc)<=when.astimezone(timezone.utc)<b.astimezone(timezone.utc) or abs((a.astimezone(timezone.utc)-when.astimezone(timezone.utc)).total_seconds())<=60):return v
         return best
     def forecast_battery_kwh_between(self,s,start,end,attr='forecast_no_slots'):
         """Prorate forecast battery output over an arbitrary interval.
@@ -905,15 +905,15 @@ class Controller:
         between 23:30 and a delayed charge start such as 02:00.
         """
         margin=float(self.c.get('charge_safety_margin_minutes',10))
-        lo=max(w['start'],earliest or w['start'])
+        lo=max((w['start'],earliest or w['start']),key=lambda d:d.astimezone(timezone.utc))
         hi=w['end']
-        if hi<=lo:return lo,self.projected_charge_start_soc(s,lo,forced_adjustment_pct,reserve),False
+        if hi.astimezone(timezone.utc)<=lo.astimezone(timezone.utc):return lo,self.projected_charge_start_soc(s,lo,forced_adjustment_pct,reserve),False
 
         def feasible(at):
             soc=self.projected_charge_start_soc(s,at,forced_adjustment_pct,reserve)
             if soc is None:return False,None
             need=self.charge_minutes(soc,target,rate,cap)+margin
-            have=(w['end']-at).total_seconds()/60.0
+            have=(w['end'].astimezone(timezone.utc)-at.astimezone(timezone.utc)).total_seconds()/60.0
             return need<=have+1e-6,soc
 
         ok0,soc0=feasible(lo)
@@ -924,14 +924,14 @@ class Controller:
         left,right=lo,hi
         best=lo; best_soc=soc0
         for _ in range(24):
-            if (right-left).total_seconds()<=30:break
-            mid=left+(right-left)/2
+            if (right.astimezone(timezone.utc)-left.astimezone(timezone.utc)).total_seconds()<=30:break
+            mid=(left.astimezone(timezone.utc)+(right.astimezone(timezone.utc)-left.astimezone(timezone.utc))/2).astimezone(self.tz)
             ok,msoc=feasible(mid)
             if ok:
                 best=mid; best_soc=msoc; left=mid
             else:
                 right=mid
-        best=best.replace(second=0,microsecond=0)
+        best=best.astimezone(timezone.utc).replace(second=0,microsecond=0).astimezone(self.tz)
         # Rounding down can only add available charge time.
         best_soc=self.projected_charge_start_soc(s,best,forced_adjustment_pct,reserve)
         return best,best_soc,True
@@ -988,7 +988,7 @@ class Controller:
         if target>=100:mins+=self.dwell()
         return mins
     def choose_rate(self,soc,target,cap,w,hw):
-        p=cap*1000*float(self.c.get('preferred_charge_c_rate',.25)); mx=cap*1000*float(self.c.get('max_charge_c_rate',.4)); mx=min(mx,hw) if hw else mx; p=min(p,mx); avail=(w['end']-w['start']).total_seconds()/60; margin=float(self.c.get('charge_safety_margin_minutes',10))
+        p=cap*1000*float(self.c.get('preferred_charge_c_rate',.25)); mx=cap*1000*float(self.c.get('max_charge_c_rate',.4)); mx=min(mx,hw) if hw else mx; p=min(p,mx); avail=(w['end'].astimezone(timezone.utc)-w['start'].astimezone(timezone.utc)).total_seconds()/60; margin=float(self.c.get('charge_safety_margin_minutes',10))
         fit=lambda r:self.charge_minutes(soc,target,r,cap)+margin<=avail
         if fit(p):return int(round(p))
         if mx<=p or not fit(mx):return int(round(mx))
@@ -1450,7 +1450,7 @@ class Controller:
                     rem={'start':earliest,'end':control_w['end'],'rate_p':control_w['rate_p']}
                     rate=self.choose_rate(live_soc,target,cap,rem,hwc)
                     mins=self.charge_minutes(live_soc,target,rate,cap)+float(self.c.get('charge_safety_margin_minutes',10))
-                    cstart=max(earliest,control_w['end']-timedelta(minutes=mins))
+                    cstart=max(earliest,(control_w['end'].astimezone(timezone.utc)-timedelta(minutes=mins)).astimezone(self.tz),key=lambda d:d.astimezone(timezone.utc))
                     estimated_charge_start_soc=live_soc
                 else:
                     rate,cstart,estimated_charge_start_soc,charge_can_reach_target=self.choose_rate_and_start(
