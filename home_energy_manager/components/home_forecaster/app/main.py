@@ -1557,19 +1557,33 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
         else:
             reasons.append("Export tariff unavailable: export income outputs incomplete")
 
-    # If next-day tariff entity is missing, carry today's 24h tariff pattern forward for tomorrow.
-    if import_rates and not parse_rates(import_next_day):
-        today_only = parse_rates(import_current_day)
-        copied = [{"start": r["start"] + timedelta(days=1), "end": r["end"] + timedelta(days=1), "rate_p": r["rate_p"]} for r in today_only]
-        import_rates.extend(copied)
+    # Next-day fallback must advance *local clock dates*, not fixed-offset
+    # instants. A validated recurring import profile excludes one-off EV
+    # discounts; unverified profiles cannot authorise inverter scheduling.
+    import tariff_calendar
+    supplier_tomorrow = parse_rates(import_next_day)
+    tariff_source = "supplier" if supplier_tomorrow else "unverified"
+    if import_rates and not supplier_tomorrow:
+        copied, copy_reason = tariff_calendar.project_next_local_day(
+            parse_rates(import_current_day), now.astimezone(tz).date(), tz)
+        if copied:
+            import_rates.extend(copied)
+            tariff_source = "calendar_projection"
+            LOG.warning("Tomorrow import tariff missing: using DST-safe local-calendar projection: %s first=%s last=%s",
+                        copy_reason, copied[0]["start"].isoformat(), copied[-1]["end"].isoformat())
+        else:
+            LOG.warning("Tomorrow import tariff missing: calendar projection rejected: %s", copy_reason)
         tariff_fallback = True
-        reasons.append("Tomorrow import tariff unavailable: today pattern carried forward")
+        reasons.append("Tomorrow import tariff unavailable: " + copy_reason)
     if export_rates and not parse_rates(export_next_day):
-        today_only = parse_rates(export_current_day)
-        copied = [{"start": r["start"] + timedelta(days=1), "end": r["end"] + timedelta(days=1), "rate_p": r["rate_p"]} for r in today_only]
-        export_rates.extend(copied)
+        # Export-rate projection is an estimate for financial simulation only,
+        # never a basis for choosing regular cheap import hours.
+        copied, export_reason = tariff_calendar.project_next_local_day(
+            parse_rates(export_current_day), now.astimezone(tz).date(), tz)
+        if copied:
+            export_rates.extend(copied)
         tariff_fallback = True
-        reasons.append("Tomorrow export tariff unavailable: today pattern carried forward")
+        reasons.append("Tomorrow export tariff unavailable: " + export_reason)
 
     # Regular off-peak detection MUST use the unmodified supplier tariff.
     supplier_import_rates = import_rates
