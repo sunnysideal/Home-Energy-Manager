@@ -264,8 +264,12 @@ def build_shadow_forecast(
     mode = mode.strip().lower()
     max_step_kwh = model.typical_power_kw * step_minutes / 60.0
 
+    # Advance physical elapsed time in UTC. Local datetime arithmetic skips
+    # the repeated autumn hour and invents the nonexistent spring hour.
+    # Convert each instant back to local time for the DHW weekday/schedule logic.
+    start_utc = start.astimezone(timezone.utc)
     for index in range(steps):
-        local_dt = start + timedelta(minutes=index * step_minutes)
+        local_dt = (start_utc + timedelta(minutes=index * step_minutes)).astimezone(start.tzinfo)
         draw_kwh = _expected_draw_step(model, local_dt, step_minutes)
         state = step_tank(
             state,
@@ -334,21 +338,27 @@ def persist_shadow_validation(
     legacy_dhw_by_start = legacy_dhw_by_start or {}
     steps_per_checkpoint = max(1, int(round(30 / step_minutes)))
 
+    # Key and compare by UTC so both occurrences of local 01:00/01:30 during
+    # the autumn change remain distinct validation checkpoints.
     groups: dict[datetime, list[ShadowSlot]] = {}
     for slot in slots:
-        groups.setdefault(_half_hour_start(slot.start), []).append(slot)
+        local_half_hour = _half_hour_start(slot.start)
+        groups.setdefault(local_half_hour.astimezone(timezone.utc), []).append(slot)
 
     written = 0
     with db:
         for interval_start in sorted(groups):
-            chunk = sorted(groups[interval_start], key=lambda s: s.start)
-            expected_starts = [interval_start + timedelta(minutes=i * step_minutes) for i in range(steps_per_checkpoint)]
-            if len(chunk) != steps_per_checkpoint or [slot.start for slot in chunk] != expected_starts:
+            chunk = sorted(groups[interval_start],
+                           key=lambda s: s.start.astimezone(timezone.utc))
+            expected_starts = [interval_start + timedelta(minutes=i * step_minutes)
+                               for i in range(steps_per_checkpoint)]
+            actual_starts = [slot.start.astimezone(timezone.utc) for slot in chunk]
+            if len(chunk) != steps_per_checkpoint or actual_starts != expected_starts:
                 continue
             endpoint = chunk[-1]
             target_time = interval_start + timedelta(minutes=30)
-            target_iso = target_time.astimezone(timezone.utc).isoformat()
-            slot_start_iso = interval_start.astimezone(timezone.utc).isoformat()
+            target_iso = target_time.isoformat()
+            slot_start_iso = interval_start.isoformat()
             predicted_dhw = sum(slot.dhw_kwh for slot in chunk)
             legacy_dhw = legacy_dhw_by_start.get(slot_start_iso)
             db.execute(
