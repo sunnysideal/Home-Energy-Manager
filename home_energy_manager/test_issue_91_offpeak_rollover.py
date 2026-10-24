@@ -22,7 +22,7 @@ def load_module(path, name):
     return module
 
 
-def test_forecaster_rollover_derives_following_edf_window_from_active_tariff(monkeypatch):
+def test_forecaster_rollover_preserves_current_edf_window_until_end(monkeypatch):
     active = (dt("2026-09-14", "23:00"), dt("2026-09-15", "06:00"), 6.99)
     fake_base = SimpleNamespace(
         select_controller_offpeak=lambda rates, now, tz: None,
@@ -41,12 +41,12 @@ def test_forecaster_rollover_derives_following_edf_window_from_active_tariff(mon
 
     for clock in ("23:00", "23:05", "23:29", "23:30"):
         selected = module.select_controller_offpeak([], dt("2026-09-14", clock), TZ)
-        assert selected[0] == dt("2026-09-15", "23:00")
-        assert selected[1] == dt("2026-09-16", "06:00")
+        assert selected[0] == dt("2026-09-14", "23:00")
+        assert selected[1] == dt("2026-09-15", "06:00")
         assert selected[2] == 6.99
 
     selected = module.select_controller_offpeak([], dt("2026-09-15", "00:15"), TZ)
-    assert selected[:2] == (dt("2026-09-15", "23:00"), dt("2026-09-16", "06:00"))
+    assert selected[:2] == (dt("2026-09-14", "23:00"), dt("2026-09-15", "06:00"))
 
 
 def test_forecaster_never_invents_octopus_hours_when_tariff_unknown(monkeypatch):
