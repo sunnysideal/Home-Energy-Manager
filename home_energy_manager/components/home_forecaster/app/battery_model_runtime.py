@@ -295,10 +295,21 @@ def _model_attributes(store, cfg, now: datetime) -> dict[str, Any]:
         learned = float(row["learned_factor"]) if row and row["learned_factor"] is not None else None
         confidence = float(row["confidence"] or 0.0) if row else 0.0
         generic = GENERIC_FACTORS[(lo, hi)]
-        effective = generic * (1.0 - confidence) + learned * confidence if learned is not None else generic
+        raw_effective = generic * (1.0 - confidence) + learned * confidence if learned is not None else generic
+        # Observed SoC can jump during a BMS recalibration, producing an
+        # apparent factor above unity. Keep that raw learning in the database
+        # and entity diagnostics, but publish a physically bounded factor for
+        # the authoritative Controller charge-duration contract.
+        effective = min(1.0, max(0.05, raw_effective)) if math.isfinite(raw_effective) else generic
+        if effective != raw_effective:
+            base.LOG.warning(
+                "Battery planning factor constrained: soc_band=%d-%d raw=%.4f effective=%.4f learned=%s confidence=%.3f",
+                lo, hi, raw_effective, effective, learned, confidence,
+            )
         bands.append({
             "soc_lo": lo, "soc_hi": hi, "generic_factor": generic,
             "learned_factor": learned, "confidence": confidence,
+            "raw_effective_factor": raw_effective,
             "effective_factor": effective,
             "samples": int(row["obs_count"] or 0) if row else 0,
             "full_equiv": float(row["full_equiv"] or 0.0) if row else 0.0,
