@@ -213,3 +213,27 @@ def test_migrated_top_completion_allowance_is_disabled_without_changing_soc_band
         for b in attrs["bands"]
     )
     assert abs(actual - expected) < 1e-9
+
+def test_overunity_learned_factor_is_bounded_only_in_published_planning_model():
+    runtime = _load_runtime()
+    runtime.base.LOG = types.SimpleNamespace(warning=lambda *args: None)
+    store = Store()
+    runtime._ensure_schema(store)
+    now = datetime(2026, 10, 24, 13, 0, tzinfo=timezone.utc)
+    store.db.execute(
+        "INSERT INTO battery_charge_bands(band_lo,band_hi,learned_factor,confidence,full_equiv,obs_count,updated_at) VALUES(?,?,?,?,?,?,?)",
+        (90, 95, 1.4, 1.0, 2.0, 5, now.isoformat()),
+    )
+    store.db.commit()
+    class Config:
+        def section(self, name):
+            return {}
+    attrs=runtime._model_attributes(store,Config(),now)
+    band=next(b for b in attrs["bands"] if b["soc_lo"]==90)
+    assert band["learned_factor"] == 1.4
+    assert band["raw_effective_factor"] == 1.4
+    assert band["effective_factor"] == 1.0
+    assert store.db.execute("SELECT learned_factor FROM battery_charge_bands WHERE band_lo=90").fetchone()[0]==1.4
+    assert contract.validate_battery_model_attributes(attrs,now=now)==(True,"ok")
+    from components.controller.controller_battery import validate_forecaster_model
+    assert validate_forecaster_model(attrs,now)[0] is True
