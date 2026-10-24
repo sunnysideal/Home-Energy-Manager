@@ -122,17 +122,17 @@ class HorizonHAClient(legacy.HAClient):
                 LOG.warning("Could not store weather forecast observation snapshot: %s", exc)
         if len(parsed) < 2:
             return raw
-        parsed.sort(key=lambda item: item[0])
+        parsed.sort(key=lambda item: item[0].astimezone(timezone.utc))
         last_dt, last_temp = parsed[-1]
-        required_end = datetime.now(self.tz) + timedelta(hours=self.forecast_hours + 2)
-        if last_dt >= required_end:
+        required_end = datetime.now(timezone.utc) + timedelta(hours=self.forecast_hours + 2)
+        if last_dt.astimezone(timezone.utc) >= required_end:
             return raw
         extended = list(raw)
-        cursor = last_dt
+        cursor = last_dt.astimezone(timezone.utc)
         appended = 0
         while cursor < required_end:
             cursor += timedelta(hours=1)
-            extended.append({"datetime": cursor.isoformat(), "temperature": last_temp})
+            extended.append({"datetime": cursor.astimezone(self.tz).isoformat(), "temperature": last_temp})
             appended += 1
         LOG.info("Weather horizon extended by %d hourly points using last temperature %.1f C to guarantee %dh ASHP forecast", appended, last_temp, self.forecast_hours)
         return extended
@@ -286,11 +286,13 @@ def _publish_degraded_ch_forecast(
     coefficient, training_days, training_slots = legacy.build_training(client, store, cfg, tz)
     forecast = _build_ch_only_forecast(client, store, cfg, coefficient, tz)
     now = datetime.now(tz)
-    next_48_end = now + timedelta(hours=48)
+    next_48_end = (now.astimezone(timezone.utc) + timedelta(hours=48)).astimezone(tz)
     midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=tz)
 
     def ch_sum(end: datetime) -> float:
-        return sum(float(slot["ch_kwh"]) for slot in forecast if legacy.parse_dt(slot["start"]) < end)
+        cutoff = end.astimezone(timezone.utc)
+        return sum(float(slot["ch_kwh"]) for slot in forecast
+                   if legacy.parse_dt(slot["start"]).astimezone(timezone.utc) < cutoff)
 
     common = {
         "model": "heating_degree_days",
