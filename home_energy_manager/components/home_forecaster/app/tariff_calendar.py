@@ -52,29 +52,24 @@ def project_next_local_day(rates, source_day, tz):
     cheap = source.get((0, 0))
     if cheap is None:
         return [], "midnight_rate_missing"
+    # Walk actual settlement intervals, not an assumed 48 wall-clock slots.
+    # Spring omits 01:00; autumn repeats 01:00. Both are regular overnight.
+    slot_keys = [(local.hour, local.minute) for _, _, local
+                 in _day_slots(source_day, tz)]
     early = 0
-    for hour in range(24):
-        for minute in (0, 30):
-            if abs(source.get((hour, minute), float("inf")) - cheap) > EPS:
-                break
-            early += 1
-        else:
-            continue
-        break
+    for key in slot_keys:
+        if abs(source[key] - cheap) > EPS:
+            break
+        early += 1
     late = 0
-    for hour in range(23, -1, -1):
-        for minute in (30, 0):
-            if abs(source.get((hour, minute), float("inf")) - cheap) > EPS:
-                break
-            late += 1
-        else:
-            continue
-        break
+    for key in reversed(slot_keys):
+        if abs(source[key] - cheap) > EPS:
+            break
+        late += 1
     if early < 4 or late < 1 or early + late >= 48:
         return [], "recurring_overnight_pattern_not_established"
 
-    regular = {(h // 2, (h % 2) * 30) for h in range(early)}
-    regular.update({(23 - h // 2, 30 if h % 2 == 0 else 0) for h in range(late)})
+    regular = set(slot_keys[:early]) | set(slot_keys[-late:])
     peak = [price for key, price in source.items()
             if key not in regular and price > cheap + EPS]
     if not peak:
