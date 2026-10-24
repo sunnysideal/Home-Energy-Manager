@@ -1774,7 +1774,11 @@ class Controller:
             if live:self.persist_offpeak(live)
             w=live or persisted
             if not valid:
-                self.err('planning','forecast',why,85); cap,_=await self.num('battery_capacity_entity','battery_capacity',False); hw,_=await self.num('inverter_max_charge_rate_entity','max_charge_rate',False); ok=await self.safe(w,cap,hw); self.health='degraded' if ok else 'error'; await self.publish(); return
+                # Do not rewrite an existing inverter schedule from an
+                # unverified or absent forecast on startup/degraded conditions.
+                self.err('planning','forecast',why,85)
+                LOG.warning('Forecast invalid: retaining existing programmed charge schedule (%s)',why)
+                self.health='degraded'; await self.publish(); return
             self.last_attempt=self.now()
             phase=loop.time(); await self.learn_pending()
             LOG.info('Process timing: sequence=%d phase=learn_pending elapsed=%.3fs',seq,loop.time()-phase)
