@@ -198,6 +198,36 @@ async def apply_plan(controller, plan, log):
     log.info('Apply timing: total=%.3fs fields=%d writes_confirmed=%d success=%s',asyncio.get_running_loop().time()-apply_started,len(fields),controller.confirmed_writes_this_apply,'yes' if all(results) else 'no'); return all(results)
 
 
+def observed_charge_within_offpeak(start_text, end_text, window, tz):
+    """Validate inverter clock selectors within supplier regular cheap wall times.
+
+    This is a schedule-preservation guard, never a substitute battery model.
+    The inverter exposes HH:MM selectors rather than offset-aware instants.
+    """
+    try:
+        from datetime import datetime, time
+        start = time.fromisoformat(str(start_text))
+        end = time.fromisoformat(str(end_text))
+        ws = window['start'].astimezone(tz).time().replace(tzinfo=None)
+        we = window['end'].astimezone(tz).time().replace(tzinfo=None)
+        a = start.hour * 60 + start.minute
+        b = end.hour * 60 + end.minute
+        lo = ws.hour * 60 + ws.minute
+        hi = we.hour * 60 + we.minute
+        if a == b or a == hi or b == lo:
+            return False
+        # Compare clock boundaries in an unwrapped overnight timeline.
+        if hi <= lo:
+            hi += 1440
+            if a < lo:
+                a += 1440
+            if b <= lo:
+                b += 1440
+        return lo <= a < b <= hi
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return False
+
+
 async def apply_safe_fallback(controller, window, cap=None, hardware_max_charge_w=None):
     """Apply the existing conservative fallback through the write boundary."""
     now=controller.now(); export_start=controller.export_start(window) if window else now.replace(second=0,microsecond=0); pause=controller.pause_plan(window)
@@ -206,6 +236,23 @@ async def apply_safe_fallback(controller, window, cap=None, hardware_max_charge_
     reserve,_=await controller.num('battery_reserve_entity','battery_reserve',False)
     if reserve is not None:fields.append(('discharge_target',controller.c['discharge_slot_1_target_entity'],int(round(reserve)),window['end'] if window else None))
     if window and cap:
-        charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(window['start'])); rate=cap*1000*float(controller.c.get('preferred_charge_c_rate',.25)); rate=min(rate,hardware_max_charge_w) if hardware_max_charge_w else rate
-        fields += [('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,window['end']),('charge_end',controller.c['charge_slot_1_end_entity'],controller.tstr(window['end']),window['end']),('charge_target',controller.c['charge_slot_1_target_entity'],100,window['end']),('charge_rate',controller.c['charge_rate_entity'],int(round(rate)),window['end'])]
+        # A transient invalid forecaster model must not erase a valid delayed
+        # charge schedule. Without that model we cannot safely recompute start
+        # or rate. Still perform other degraded safety writes above.
+        observed_start=await controller.ha.state(controller.c['charge_slot_1_start_entity'])
+        observed_end=await controller.ha.state(controller.c['charge_slot_1_end_entity'])
+        start_text=(observed_start or {}).get('state')
+        end_text=(observed_end or {}).get('state')
+        if observed_charge_within_offpeak(start_text,end_text,window,controller.tz):
+            controller.LOG.warning(
+                'Battery model unavailable: preserving verified inverter charge window %s-%s and charge rate; no substitute model used',
+                start_text,end_text)
+        else:
+            charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(window['start']))
+            rate=cap*1000*float(controller.c.get('preferred_charge_c_rate',.25))
+            rate=min(rate,hardware_max_charge_w) if hardware_max_charge_w else rate
+            controller.LOG.warning(
+                'Battery model unavailable and inverter charge schedule not verified (%s-%s): using conservative full regular cheap window',
+                start_text,end_text)
+            fields += [('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,window['end']),('charge_end',controller.c['charge_slot_1_end_entity'],controller.tstr(window['end']),window['end']),('charge_rate',controller.c['charge_rate_entity'],int(round(rate)),window['end'])]
     return all([await controller.ensure(*item) for item in fields])
