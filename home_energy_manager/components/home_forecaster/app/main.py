@@ -1848,6 +1848,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             "start": target_start.isoformat(),
             "end": target_end.isoformat(),
             "rate_p": round(float(cheap_rate_p), 4) if cheap_rate_p is not None else None,
+            "source": tariff_source,
         },
         "overnight_start_soc": int(overnight_start_soc),
         "overnight_start_soc_no_slots": int(overnight_start_soc_no_slots),
