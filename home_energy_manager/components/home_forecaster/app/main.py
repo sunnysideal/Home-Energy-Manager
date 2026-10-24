@@ -1457,8 +1457,11 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
     min_full_slot_kwh = float(cfg.setting("minimum_baseline_w", 200)) / 1000.0 * 0.5
 
     # Forecast slots: partial current half-hour, then full real half-hours to end of tomorrow.
-    current_floor = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
-    next_boundary = current_floor + timedelta(minutes=30)
+    # Round down in UTC: local-time addition can jump over (or repeat) the
+    # autumn 01:00 hour and manufacture a non-existent spring 01:00 slot.
+    utc_now = now.astimezone(timezone.utc)
+    current_floor = utc_now.replace(minute=(utc_now.minute // 30) * 30, second=0, microsecond=0).astimezone(tz)
+    next_boundary = (current_floor.astimezone(timezone.utc) + timedelta(minutes=30)).astimezone(tz)
     horizon_end = datetime.combine(now.date() + timedelta(days=2), dtime.min, tzinfo=tz)
     starts = [now]
     cursor = next_boundary
