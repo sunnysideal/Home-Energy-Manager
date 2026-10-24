@@ -152,6 +152,19 @@ async def locked_minimise_charge_slot(controller, plan, log):
 async def desired_inverter_fields(controller, plan, log):
     """Translate a calculated plan to desired inverter fields without writing."""
     repair_disabled_discharge(controller,plan,log); repair_expired_charge(controller,plan,log)
+    # One-off EV slots must be current, with an end strictly after the current
+    # instant. Do not program stale/repeating inverter clock times.
+    ig=plan.get('intelligent_go') or {}
+    if ig.get('confirmed') and ig.get('intelligent_charge_target_soc') is not None:
+        charge=plan.get('charge') or {}
+        cs=parse_dt(charge.get('start'));ce=parse_dt(charge.get('end'))
+        now=controller.now()
+        if not cs or not ce or cs.astimezone(__import__('datetime').timezone.utc)>=ce.astimezone(__import__('datetime').timezone.utc) or ce.astimezone(__import__('datetime').timezone.utc)<=now.astimezone(__import__('datetime').timezone.utc):
+            log.error('EV smart charging: rejecting stale/invalid top-up start=%s end=%s now=%s',cs,ce,now)
+            charge['start']=charge['end']=iso(now.replace(second=0,microsecond=0))
+            charge['planned_kwh']=0.0
+            ig['intelligent_charge_target_soc']=None
+            ig['charge_reason']='invalid_or_expired_smart_slot'
     wend=parse_dt(plan['offpeak']['end']); window={'start':parse_dt(plan['offpeak']['start']).astimezone(controller.tz),'end':wend.astimezone(controller.tz),'rate_p':plan['offpeak']['rate_p']}
     pause=plan.get('pause') or controller.pause_plan(window)
     if plan.get('intelligent_go',{}).get('confirmed'):
