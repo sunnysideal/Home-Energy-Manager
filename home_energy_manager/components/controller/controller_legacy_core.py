@@ -82,6 +82,14 @@ class Controller:
             self.c[dst]=str(ents.get(src,'')).strip()
         vals=ci.get('values') if isinstance(ci.get('values'),dict) else {}
         metering=attrs.get('metering') if isinstance(attrs.get('metering'),dict) else {}
+        forecast_smart_sensor=str(metering.get('ev_smart_charging_active_entity') or '').strip()
+        configured_smart_sensor=str(self.c.get('ev_smart_charging_active_entity') or '').strip()
+        if forecast_smart_sensor and not configured_smart_sensor:
+            self.c['ev_smart_charging_active_entity']=forecast_smart_sensor
+            LOG.info('EV Smart Charging sensor discovered from forecast: %s',forecast_smart_sensor)
+        elif forecast_smart_sensor and configured_smart_sensor != forecast_smart_sensor:
+            LOG.warning('EV Smart Charging sensor mismatch: controller=%s forecaster=%s; using controller configuration',
+                        configured_smart_sensor,forecast_smart_sensor)
         meter_import_entity=str(metering.get('import_entity') or '').strip()
         meter_export_entity=str(metering.get('export_entity') or '').strip()
         if meter_import_entity:
@@ -148,7 +156,10 @@ class Controller:
         n=(when or self.now()).astimezone(self.tz)
         minute=30 if n.minute>=30 else 0
         start=n.replace(minute=minute,second=0,microsecond=0)
-        return start,start+timedelta(minutes=30)
+        # UTC arithmetic distinguishes both occurrences of the autumn 01:00
+        # hour and skips the nonexistent spring hour.
+        end=(start.astimezone(timezone.utc)+timedelta(minutes=30)).astimezone(self.tz)
+        return start,end
 
     def persisted_intelligent_slot(self):
         if not self.db.ok:return None
@@ -157,9 +168,9 @@ class Controller:
         a=parse_dt(r.get('start')); b=parse_dt(r.get('end'))
         if not a or not b:return None
         a=a.astimezone(self.tz); b=b.astimezone(self.tz)
-        n=self.now()
-        if not (a<=n<b):
-            if b<=n:self.db.set('intelligent_confirmed_slot',None)
+        n=self.now().astimezone(timezone.utc)
+        if not (a.astimezone(timezone.utc)<=n<b.astimezone(timezone.utc)):
+            if b.astimezone(timezone.utc)<=n:self.db.set('intelligent_confirmed_slot',None)
             return None
         return {'start':a,'end':b}
 
@@ -200,6 +211,8 @@ class Controller:
         entity=str(self.c.get('ev_smart_charging_active_entity',
                               '')).strip()
         if not self.c.get('ev_smart_charging_enabled',True) or not entity:
+            LOG.warning('EV Smart Charging inactive: enabled=%s configured_sensor=%s',
+                        self.c.get('ev_smart_charging_enabled',True),entity or '<missing>')
             return {'enabled':False,'entity_id':entity,'sensor_on':False,'confirmed':False,
                     'slot_start':None,'slot_end':None}
         st=await self.ha.state(entity)
@@ -218,6 +231,10 @@ class Controller:
                     LOG.info('EV Smart Charging slot confirmed by %s: %s-%s',
                              entity,a.strftime('%H:%M'),b.strftime('%H:%M'))
         confirmed=slot is not None
+        LOG.info('EV Smart Charging sensor: entity=%s state=%s on=%s confirmed=%s slot=%s-%s',
+                 entity,state,sensor_on,confirmed,
+                 iso(slot['start']) if slot else 'none',
+                 iso(slot['end']) if slot else 'none')
         return {
             'enabled':True,
             'entity_id':entity,
@@ -1524,17 +1541,26 @@ class Controller:
             if required_delta_pct>0.5 and n<ib:
                 intelligent_pause_mode='Disabled'
                 intelligent_charge_target=int(round(clamp(ils+required_delta_pct,reserve,100)))
-                remaining_window={'start':max(n,ia),'end':ib,'rate_p':control_w['rate_p']}
+                # GivEnergy stores recurring wall-clock times; a start already
+                # in the past may never trigger. Arm at the next whole minute.
+                current_minute=n.replace(second=0,microsecond=0)
+                smart_start=current_minute if n==current_minute else current_minute+timedelta(minutes=1)
+                remaining_window={'start':smart_start,'end':ib,'rate_p':control_w['rate_p']}
                 rate=self.choose_rate(ils,intelligent_charge_target,cap,remaining_window,hwc)
-                cstart=ia
+                cstart=smart_start
                 cend=ib
                 charge_slot_target=intelligent_charge_target
 
-                available_minutes=max(0.0,(ib-n).total_seconds()/60.0)
+                available_minutes=max(0.0,(ib-smart_start).total_seconds()/60.0)
                 possible_stored=(rate/1000.0)*(available_minutes/60.0)*0.95
                 required_stored=cap*max(0.0,intelligent_charge_target-ils)/100.0
                 planned_charge=min(required_stored,possible_stored)
-                needs_charge=True
+                needs_charge=planned_charge>0.01 and smart_start.astimezone(timezone.utc)<ib.astimezone(timezone.utc)
+                if not needs_charge:
+                    cstart=ib;cend=ib;planned_charge=0.0
+                    intelligent_charge_reason='confirmed_slot_no_remaining_charge_time'
+                    intelligent_charge_target=None
+                    intelligent_pause_mode='PauseDischarge'
                 estimated_charge_start_soc=ils
             else:
                 # Normally a confirmed cheap half-hour uses PauseDischarge so
@@ -1594,6 +1620,14 @@ class Controller:
                 'strategy':'confirmed_overlay_preserve_normal_plan',
             }
         }
+        if intelligent.get('confirmed'):
+            LOG.info('EV Smart Charging decision: sensor=%s confirmed=yes slot=%s-%s live_soc=%.1f%% offpeak_arrival_soc=%.1f%% buffer=%.1f%% decision=%s reason=%s planned=%.3fkWh rate=%dW charge=%s-%s',
+                     intelligent.get('entity_id'),iso(intelligent.get('slot_start')),
+                     iso(intelligent.get('slot_end')),float(ils),offpeak_arrival_soc,
+                     max(float(reserve),float(self.c.get('safety_buffer_soc',20))),
+                     'charge' if intelligent_charge_target is not None else 'preserve',
+                     intelligent_charge_reason or 'no_topup_needed',planned_charge if intelligent_charge_target is not None else 0.0,
+                     rate,iso(cstart),iso(cend))
         if power_down is not None:
             result['power_down']={
                 'event_entity':power_down.get('entity_id'),

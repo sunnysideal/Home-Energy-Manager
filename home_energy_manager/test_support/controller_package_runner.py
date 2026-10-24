@@ -195,6 +195,8 @@ async def run(data):
     controller.now = lambda: now
     source = forecast(now, entities, data.get("natural_soc", 4),
                       complete=not data.get("incomplete_forecast"))
+    if "arrival_soc" in data:
+        source["attributes"]["overnight_start_soc_no_slots"] = data["arrival_soc"]
     assert controller.discover_from_forecast(source)
     # Exercise real Controller.apply and the production charge-target suppression
     # layer. Stub only its slow HA retry/readback boundary (tested separately).

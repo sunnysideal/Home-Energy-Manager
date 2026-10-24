@@ -31,11 +31,24 @@ def _shift_local_day(value: datetime, days: int, tz) -> datetime:
 def select_controller_offpeak(import_rates, now, tz):
     """Return the real next regular cheap window without fixed-time fallback."""
     selected = _original_select_controller_offpeak(import_rates, now, tz)
+    # Defend against older selection implementations returning a one-off
+    # daytime EV smart discount instead of the regular overnight block.
     if selected is not None:
-        return selected
+        start, end, _rate = selected
+        local_start = start.astimezone(tz)
+        local_end = end.astimezone(tz)
+        duration = end.astimezone(timezone.utc) - start.astimezone(timezone.utc)
+        crosses_date = local_start.date() < local_end.date()
+        if (duration >= timedelta(hours=2) and local_end.hour < 8
+                and (crosses_date or local_start.hour < 3)):
+            return selected
 
     now_utc = now.astimezone(timezone.utc)
     blocks = sorted(base.find_overnight_blocks(import_rates, tz), key=lambda item: item[0].astimezone(timezone.utc))
+    future = next((block for block in blocks
+                   if block[0].astimezone(timezone.utc) > now_utc), None)
+    if future is not None:
+        return future
     active = next(
         (block for block in blocks if block[0].astimezone(timezone.utc) <= now_utc < block[1].astimezone(timezone.utc)),
         None,
