@@ -454,3 +454,9 @@ The sensor attributes include `window_start`, `window_end`, `next_change` (offse
 
 For example, a Home Assistant automation can use a numeric-state trigger below 0.01 p/kWh to request a DHW boost when electricity becomes free, with a separate action to restore the normal DHW settings afterwards. Add your own cylinder temperature and schedule safeguards. **The sensor describes the grid price, not the source of energy currently supplying the heat pump:** a battery may still discharge during a cheap-price window unless separately configured to preserve its charge.
 
+
+### Battery charge model and degraded charge scheduling
+
+Home Forecaster learns charging behaviour separately for each battery SoC band. A sudden BMS SoC correction can produce a learned factor above 1.0; this remains visible as the raw/learned value, but the effective factor supplied for charge planning is limited to 0.05–1.0. The source learning history is retained unchanged. Warnings identify any band where the effective factor was constrained.
+
+When the authoritative Home Forecaster battery-model sensor is temporarily invalid or unavailable, the controller cannot calculate a new charge duration. It enters degraded control without substituting a different battery model. If the inverter already has a nonempty charge slot wholly inside the regular cheap-rate window, the existing charge start, end and rate are preserved. When no such slot can be verified, the safe fallback uses the full regular cheap window. Normal delayed-start optimisation resumes when the model is valid again.
