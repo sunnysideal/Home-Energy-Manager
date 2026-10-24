@@ -1783,7 +1783,9 @@ class Controller:
             phase=loop.time(); await self.learn_pending()
             LOG.info('Process timing: sequence=%d phase=learn_pending elapsed=%.3fs',seq,loop.time()-phase)
             if not w:
-                self.err('tariff','offpeak','No complete live morning tariff window and no persisted fallback',95); ok=await self.safe(None); self.health='degraded' if ok else 'error'; await self.publish(); return
+                self.err('tariff','offpeak','No verified offpeak window; retaining current inverter schedule',95)
+                LOG.warning('Tariff window unavailable: preserving existing charge/discharge settings')
+                self.health='degraded'; await self.publish(); return
             phase=loop.time(); p=await self.plan(s,soc,w)
             LOG.info('Process timing: sequence=%d phase=plan elapsed=%.3fs',seq,loop.time()-phase)
             if not p:
