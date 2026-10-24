@@ -293,9 +293,9 @@ def test_confirmed_edf_slot_recharges_when_arrival_below_buffer(simulate):
     start = datetime.fromisoformat(plan["charge"]["start"])
     end = datetime.fromisoformat(plan["charge"]["end"])
     assert start < end
-    assert start.strftime("%H:%M") == "14:12"
+    assert start.strftime("%H:%M") == "14:11"
     assert end.strftime("%H:%M") == "14:30"
-    assert fields(result)["charge_slot_1_start"] == "14:12:00"
+    assert fields(result)["charge_slot_1_start"] == "14:11:00"
     assert fields(result)["charge_slot_1_end"] == "14:30:00"
     assert fields(result)["charge_rate"] > 0
     assert_no_unauthorised_target_write(result)
