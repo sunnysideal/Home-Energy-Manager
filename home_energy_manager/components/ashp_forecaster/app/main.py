@@ -826,14 +826,19 @@ def build_dhw_forecast(client: HAClient, store: Store, cfg: Config, starts: list
     return out
 
 def interpolate_temperature(points: list[tuple[datetime, float]], at: datetime) -> float:
-    if at <= points[0][0]:
+    # Compare elapsed instants, not wall-clock values: 01:30 BST is before
+    # 01:00 GMT during the repeated autumn hour.
+    target = at.astimezone(timezone.utc)
+    if target <= points[0][0].astimezone(timezone.utc):
         return points[0][1]
-    if at >= points[-1][0]:
+    if target >= points[-1][0].astimezone(timezone.utc):
         return points[-1][1]
     for (t0, v0), (t1, v1) in zip(points, points[1:]):
-        if t0 <= at <= t1:
-            span = (t1 - t0).total_seconds()
-            f = (at - t0).total_seconds() / span if span else 0
+        start = t0.astimezone(timezone.utc)
+        end = t1.astimezone(timezone.utc)
+        if start <= target <= end:
+            span = (end - start).total_seconds()
+            f = (target - start).total_seconds() / span if span else 0
             return v0 + (v1 - v0) * f
     return points[-1][1]
 
@@ -846,6 +851,24 @@ def ceil_time(dt: datetime, minutes: int) -> datetime:
     return rounded
 
 
+def forecast_slot_starts(now: datetime, interval_minutes: int, forecast_hours: int, available_end: datetime) -> list[datetime]:
+    """Produce a real elapsed-time horizon, retaining both autumn 01:00 slots.
+
+    Local time is used for heating control decisions only, never for adding
+    consecutive half-hour instants or deciding the forecast's length.
+    """
+    utc = timezone.utc
+    step = timedelta(minutes=interval_minutes)
+    start_utc = ceil_time(now.astimezone(utc), interval_minutes)
+    end_utc = min(start_utc + timedelta(hours=forecast_hours), available_end.astimezone(utc))
+    result = []
+    instant = start_utc
+    while instant < end_utc:
+        result.append(instant.astimezone(now.tzinfo))
+        instant += step
+    return result
+
+
 def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: float, tz: ZoneInfo) -> list[dict[str, Any]]:
     raw = client.get_hourly_weather(cfg.weather_entity)
     weather: list[tuple[datetime, float]] = []
@@ -856,22 +879,14 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
             weather.append((dt, temp))
         except (KeyError, TypeError, ValueError):
             continue
-    weather.sort(key=lambda x: x[0])
+    weather.sort(key=lambda x: x[0].astimezone(timezone.utc))
     if len(weather) < 2:
         raise RuntimeError("Hourly weather forecast has insufficient temperature points")
 
     now = datetime.now(tz)
-    step = timedelta(minutes=cfg.forecast_interval_minutes)
-    start = ceil_time(now, cfg.forecast_interval_minutes)
-    requested_end = start + timedelta(hours=cfg.forecast_hours)
-    available_end = weather[-1][0]
-    end = min(requested_end, available_end)
-
-    starts: list[datetime] = []
-    cursor = start
-    while cursor < end:
-        starts.append(cursor)
-        cursor += step
+    starts = forecast_slot_starts(
+        now, cfg.forecast_interval_minutes, cfg.forecast_hours, weather[-1][0]
+    )
     dhw_values = build_dhw_forecast(client, store, cfg, starts)
 
     result: list[dict[str, Any]] = []
@@ -906,14 +921,16 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
 
 
 def sum_until(forecast: list[dict[str, Any]], end: datetime) -> float:
-    return sum(float(slot["energy_kwh"]) for slot in forecast if parse_dt(slot["start"]) < end)
+    limit = end.astimezone(timezone.utc)
+    return sum(float(slot["energy_kwh"]) for slot in forecast
+               if parse_dt(slot["start"]).astimezone(timezone.utc) < limit)
 
 
 def publish(client: HAClient, cfg: Config, coefficient: float, training_days: int, training_slots: int, forecast: list[dict[str, Any]], tz: ZoneInfo) -> None:
     now = datetime.now(tz)
     next_30 = forecast[0]["energy_kwh"] if forecast else 0.0
-    next_24_end = now + timedelta(hours=24)
-    next_48_end = now + timedelta(hours=48)
+    next_24_end = (now.astimezone(timezone.utc) + timedelta(hours=24)).astimezone(tz)
+    next_48_end = (now.astimezone(timezone.utc) + timedelta(hours=48)).astimezone(tz)
     midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=tz)
 
     common = {
@@ -942,8 +959,8 @@ def publish(client: HAClient, cfg: Config, coefficient: float, training_days: in
     sensor("sensor.ashp_forecast_remaining_today", sum_until(forecast, midnight), "ASHP Forecast Remaining Today")
     sensor("sensor.ashp_forecast_next_24h", sum_until(forecast, next_24_end), "ASHP Forecast Next 24h", {"forecast": forecast})
     sensor("sensor.ashp_forecast_next_48h", sum_until(forecast, next_48_end), "ASHP Forecast Next 48h", {"forecast": forecast})
-    ch_48 = sum(float(slot.get("ch_kwh", 0.0)) for slot in forecast if parse_dt(slot["start"]) < next_48_end)
-    dhw_48 = sum(float(slot.get("dhw_kwh", 0.0)) for slot in forecast if parse_dt(slot["start"]) < next_48_end)
+    ch_48 = sum(float(slot.get("ch_kwh", 0.0)) for slot in forecast if parse_dt(slot["start"]).astimezone(timezone.utc) < next_48_end.astimezone(timezone.utc))
+    dhw_48 = sum(float(slot.get("dhw_kwh", 0.0)) for slot in forecast if parse_dt(slot["start"]).astimezone(timezone.utc) < next_48_end.astimezone(timezone.utc))
     sensor("sensor.ashp_forecast_ch_next_48h", ch_48, "ASHP CH Forecast Next 48h")
     sensor("sensor.ashp_forecast_dhw_next_48h", dhw_48, "ASHP DHW Forecast Next 48h")
 
