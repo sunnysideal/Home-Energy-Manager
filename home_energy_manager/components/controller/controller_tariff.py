@@ -56,7 +56,7 @@ def fallback_offpeak(controller):
         end_day = end.date() + timedelta(days=1)
         start = datetime.combine(start_day, start.timetz().replace(tzinfo=None), controller.tz)
         end = datetime.combine(end_day, end.timetz().replace(tzinfo=None), controller.tz)
-    return {'start': start, 'end': end, 'rate_p': rate}
+    return {'start': start, 'end': end, 'rate_p': rate, 'source': str(row.get('source') or 'unverified')}
 
 
 def current_active_offpeak(controller):
