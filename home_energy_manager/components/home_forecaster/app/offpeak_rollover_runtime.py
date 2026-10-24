@@ -28,50 +28,63 @@ def _shift_local_day(value: datetime, days: int, tz) -> datetime:
     return datetime.combine(day, local.timetz().replace(tzinfo=None), tz)
 
 
-def select_controller_offpeak(import_rates, now, tz):
-    """Return the real next regular cheap window without fixed-time fallback."""
-    selected = _original_select_controller_offpeak(import_rates, now, tz)
-    # Defend against older selection implementations returning a one-off
-    # daytime EV smart discount instead of the regular overnight block.
-    if selected is not None:
-        start, end, _rate = selected
-        local_start = start.astimezone(tz)
-        local_end = end.astimezone(tz)
-        duration = end.astimezone(timezone.utc) - start.astimezone(timezone.utc)
-        crosses_date = local_start.date() < local_end.date()
-        if (duration >= timedelta(hours=2) and local_end.hour < 8
-                and (crosses_date or local_start.hour < 3)):
-            return selected
+def _valid_regular_window(block, tz):
+    """Only complete overnight blocks may control the battery schedule."""
+    start, end, _rate = block
+    local_start, local_end = start.astimezone(tz), end.astimezone(tz)
+    duration = end.astimezone(timezone.utc) - start.astimezone(timezone.utc)
+    crosses_midnight = local_start.date() < local_end.date()
+    starts_early = local_start.date() == local_end.date() and local_start.hour < 3
+    return (
+        timedelta(hours=2) <= duration <= timedelta(hours=10)
+        and local_end.hour <= 8
+        and (crosses_midnight or starts_early)
+    )
 
+
+def select_controller_offpeak(import_rates, now, tz):
+    """Keep the active supplier night; reject partial future tariff fragments.
+
+    The old selector intentionally skipped the current period at its start.
+    On the following night the supplier often publishes only 23:00-00:00.
+    Treating that one-hour fragment as the next overnight window caused the
+    controller to replace a valid 06:00 charge end with midnight.
+    """
     now_utc = now.astimezone(timezone.utc)
-    blocks = sorted(base.find_overnight_blocks(import_rates, tz), key=lambda item: item[0].astimezone(timezone.utc))
-    future = next((block for block in blocks
-                   if block[0].astimezone(timezone.utc) > now_utc), None)
-    if future is not None:
-        return future
+    blocks = sorted(
+        base.find_overnight_blocks(import_rates, tz),
+        key=lambda block: block[0].astimezone(timezone.utc),
+    )
+    # An established cheap period remains authoritative until its actual end,
+    # even when a portion of tomorrow's tariff is already published.
     active = next(
-        (block for block in blocks if block[0].astimezone(timezone.utc) <= now_utc < block[1].astimezone(timezone.utc)),
+        (block for block in blocks
+         if _valid_regular_window(block, tz)
+         and block[0].astimezone(timezone.utc) <= now_utc
+         < block[1].astimezone(timezone.utc)),
         None,
     )
     if active is not None:
-        start, end, rate = active
-        # The tariff source has proved the regular active boundaries. Preserve
-        # those wall-clock boundaries when deriving the following daily window.
-        next_start = _shift_local_day(start, 1, tz)
-        next_end = _shift_local_day(end, 1, tz)
-        while next_start.astimezone(timezone.utc) <= now_utc:
-            next_start = _shift_local_day(next_start, 1, tz)
-            next_end = _shift_local_day(next_end, 1, tz)
-        base.LOG.info(
-            "Regular overnight cheap block: following window inferred from active tariff block %s->%s as %s->%s",
-            start.isoformat(), end.isoformat(), next_start.isoformat(), next_end.isoformat(),
-        )
-        return next_start, next_end, rate
+        return active
 
+    selected = _original_select_controller_offpeak(import_rates, now, tz)
+    if selected is not None and _valid_regular_window(selected, tz):
+        return selected
+
+    future = next(
+        (block for block in blocks
+         if _valid_regular_window(block, tz)
+         and block[0].astimezone(timezone.utc) > now_utc),
+        None,
+    )
+    if future is not None:
+        return future
+
+    # Never make an incomplete supplier fragment look like tomorrow's whole
+    # cheap window. The controller must preserve its last verified schedule.
     raise base.HAError(
         "Regular overnight cheap block could not be identified from tariff data; fixed tariff hours are not assumed"
     )
-
 
 def publish_battery_model_with_seed(client, store, cfg, now):
     _model._ensure_schema(store)
