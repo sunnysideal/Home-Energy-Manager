@@ -1,6 +1,6 @@
 import importlib.util
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -32,7 +32,7 @@ def test_weather_extension_reaches_beyond_configured_48_hour_horizon(monkeypatch
     extended = client.get_hourly_weather("weather.test")
     parsed = [legacy.parse_dt(row["datetime"]).astimezone(tz) for row in extended]
     assert len(extended) > len(raw)
-    assert parsed[-1] >= datetime.now(tz) + timedelta(hours=50)
+    assert parsed[-1].astimezone(timezone.utc) >= datetime.now(timezone.utc) + timedelta(hours=50)
     assert float(extended[-1]["temperature"]) == float(raw[-1]["temperature"])
 
 

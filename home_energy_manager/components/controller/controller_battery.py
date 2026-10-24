@@ -17,8 +17,8 @@ def soc_at(c,s,when,attr='forecast_no_slots'):
     best=None
     for a,b,_r,x in c.intervals(s,attr):
         v=as_float(x.get('soc'))
-        if v is not None and a<=when: best=v
-        if v is not None and (a<=when<b or abs((a-when).total_seconds())<=60): return v
+        if v is not None and a.astimezone(timezone.utc)<=when.astimezone(timezone.utc): best=v
+        if v is not None and (a.astimezone(timezone.utc)<=when.astimezone(timezone.utc)<b.astimezone(timezone.utc) or abs((a.astimezone(timezone.utc)-when.astimezone(timezone.utc)).total_seconds())<=60): return v
     return best
 
 
@@ -120,28 +120,28 @@ def charge_minutes(c,soc,target,rate,cap):
 
 
 def latest_charge_start_for_rate(c,s,w,target,rate,cap,reserve,adjust,earliest=None):
-    margin=float(c.c.get('charge_safety_margin_minutes',10)); lo=max(w['start'],earliest or w['start']); hi=w['end']
-    if hi<=lo:return lo,projected_charge_start_soc(c,s,lo,adjust,reserve),False
+    margin=float(c.c.get('charge_safety_margin_minutes',10)); lo=max(w['start'],earliest or w['start'],key=lambda dt:dt.astimezone(timezone.utc)); hi=w['end']
+    if hi.astimezone(timezone.utc)<=lo.astimezone(timezone.utc):return lo,projected_charge_start_soc(c,s,lo,adjust,reserve),False
     def feasible(at):
         soc=projected_charge_start_soc(c,s,at,adjust,reserve)
         if soc is None:return False,None
-        return charge_minutes(c,soc,target,rate,cap)+margin<=(w['end']-at).total_seconds()/60+1e-6,soc
+        return charge_minutes(c,soc,target,rate,cap)+margin<=(w['end'].astimezone(timezone.utc)-at.astimezone(timezone.utc)).total_seconds()/60+1e-6,soc
     ok,soc=feasible(lo)
     if not ok:return lo,soc,False
     left,right=lo,hi; best=lo
     for _ in range(24):
-        if (right-left).total_seconds()<=30:break
-        mid=left+(right-left)/2; ok,_=feasible(mid)
+        if (right.astimezone(timezone.utc)-left.astimezone(timezone.utc)).total_seconds()<=30:break
+        mid=(left.astimezone(timezone.utc)+(right.astimezone(timezone.utc)-left.astimezone(timezone.utc))/2).astimezone(c.tz); ok,_=feasible(mid)
         if ok:best=mid; left=mid
         else:right=mid
-    best=best.replace(second=0,microsecond=0)
+    best=best.astimezone(timezone.utc).replace(second=0,microsecond=0).astimezone(c.tz)
     return best,projected_charge_start_soc(c,s,best,adjust,reserve),True
 
 
 def choose_rate_and_start(c,s,w,target,cap,reserve,adjust,hw,earliest=None):
     preferred=cap*1000*float(c.c.get('preferred_charge_c_rate',.25)); maximum=cap*1000*float(c.c.get('max_charge_c_rate',.4))
     if hw:maximum=min(maximum,hw)
-    preferred=min(preferred,maximum); earliest=max(w['start'],earliest or w['start'])
+    preferred=min(preferred,maximum); earliest=max(w['start'],earliest or w['start'],key=lambda dt:dt.astimezone(timezone.utc))
     solve=lambda rate:latest_charge_start_for_rate(c,s,w,target,rate,cap,reserve,adjust,earliest)
     start,soc,ok=solve(preferred)
     if ok:return int(round(preferred)),start,soc,True
@@ -159,7 +159,7 @@ def choose_rate_and_start(c,s,w,target,cap,reserve,adjust,hw,earliest=None):
 
 def choose_rate(c,soc,target,cap,w,hw):
     preferred=cap*1000*float(c.c.get('preferred_charge_c_rate',.25)); maximum=cap*1000*float(c.c.get('max_charge_c_rate',.4)); maximum=min(maximum,hw) if hw else maximum; preferred=min(preferred,maximum)
-    avail=(w['end']-w['start']).total_seconds()/60; margin=float(c.c.get('charge_safety_margin_minutes',10))
+    avail=(w['end'].astimezone(timezone.utc)-w['start'].astimezone(timezone.utc)).total_seconds()/60; margin=float(c.c.get('charge_safety_margin_minutes',10))
     fits=lambda rate:charge_minutes(c,soc,target,rate,cap)+margin<=avail
     if fits(preferred):return int(round(preferred))
     if maximum<=preferred or not fits(maximum):return int(round(maximum))
