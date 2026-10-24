@@ -901,8 +901,19 @@ def select_controller_offpeak(import_rates: list[dict[str, Any]], now: datetime,
                 continue
             if local_end.date() != day or local_end.time() > dtime(12, 0):
                 continue
-            # Preserve existing forecast-state semantics: once the selected
-            # overnight has started, target the following night's block.
+            # A one-off EV smart discount can be the same price as the regular
+            # overnight tariff. It must not replace the regular battery window.
+            # Require a sustained overnight block, spanning midnight or starting
+            # shortly after it, and ending before the morning smart slots.
+            local_start = bs.astimezone(tz)
+            elapsed = be.astimezone(timezone.utc) - bs.astimezone(timezone.utc)
+            midnight_utc = midnight.astimezone(timezone.utc)
+            crosses_midnight = bs.astimezone(timezone.utc) <= midnight_utc < be.astimezone(timezone.utc)
+            starts_early = local_start.date() == day and local_start.time() < dtime(3, 0)
+            if (elapsed < timedelta(hours=2) or local_end.time() > dtime(8, 0)
+                    or not (crosses_midnight or starts_early)):
+                continue
+            # Once the regular overnight has started, target the following night.
             if bs.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
                 continue
             qualifying.append((bs, be, min_rate))
