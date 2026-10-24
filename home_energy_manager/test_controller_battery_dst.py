@@ -43,8 +43,8 @@ def test_latest_charge_start_uses_extra_autumn_hour():
     rows=[{"start":(start.astimezone(UTC)+timedelta(minutes=i*30)).astimezone(TZ).isoformat(),
            "soc":50.0} for i in range(17)]
     forecast={"attributes":{"forecast_no_slots":rows}}
-    result,_,ok=latest_charge_start_for_rate(c,forecast,75,3000,12,4,0,
-                        {"start":start,"end":end})
+    result,_,ok=latest_charge_start_for_rate(c,forecast,{"start":start,"end":end},
+                        75,3000,12,4,0)
     assert ok
     # 25% of 12kWh at 3kW needs 60 minutes, plus 10-minute margin.
     # Charge can start after the repeated hour, approaching the 06:00 deadline.
