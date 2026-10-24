@@ -34,6 +34,7 @@ def persist_offpeak(controller, window):
             'start': iso(window['start']),
             'end': iso(window['end']),
             'rate_p': window['rate_p'],
+            'source': window.get('source', 'unverified'),
         },
     )
 
