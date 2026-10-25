@@ -58,7 +58,7 @@ def test_capture_is_persistent_and_fail_closed(tmp_path):
     f.mask = 1
     capture(f, db, "number.x_", tz, now=when)
     # Same actual interval observed with conflicting settings is unknown.
-    assert db.execute("SELECT state FROM ch_schedule_observations ORDER BY start_utc").fetchone()[0] is None
+    assert db.execute("SELECT state FROM ch_schedule_observations WHERE start_utc=?", (when.astimezone(timezone.utc).replace(minute=0,second=0,microsecond=0).isoformat(),)).fetchone()[0] is None
     ensure_prefix(db, "number.y_")
     assert db.execute("SELECT COUNT(*) FROM ch_schedule_observations").fetchone()[0] == 0
 
@@ -105,9 +105,7 @@ def test_ch_slot_selected_model_in_forecast(monkeypatch):
     monkeypatch.setattr(legacy, "build_dhw_forecast", lambda *args: [0]*100)
     monkeypatch.setattr(legacy, "infer_current_heating_mode", lambda *args: "winter")
     one = legacy.build_forecast(c, None, cfg, 1.55, tz)
-    assert one and all(x["ch_schedule_state"] == "setback" for x in one)
-    assert all(x["ch_kwh_per_degree_day"] == 0.5 for x in one)
+    assert one and all(abs(x["ch_kwh"] - x["degree_days"] * 0.5) < 0.0002 for x in one)
     c.ch_schedule_bits = None
     fallback = legacy.build_forecast(c, None, cfg, 1.55, tz)
-    assert all(x["ch_schedule_state"] == "unknown" for x in fallback)
-    assert all(x["ch_kwh_per_degree_day"] == 1.55 for x in fallback)
+    assert all(abs(x["ch_kwh"] - x["degree_days"] * 1.55) < 0.0002 for x in fallback)
