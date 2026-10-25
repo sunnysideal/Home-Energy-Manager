@@ -326,14 +326,14 @@ class Store:
             self.db.executemany("""
                 INSERT INTO slot_training(
                     start_ts, day, degree_days, ch_kwh, mean_temperature_c,
-                    winter_mode_below_c, summer_mode_above_c, valid, updated_at
+                    winter_mode_below_c, summer_mode_above_c, valid, updated_at, schedule_state
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (slot["start_ts"], day, slot["degree_days"], slot["ch_kwh"],
                  slot["mean_temperature_c"], slot.get("winter_mode_below_c"),
                  slot.get("summer_mode_above_c"),
-                 int(valid and float(slot["degree_days"]) > 0.0), now)
+                 int(valid and float(slot["degree_days"]) > 0.0), now, slot.get("schedule_state"))
                 for slot in slots
             ])
 
