@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import main as legacy
@@ -88,6 +88,8 @@ def build_training(
     is winter.  The final coefficient remains the robust weighted aggregate
     ``sum(active CH kWh) / sum(active DD)`` already implemented by ``Store.model``.
     """
+    from ch_schedule import ensure_schema, observations, learned_models
+    ensure_schema(store.db)
     minimum_dd, minimum_ch = _ensure_training_signature(store, cfg)
     now = datetime.now(tz)
     first_day = (now - timedelta(days=cfg.training_days)).date()
@@ -132,6 +134,7 @@ def build_training(
             LOG.warning("Could not backfill training day %s: %s", day, exc)
             continue
 
+        observed = observations(store.db, day_start, day_end)
         slots: list[dict[str, float | str]] = []
         cursor = day_start
         while cursor < day_end:
@@ -176,6 +179,7 @@ def build_training(
             slots.append(
                 {
                     "start_ts": cursor.isoformat(),
+                    "schedule_state": observed.get(cursor.astimezone(timezone.utc).isoformat()),
                     "degree_days": dd_slot,
                     "ch_kwh": ch_slot,
                     "mean_temperature_c": temp_slot,
@@ -226,4 +230,5 @@ def build_training(
 
     cutoff = (now.date() - timedelta(days=cfg.training_days)).isoformat()
     coefficient, days, _, _, slots = store.model(cfg.initial_kwh_per_degree_day, cutoff)
+    client.ch_schedule_models = learned_models(store.db, cutoff, coefficient)
     return coefficient, days, slots
