@@ -20,6 +20,7 @@ options:
   summer_mode_on_entity: "number.ecomax360i_summer_mode_on"
   winter_mode_below_c: 11.0
   summer_mode_above_c: 12.0
+  ch_schedule_prefix: "number.heatpump_heatpump_schedule_"
   initial_kwh_per_degree_day: 1.55
   training_days: 30
   minimum_daily_degree_days: 2.0
@@ -50,6 +51,7 @@ schema:
   summer_mode_on_entity: str
   winter_mode_below_c: float(-30,30)
   summer_mode_above_c: float(-30,30)
+  ch_schedule_prefix: str
   initial_kwh_per_degree_day: float
   training_days: int(1,180)
   minimum_daily_degree_days: float(0,20)

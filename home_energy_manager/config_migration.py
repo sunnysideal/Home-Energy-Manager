@@ -275,6 +275,7 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
         ("heat_pump.weather", ("ashp_forecaster.weather_entity",), "weather.forecast_home"),
         ("heat_pump.summer_mode_off", ("ashp_forecaster.summer_mode_off_entity",), "number.ecomax360i_summer_mode_off"),
         ("heat_pump.summer_mode_on", ("ashp_forecaster.summer_mode_on_entity",), "number.ecomax360i_summer_mode_on"),
+        ("heat_pump.ch_schedule_prefix", ("ashp_forecaster.ch_schedule_prefix",), "number.heatpump_heatpump_schedule_"),
 
         ("dhw.energy_total_kwh", ("ashp_forecaster.dhw_energy_entity", "home_forecaster.ashp.dhw_energy_total_kwh"), "sensor.ashp_electrical_energy_dhw"),
         ("dhw.mode", ("ashp_forecaster.dhw_mode_entity",), "select.dhw_mode"),
@@ -425,6 +426,7 @@ def apply_canonical(runtime: dict[str, Any], canonical: dict[str, Any]) -> None:
     af["weather_entity"] = hp.get("weather", "")
     af["summer_mode_off_entity"] = hp.get("summer_mode_off", "")
     af["summer_mode_on_entity"] = hp.get("summer_mode_on", "")
+    af["ch_schedule_prefix"] = hp.get("ch_schedule_prefix", "number.heatpump_heatpump_schedule_")
     af["dhw_energy_entity"] = dhw.get("energy_total_kwh", "")
     af["dhw_mode_entity"] = dhw.get("mode", "")
     af["dhw_tank_temperature_entity"] = dhw.get("tank_temperature", "")

@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import main as legacy
 from active_dd_training import build_training as build_active_dd_training
+from ch_schedule import capture as capture_ch_schedule, publish_models as publish_ch_models
 from common.forecast_slots import production_slot_start
 from ch_forecast_validation import (
     accuracy_summary as ch_accuracy_summary,
@@ -580,6 +581,8 @@ def main() -> None:
     client.weather_observation_db = store.db
     client.ch_validation_db = store.db
     client.ch_forecast_interval_minutes = cfg.forecast_interval_minutes
+    client.ch_schedule_bits = None
+    client.ch_schedule_models = None
     _install_dhw_selector(client, store)
     legacy.build_training = build_active_dd_training
     legacy.ceil_time = production_slot_start
@@ -587,10 +590,12 @@ def main() -> None:
     LOG.info("CH=%s temperature=%s weather=%s", cfg.ch_energy_entity, cfg.outdoor_temperature_entity, cfg.weather_entity)
     while True:
         try:
+            capture_ch_schedule(client, store.db, cfg.ch_schedule_prefix, tz)
             _complete_ch_observations(client, store, cfg, tz)
             _complete_weather_observations(client, store, cfg, tz)
             try:
                 legacy.run_once(client, store, cfg, tz)
+                publish_ch_models(client, client.ch_schedule_models or {}, 0.0)
             except DHWProductionUnavailable as exc:
                 _publish_degraded_ch_forecast(client, store, cfg, tz, str(exc))
             else:

@@ -34,6 +34,7 @@ class Config:
     winter_mode_below_c: float = 11.0
     summer_mode_above_c: float = 12.0
     initial_kwh_per_degree_day: float = 1.55
+    ch_schedule_prefix: str = "number.heatpump_heatpump_schedule_"
     training_days: int = 30
     minimum_daily_degree_days: float = 2.0
     minimum_daily_ch_kwh: float = 2.0
@@ -191,6 +192,8 @@ class Store:
                 updated_at TEXT NOT NULL
             )
         """)
+        if "schedule_state" not in {row[1] for row in self.db.execute("PRAGMA table_info(slot_training)")}:
+            self.db.execute("ALTER TABLE slot_training ADD COLUMN schedule_state INTEGER")
         # Lightweight migration for databases created before v0.1.5.
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(slot_training)")}
         if "winter_mode_below_c" not in columns:
@@ -325,14 +328,14 @@ class Store:
             self.db.executemany("""
                 INSERT INTO slot_training(
                     start_ts, day, degree_days, ch_kwh, mean_temperature_c,
-                    winter_mode_below_c, summer_mode_above_c, valid, updated_at
+                    winter_mode_below_c, summer_mode_above_c, valid, updated_at, schedule_state
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (slot["start_ts"], day, slot["degree_days"], slot["ch_kwh"],
                  slot["mean_temperature_c"], slot.get("winter_mode_below_c"),
                  slot.get("summer_mode_above_c"),
-                 int(valid and float(slot["degree_days"]) > 0.0), now)
+                 int(valid and float(slot["degree_days"]) > 0.0), now, slot.get("schedule_state"))
                 for slot in slots
             ])
 
@@ -870,6 +873,9 @@ def forecast_slot_starts(now: datetime, interval_minutes: int, forecast_hours: i
 
 
 def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: float, tz: ZoneInfo) -> list[dict[str, Any]]:
+    from ch_schedule import state_for
+    schedule_bits = getattr(client, "ch_schedule_bits", None)
+    schedule_models = getattr(client, "ch_schedule_models", None)
     raw = client.get_hourly_weather(cfg.weather_entity)
     weather: list[tuple[datetime, float]] = []
     for row in raw:
@@ -901,7 +907,11 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
         mode = update_heating_mode(mode, temp, cfg)
         heating_enabled = mode == "winter"
         dd = degree_days_for_period(temp, cfg.base_temperature_c, hours) if heating_enabled else 0.0
-        raw_ch_kwh = dd * coefficient
+        schedule_state = state_for(schedule_bits, cursor)
+        schedule_name = ("normal" if schedule_state == 1 else "setback") if schedule_state is not None else "unknown"
+        model = (schedule_models or {}).get(schedule_name, {})
+        selected_coefficient = float(model.get("coefficient", coefficient))
+        raw_ch_kwh = dd * selected_coefficient
         # DHW has controller priority. At 30-minute forecast resolution a slot with
         # forecast DHW activity contains no CH; missed CH is not carried forward.
         ch_kwh = 0.0 if dhw_kwh > 0.0 else raw_ch_kwh
