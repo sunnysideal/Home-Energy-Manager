@@ -107,6 +107,7 @@ options:
     weather: weather.forecast_home
     summer_mode_off: number.ecomax360i_summer_mode_off
     summer_mode_on: number.ecomax360i_summer_mode_on
+    ch_schedule_prefix: number.heatpump_heatpump_schedule_
   dhw:
     energy_total_kwh: sensor.ashp_electrical_energy_dhw
     mode: select.dhw_mode
@@ -267,6 +268,7 @@ schema:
     weather: str
     summer_mode_off: str
     summer_mode_on: str
+    ch_schedule_prefix: str?
   dhw:
     energy_total_kwh: str
     mode: str
