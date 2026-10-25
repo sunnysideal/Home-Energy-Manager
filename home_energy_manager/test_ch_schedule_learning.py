@@ -55,7 +55,7 @@ def test_capture_is_persistent_and_fail_closed(tmp_path):
     capture(f, db, "number.x_", tz, now=when)
     capture(f, db, "number.x_", tz, now=next_fold)
     assert db.execute("SELECT COUNT(*) FROM ch_schedule_observations").fetchone()[0] == 2
-    f.mask = 1
+    f.mask = 1 << 2
     capture(f, db, "number.x_", tz, now=when)
     # Same actual interval observed with conflicting settings is unknown.
     assert db.execute("SELECT state FROM ch_schedule_observations WHERE start_utc=?", (when.astimezone(timezone.utc).replace(minute=0,second=0,microsecond=0).isoformat(),)).fetchone()[0] is None
