@@ -192,6 +192,8 @@ class Store:
                 updated_at TEXT NOT NULL
             )
         """)
+        if "schedule_state" not in {row[1] for row in self.db.execute("PRAGMA table_info(slot_training)")}:
+            self.db.execute("ALTER TABLE slot_training ADD COLUMN schedule_state INTEGER")
         # Lightweight migration for databases created before v0.1.5.
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(slot_training)")}
         if "winter_mode_below_c" not in columns:
@@ -921,8 +923,6 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
             "heating_enabled": heating_enabled and dhw_kwh <= 0.0,
             "dhw_active": dhw_kwh > 0.0,
             "degree_days": round(dd, 5),
-            "ch_schedule_state": schedule_name,
-            "ch_kwh_per_degree_day": round(selected_coefficient, 4),
             "ch_kwh": round(ch_kwh, 4),
             "dhw_kwh": round(dhw_kwh, 4),
             "energy_kwh": round(total_kwh, 4),
