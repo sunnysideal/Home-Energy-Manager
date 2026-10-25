@@ -80,3 +80,7 @@ Historical training now reads the Home Assistant Recorder history for `number.ec
 ## v0.1.6
 
 `sensor.ashp_forecast_next_48h` now includes the full 30-minute `forecast` attribute, matching the detailed forecast data exposed by the 24-hour sensor.
+
+## Central-heating schedule
+
+Set `ch_schedule_prefix` to the heat-pump weekly schedule bitmask entities (default `number.heatpump_heatpump_schedule_`). On means normal heating; off means setback, not zero demand. The forecaster observes the active half-hour state while running and stores it with training observations. It learns independent degree-day coefficients for normal and setback intervals once enough observed evidence exists. Historical periods before schedule observation began cannot be classified. Either class uses the original overall coefficient until it has sufficient observed data. Unavailable schedule entities also use the overall coefficient; missing values never imply setback. The normal and setback coefficients are published in `sensor.ashp_forecast_normal_kwh_per_degree_day` and `sensor.ashp_forecast_setback_kwh_per_degree_day`.
