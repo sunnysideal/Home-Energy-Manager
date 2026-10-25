@@ -273,6 +273,9 @@ configuration:
       summer_mode_on:
         name: Summer mode on threshold
         description: Select the heat-pump/controller entity containing the temperature above which summer mode becomes active and normal space heating is suppressed.
+      ch_schedule_prefix:
+        name: CH weekly schedule prefix
+        description: Prefix of the fourteen EcoMAX heat-pump weekly AM/PM bitmask number entities. Set to number.heatpump_heatpump_schedule_ for the default integration.
   dhw:
     name: Domestic hot water
     description: Hot-water energy, tank-temperature and schedule inputs used by the DHW thermal forecast.
