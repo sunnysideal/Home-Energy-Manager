@@ -1,5 +1,5 @@
 name: Home Energy Manager
-version: 0.1.130
+version: 0.1.131
 slug: home_energy_manager
 description: ASHP forecasting, whole-home energy forecasting, Axle event integration and battery control in one add-on, with components kept strictly separate.
 arch: [aarch64, amd64]
@@ -147,6 +147,7 @@ options:
       winter_mode_below_c: 11.0
       summer_mode_above_c: 12.0
       initial_kwh_per_degree_day: 1.55
+      weather_anchor_hours: 4.0
       training_days: 30
       minimum_daily_degree_days: 2.0
       minimum_daily_ch_kwh: 2.0
@@ -308,6 +309,7 @@ schema:
       winter_mode_below_c: float(-30,30)
       summer_mode_above_c: float(-30,30)
       initial_kwh_per_degree_day: float
+      weather_anchor_hours: float(0,24)
       training_days: int(1,180)
       minimum_daily_degree_days: float(0,20)
       minimum_daily_ch_kwh: float(0,100)

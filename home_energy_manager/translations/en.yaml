@@ -400,6 +400,9 @@ configuration:
           initial_kwh_per_degree_day:
             name: Initial kWh per degree day
             description: Starting CH electrical-energy estimate in kWh per heating degree day, used until enough history has been learned.
+          weather_anchor_hours:
+            name: Live weather correction hours
+            description: Hours to fade the observed outdoor-temperature correction to zero in the CH forecast. Set to zero to disable.
           training_days:
             name: CH training days
             description: Maximum recent-history window in days used for CH learning.
