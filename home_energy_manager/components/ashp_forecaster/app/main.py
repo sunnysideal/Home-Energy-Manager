@@ -885,7 +885,7 @@ def weather_anchor_offset(
             actual, forecast_now, offset, hours,
         )
         return offset
-    except (KeyError, TypeError, ValueError, OverflowError, RuntimeError) as exc:
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError, RuntimeError) as exc:
         LOG.warning("Weather anchor skipped: outdoor reading unavailable (%s)", exc)
         return None
 
@@ -978,8 +978,6 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
         result.append({
             "start": cursor.isoformat(),
             "temperature_c": round(temp, 2),
-            "provider_temperature_c": round(provider_temp, 2),
-            "weather_anchor_adjustment_c": round(temp - provider_temp, 3),
             "heating_mode": mode,
             "heating_enabled": heating_enabled and dhw_kwh <= 0.0,
             "dhw_active": dhw_kwh > 0.0,
