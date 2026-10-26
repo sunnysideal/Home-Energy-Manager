@@ -49,8 +49,7 @@ weather-bias training continue to use their existing input sources.
 
 The anchor is skipped if the outdoor measurement is missing/nonfinite, older
 than 90 minutes, more than 1 minute in the future, or differs by more than 5 °C
-from the predicted current temperature. Published CH forecast slots include
-`provider_temperature_c` and `weather_anchor_adjustment_c` for diagnosis.
+from the predicted current temperature. Each valid live-temperature adjustment is recorded in the ASHP log with the observed temperature, provider temperature, correction and decay duration. The existing forecast-slot schema is preserved.
 
 ### Whole-home forecast
 
