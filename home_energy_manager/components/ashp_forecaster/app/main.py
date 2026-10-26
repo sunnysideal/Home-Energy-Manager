@@ -34,6 +34,7 @@ class Config:
     winter_mode_below_c: float = 11.0
     summer_mode_above_c: float = 12.0
     initial_kwh_per_degree_day: float = 1.55
+    weather_anchor_hours: float = 4.0
     ch_schedule_prefix: str = "number.heatpump_heatpump_schedule_"
     training_days: int = 30
     minimum_daily_degree_days: float = 2.0
@@ -846,6 +847,62 @@ def interpolate_temperature(points: list[tuple[datetime, float]], at: datetime) 
     return points[-1][1]
 
 
+
+def weather_anchor_offset(
+    client: HAClient, cfg: Config, weather: list[tuple[datetime, float]], now: datetime,
+) -> float | None:
+    """Compare the *current* provider prediction with a recent outdoor observation.
+
+    Only the production CH calculation is anchored; source weather observations and
+    bias-learning snapshots retain the unmodified provider temperatures.
+    """
+    hours = float(getattr(cfg, "weather_anchor_hours", 4.0))
+    if not math.isfinite(hours) or hours <= 0:
+        return None
+    try:
+        state = client.get_state(cfg.outdoor_temperature_entity)
+        actual = float(state["state"])
+        timestamp = state.get("last_reported") or state.get("last_updated")
+        if not math.isfinite(actual) or not timestamp:
+            LOG.debug("Weather anchor skipped: actual outdoor temperature or timestamp unavailable")
+            return None
+        observed = parse_dt(str(timestamp))
+        age_seconds = (now.astimezone(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds()
+        # Ignore sensor values that may be stale or timed in the future.
+        if not (-60 <= age_seconds <= 90 * 60):
+            LOG.warning("Weather anchor skipped: outdoor reading age %.1f minutes", age_seconds / 60)
+            return None
+        forecast_now = interpolate_temperature(weather, now)
+        if not math.isfinite(forecast_now):
+            return None
+        offset = actual - forecast_now
+        # Protect against a broken sensor or mismatched outdoor-temperature source.
+        if abs(offset) > 5.0:
+            LOG.warning("Weather anchor skipped: %.2f C actual/forecast difference exceeds 5 C", offset)
+            return None
+        LOG.info(
+            "Weather anchor: actual=%.2fC forecast_now=%.2fC correction=%+.2fC decay=%.1fh",
+            actual, forecast_now, offset, hours,
+        )
+        return offset
+    except (KeyError, TypeError, ValueError, OverflowError, RuntimeError) as exc:
+        LOG.warning("Weather anchor skipped: outdoor reading unavailable (%s)", exc)
+        return None
+
+
+def anchored_temperature(
+    raw_temp: float, offset: float | None, at: datetime, now: datetime, decay_hours: float,
+) -> float:
+    """Linearly fade the live observation offset across real elapsed UTC hours."""
+    if offset is None or decay_hours <= 0:
+        return raw_temp
+    elapsed_hours = max(
+        0.0,
+        (at.astimezone(timezone.utc) - now.astimezone(timezone.utc)).total_seconds() / 3600.0,
+    )
+    return raw_temp + offset * max(0.0, 1.0 - elapsed_hours / decay_hours)
+
+
 def ceil_time(dt: datetime, minutes: int) -> datetime:
     discard = timedelta(minutes=dt.minute % minutes, seconds=dt.second, microseconds=dt.microsecond)
     rounded = dt - discard
@@ -897,13 +954,15 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
 
     result: list[dict[str, Any]] = []
     hours = cfg.forecast_interval_minutes / 60.0
+    anchor = weather_anchor_offset(client, cfg, weather, now)
     mode = infer_current_heating_mode(client, cfg, tz)
     LOG.info(
         "Forecast starts in %s mode (winter below %.1f C, summer above %.1f C)",
         mode, cfg.winter_mode_below_c, cfg.summer_mode_above_c,
     )
     for cursor, dhw_kwh in zip(starts, dhw_values):
-        temp = interpolate_temperature(weather, cursor)
+        provider_temp = interpolate_temperature(weather, cursor)
+        temp = anchored_temperature(provider_temp, anchor, cursor, now, cfg.weather_anchor_hours)
         mode = update_heating_mode(mode, temp, cfg)
         heating_enabled = mode == "winter"
         dd = degree_days_for_period(temp, cfg.base_temperature_c, hours) if heating_enabled else 0.0
@@ -919,6 +978,8 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
         result.append({
             "start": cursor.isoformat(),
             "temperature_c": round(temp, 2),
+            "provider_temperature_c": round(provider_temp, 2),
+            "weather_anchor_adjustment_c": round(temp - provider_temp, 3),
             "heating_mode": mode,
             "heating_enabled": heating_enabled and dhw_kwh <= 0.0,
             "dhw_active": dhw_kwh > 0.0,
