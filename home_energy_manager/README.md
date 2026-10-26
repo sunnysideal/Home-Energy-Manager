@@ -37,6 +37,21 @@ All weather-bias learning remains diagnostic only. `calibration_applied` remains
 
 `sensor.ashp_ch_forecast_mae` provides separate end-to-end CH electrical-energy validation. Each published 30-minute CH forecast is retained in the ASHP database and later compared with measured CH electrical energy for the same completed slot. Repeated refreshes do not overweight a target: headline, heating-active and temperature-band metrics use the latest forecast before the slot, while each horizon bucket scores one forecast per target nearest that bucket's midpoint checkpoint. Its state is rolling MAE in kWh; attributes include raw observation count, scored sample count, forecast-minus-actual bias, RMSE, WAPE, 0–6/6–12/12–24/24–36/36–48 hour horizon summaries, heating-active accuracy and the same dynamic temperature-band structure used by the weather diagnostics. These metrics are diagnostic only and do not change the production kWh/DD model.
 
+### Short-term ASHP weather anchoring
+
+The CH forecast uses the live outdoor temperature to correct the provider forecast
+at the current time. The difference decays linearly to zero over
+`advanced.ashp_forecaster.weather_anchor_hours` (default **4 hours**;
+`0` disables it), using elapsed UTC time so DST transitions do not stretch it.
+The adjusted temperature feeds both the 13/14 °C heating-mode hysteresis
+(controller-configured thresholds) and CH degree-day demand; DHW and historical
+weather-bias training continue to use their existing input sources.
+
+The anchor is skipped if the outdoor measurement is missing/nonfinite, older
+than 90 minutes, more than 1 minute in the future, or differs by more than 5 °C
+from the predicted current temperature. Published CH forecast slots include
+`provider_temperature_c` and `weather_anchor_adjustment_c` for diagnosis.
+
 ### Whole-home forecast
 
 Combines normal household load, ASHP demand, PV forecast, battery state/schedules, tariff data and optional EV Smart Charging into a forward simulation of load, SOC, import, export and cost.
