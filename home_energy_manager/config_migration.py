@@ -326,7 +326,7 @@ def build_canonical(raw: dict[str, Any], diagnostics: MigrationDiagnostics) -> d
         k: v for k, v in ashp.items()
         if k in {
             "base_temperature_c", "winter_mode_below_c", "summer_mode_above_c",
-            "initial_kwh_per_degree_day", "training_days", "minimum_daily_degree_days",
+            "initial_kwh_per_degree_day", "weather_anchor_hours", "training_days", "minimum_daily_degree_days",
             "minimum_daily_ch_kwh", "forecast_hours", "forecast_interval_minutes",
             "update_minutes", "dhw_tank_volume_l", "dhw_min_usable_temperature_c",
             "dhw_thermal_sample_minutes", "dhw_history_days", "dhw_activity_threshold_kwh",
