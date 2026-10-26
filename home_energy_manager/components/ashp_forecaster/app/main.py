@@ -962,7 +962,7 @@ def build_forecast(client: HAClient, store: Store, cfg: Config, coefficient: flo
     )
     for cursor, dhw_kwh in zip(starts, dhw_values):
         provider_temp = interpolate_temperature(weather, cursor)
-        temp = anchored_temperature(provider_temp, anchor, cursor, now, cfg.weather_anchor_hours)
+        temp = anchored_temperature(provider_temp, anchor, cursor, now, float(getattr(cfg, "weather_anchor_hours", 4.0)))
         mode = update_heating_mode(mode, temp, cfg)
         heating_enabled = mode == "winter"
         dd = degree_days_for_period(temp, cfg.base_temperature_c, hours) if heating_enabled else 0.0
