@@ -96,7 +96,7 @@ def test_anchored_forecast_retains_heating_until_threshold(monkeypatch):
     assert len(forecast) == 8
     assert forecast[0]["heating_mode"] == "winter"
     assert forecast[0]["ch_kwh"] > 0
-    assert forecast[0]["weather_anchor_adjustment_c"] == pytest.approx(-1.6)
+    assert forecast[0]["temperature_c"] == pytest.approx(13.1)
     assert any(x["heating_mode"] == "summer" for x in forecast[5:])
     assert all(x["ch_kwh"] == 0 for x in forecast if x["heating_mode"] == "summer")
 
@@ -115,4 +115,4 @@ def test_anchoring_disabled_preserves_provider_forecast(monkeypatch):
     forecast = ashp.build_forecast(client, None, config, 1.15, timezone.utc)
     assert forecast[0]["heating_mode"] == "summer"
     assert forecast[0]["ch_kwh"] == 0
-    assert forecast[0]["weather_anchor_adjustment_c"] == 0
+    assert forecast[0]["temperature_c"] == pytest.approx(14.7)
