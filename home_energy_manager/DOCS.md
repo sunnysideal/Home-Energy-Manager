@@ -339,6 +339,8 @@ Leaves normal battery behaviour alone except when Home Energy Manager needs to p
 
 Qualifying Axle Export events can overlay `minimise_export`, `maximise_export` and `export_generated`. `forecast_only` remains completely write-free.
 
+A known export event is armed in the inverter discharge schedule 15 minutes before it starts (`energy_strategy.axle_discharge_lead_minutes`, adjustable). Discharge starts at the exact Axle start time, at maximum inverter rate, subject to battery reserve. An Axle boundary watcher replans on new events, arming, start and end; the controller removes the one-off slot after the event so it cannot repeat the next day. The next available Axle event then uses the same schedule slot. Existing cheap-rate and last-resort top-up preparation are retained.
+
 # Controller safety behaviour
 
 Home Energy Manager's controller is designed around these priorities:

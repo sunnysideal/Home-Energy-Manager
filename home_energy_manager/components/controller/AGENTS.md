@@ -183,6 +183,11 @@ Any person or AI modifying this project MUST read this file before changing cont
    - A currently confirmed EV Smart Charging settlement half-hour remains a no-forced-export period, including during an Axle event.
    - Axle forced discharge must resume on the next fresh plan while the Axle event remains active after the confirmed charging half-hour ends.
 
+25. **Advance Axle arming must be date-safe and one-off**
+   - The exact event start/end and maximum discharge are programmed shortly before the event (default 15 minutes), without waiting for the active event.
+   - Replans must occur when Axle events change, at the arming boundary and at the end, even without new Home Forecaster data.
+   - An expired event must not leave a daily-repeating forced-discharge schedule armed; restore the underlying normal plan. Battery reserve and EV precedence remain unchanged.
+
 ## Release checklist
 
 Before producing a release ZIP:

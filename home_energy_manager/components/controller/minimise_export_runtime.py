@@ -9,7 +9,7 @@
 # event disappears, the next cycle simply applies a fresh underlying normal plan.
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import math
 import os
 
@@ -174,6 +174,33 @@ def _minimise_calibration_discharge(controller, plan, window, capacity, reserve,
     return diagnostics
 
 
+def _arm_axle_discharge(plan, start, end, max_discharge, reserve):
+    """Arm the one-off export interval, ensuring ordinary charge cannot overlap."""
+    charge = plan.get('charge') or {}
+    charge_start = core.parse_dt(charge.get('start'))
+    charge_end = core.parse_dt(charge.get('end'))
+    if charge_start and charge_end and charge_start < end and charge_end > start:
+        if charge_start < start:
+            duration = (charge_end.astimezone(timezone.utc) - charge_start.astimezone(timezone.utc)).total_seconds()
+            before_event = (start.astimezone(timezone.utc) - charge_start.astimezone(timezone.utc)).total_seconds()
+            charge['end'] = core.iso(start)
+            charge['planned_kwh'] = round(max(0.0, float(charge.get('planned_kwh') or 0.0)) *
+                                          max(0.0, min(1.0, before_event / max(1.0, duration))), 3)
+        else:
+            charge['start'] = core.iso(start)
+            charge['end'] = core.iso(start)
+            charge['planned_kwh'] = 0.0
+    plan['pause'] = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}
+    plan['discharge'] = {
+        'start': core.iso(start), 'end': core.iso(end),
+        'rate_w': int(round(max_discharge)), 'target_soc': int(round(reserve)),
+        'planned_kwh': round((float(max_discharge) / 1000.0) *
+                             max(0.0, (end.astimezone(timezone.utc) -
+                                       start.astimezone(timezone.utc)).total_seconds()) / 3600.0, 3),
+        'kind': 'axle_export_armed',
+    }
+
+
 async def _apply_axle_overlay(controller, forecast, plan, window, capacity, reserve, max_charge, max_discharge):
     """Overlay Axle preparation/export on a freshly calculated normal plan."""
     axle_entity = str(controller.c.get('axle_entity', 'sensor.home_energy_manager_axle')).strip()
@@ -191,7 +218,7 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         return plan
 
     start, end = event['start'], event['end']
-    if end <= now:
+    if end.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
         core.LOG.info('Axle decision: entity=%s event=%s->%s action=ignored reason=expired',
                       axle_entity, core.iso(start), core.iso(end))
         return plan
@@ -234,8 +261,14 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         'max_discharge_rate_w': int(round(max_discharge)), 'action': 'protecting',
     }
 
+    lead_minutes = max(0, int(controller.c.get('axle_discharge_lead_minutes', 15)))
+    now_utc = now.astimezone(timezone.utc)
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+    arm_soon = start_utc - timedelta(minutes=lead_minutes) <= now_utc < start_utc
+    diagnostics['discharge_arm_at'] = core.iso((start_utc - timedelta(minutes=lead_minutes)).astimezone(controller.tz))
     intelligent = await controller.intelligent_go_info(); confirmed_intelligent = bool(intelligent.get('confirmed'))
-    if start <= now < end:
+    if start_utc <= now_utc < end_utc:
         if confirmed_intelligent:
             _disabled_discharge(controller, plan, now); diagnostics['action'] = 'suspended_for_confirmed_ev_smart_charging'
         else:
@@ -256,6 +289,9 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         existing_target = core.as_float(plan.get('charge', {}).get('target_soc')) or 0.0
         plan['charge']['target_soc'] = int(math.ceil(max(existing_target, cheap_target)))
         diagnostics.update({'action': 'prepare_in_regular_offpeak', 'pre_event_bridge_net_kwh': round(net_kwh, 3), 'forecast_coverage_complete': bool(complete), 'charge_target_soc': plan['charge']['target_soc']})
+        if arm_soon:
+            _arm_axle_discharge(plan, start, end, max_discharge, reserve)
+            diagnostics['action'] = 'axle_armed'
         plan['axle'] = diagnostics; log_decision(); return plan
 
     forecast_event_soc = controller.soc_at(forecast, start, 'forecast_no_slots'); live_soc = await controller.live_soc()
@@ -278,6 +314,10 @@ async def _apply_axle_overlay(controller, forecast, plan, window, capacity, rese
         charge_end = min(start, now + timedelta(hours=charge_hours, minutes=2))
         plan['charge'] = {'start': core.iso(now.replace(second=0, microsecond=0)), 'end': core.iso(charge_end), 'rate_w': int(round(max_charge)), 'target_soc': int(math.ceil(required_soc)), 'planned_kwh': round(shortfall_kwh / charge_eff, 3)}
         plan['pause'] = {'mode': 'Disabled', 'start': '00:00:00', 'end': '00:00:00'}; diagnostics['action'] = 'peak_prepare_last_resort'; diagnostics['charge_target_soc'] = plan['charge']['target_soc']
+    if arm_soon:
+        preparing = diagnostics['action'] == 'peak_prepare_last_resort'
+        _arm_axle_discharge(plan, start, end, max_discharge, reserve)
+        diagnostics['action'] = 'axle_armed_preparing' if preparing else 'axle_armed'
     plan['axle'] = diagnostics; log_decision(); return plan
 
 

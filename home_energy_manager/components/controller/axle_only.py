@@ -168,6 +168,8 @@ class AxleOnlyController:
         discharge_eff = float(self.cfg.get("axle_discharge_efficiency", 0.95))
         charge_eff = 0.95
         margin_minutes = max(0, int(self.cfg.get("axle_charge_margin_minutes", 10)))
+        lead_minutes = max(0, int(self.cfg.get("axle_discharge_lead_minutes", 15)))
+        arm_soon = bool(upcoming and now >= start - timedelta(minutes=lead_minutes))
         required_soc = None
         full_event_possible = None
         latest_charge_start = None
@@ -210,10 +212,10 @@ class AxleOnlyController:
                     message = "Preparing battery for Axle Export event at maximum available charge rate; only the required SOC shortfall is targeted."
                     charge_end = min(start, now + timedelta(hours=charge_hours, minutes=2))
                     local_now = now.astimezone(start.tzinfo)
-                    await self.set_if_needed(str(ents.get("discharge_schedule_enable") or ""), "off")
+                    if not arm_soon:
+                        await self.set_if_needed(str(ents.get("discharge_schedule_enable") or ""), "off")
                     await self.set_if_needed(str(ents.get("charge_slot_1_start") or ""), time_value(local_now))
                     await self.set_if_needed(str(ents.get("charge_slot_1_end") or ""), time_value(charge_end))
-                    await self.set_if_needed(str(ents.get("charge_slot_1_target") or ""), math.ceil(required_soc))
                     await self.set_if_needed(str(ents.get("charge_rate") or ""), round(max_charge))
                     await self.set_if_needed(str(ents.get("charge_schedule_enable") or ""), "on")
                 else:
@@ -223,10 +225,20 @@ class AxleOnlyController:
                 action = "axle_ready"
                 message = "Battery currently has enough stored energy for full-rate discharge throughout the Axle Export event; existing inverter settings remain untouched."
 
+            if arm_soon:
+                await self.ensure_snapshot(ents, key)
+                await self.set_if_needed(str(ents.get("discharge_slot_1_start") or ""), time_value(start))
+                await self.set_if_needed(str(ents.get("discharge_slot_1_end") or ""), time_value(end))
+                await self.set_if_needed(str(ents.get("discharge_slot_1_target") or ""), reserve)
+                await self.set_if_needed(str(ents.get("discharge_rate") or ""), max_discharge)
+                await self.set_if_needed(str(ents.get("discharge_schedule_enable") or ""), "on")
+                action = "axle_armed_preparing" if action == "axle_prepare" else "axle_armed"
+                message = "Axle discharge slot armed before event start at maximum inverter output."
+
         attrs = {
             "friendly_name": "Home Energy Controller", "version": VERSION,
-            "operation_mode": "axle_only", "control_enabled": action in {"axle_prepare", "axle_export"},
-            "inverter_writes_enabled": action in {"axle_prepare", "axle_export"},
+            "operation_mode": "axle_only", "control_enabled": action in {"axle_prepare", "axle_export", "axle_armed", "axle_armed_preparing"},
+            "inverter_writes_enabled": action in {"axle_prepare", "axle_export", "axle_armed", "axle_armed_preparing"},
             "normal_optimisation_enabled": False, "axle_entity": axle_entity,
             "axle_event_type": event_type or None, "axle_event_start": start.isoformat() if start else None,
             "axle_event_end": end.isoformat() if end else None, "axle_event_active": active,

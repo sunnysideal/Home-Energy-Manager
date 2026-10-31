@@ -18,6 +18,9 @@ configuration:
       axle_charge_margin_minutes:
         name: Axle charge margin
         description: Extra minutes allowed before an Axle event when preparing the required battery SOC.
+      axle_discharge_lead_minutes:
+        name: Axle discharge arming lead
+        description: Minutes before an Axle Export event to program the exact discharge interval in the inverter. Default 15.
       power_down_enabled:
         name: Enable Power Down events
         description: Enable Power Down event handling. Turn this off if you do not use Power Down events.
