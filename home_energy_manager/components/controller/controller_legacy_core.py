@@ -2094,6 +2094,22 @@ async def resolve_forecast_entity(ha,cfg):
         return resolved
     return configured
 
+def axle_event_watch_key(state, now, lead_minutes):
+    """Identify event changes and arming/starting/ending phase boundaries."""
+    attrs = state.get('attributes', {}) if isinstance(state, dict) else {}
+    if attrs.get('event_available') is not True or str(attrs.get('event_type') or '').lower() != 'export':
+        return None
+    start, end = parse_dt(attrs.get('start')), parse_dt(attrs.get('end'))
+    if not start or not end:
+        return None
+    start, end, now = (dt.astimezone(timezone.utc) for dt in (start, end, now))
+    if end <= start or now >= end:
+        return None
+    arm = start - timedelta(minutes=max(0, int(lead_minutes)))
+    phase = 'active' if now >= start else 'armed' if now >= arm else 'upcoming'
+    return (iso(start), iso(end), phase)
+
+
 async def main():
     cfg=json.loads(OPTIONS_PATH.read_text())
     shutdown_event=asyncio.Event()
@@ -2119,6 +2135,8 @@ async def main():
     forecast_entity=await resolve_forecast_entity(ha,cfg)
     intelligent_entity=str(cfg.get('ev_smart_charging_active_entity','')).strip()
     intelligent_dispatch_entity=str(cfg.get('ev_smart_charging_dispatch_entity','')).strip()
+    axle_entity=str(cfg.get('axle_entity','sensor.home_energy_manager_axle')).strip()
+    axle_lead_minutes=max(0,int(cfg.get('axle_discharge_lead_minutes',15)))
     # Forecast events are wake-up signals, not forecast snapshots. Keep at most
     # one pending wake-up and always read the CURRENT HA forecast when handling
     # it. This prevents a FIFO backlog of obsolete forecast objects.
@@ -2218,9 +2236,27 @@ async def main():
                 LOG.debug('Intelligent boundary watch: %s',exc)
             await asyncio.sleep(5)
 
+    async def axle_boundary_pump():
+        # Polling sees 30-second adapter updates without waking on every freshness timestamp.
+        last_key = None
+        while True:
+            try:
+                state = await ha.state(axle_entity)
+                key = axle_event_watch_key(state, c.now(), axle_lead_minutes)
+                if key != last_key:
+                    LOG.info('Axle boundary: previous=%s current=%s; replanning', last_key, key)
+                    await enqueue_current(True)
+                    last_key = key
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                LOG.warning('Axle boundary watch failed: %s', exc)
+            await asyncio.sleep(5)
+
     pump=asyncio.create_task(event_pump())
     intelligent_pump=asyncio.create_task(intelligent_boundary_pump())
     sampler=None
+    axle_pump=None
     try:
         # Establish the state-change subscription before reading the current
         # forecast. Events arriving during startup are queued, not lost.
@@ -2232,6 +2268,7 @@ async def main():
 
         await c.startup()
         sampler=asyncio.create_task(c.sample_loop())
+        axle_pump=asyncio.create_task(axle_boundary_pump())
 
         while not shutdown_event.is_set():
             event_task=asyncio.create_task(event_queue.get())
@@ -2277,6 +2314,10 @@ async def main():
                       c.forecast_sequence(s),c.forecast_trigger(s) or 'unknown',force)
             await c.queue(s,force=force)
     finally:
+        if axle_pump:
+            axle_pump.cancel()
+            try:await axle_pump
+            except asyncio.CancelledError:pass
         if sampler:
             sampler.cancel()
             try:await sampler
