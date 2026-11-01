@@ -216,6 +216,9 @@ async def apply_plan(controller, plan, log):
                 return False
             fields=[item for item in fields if item[0]!='charge_enable']+[field_map['charge_enable']]
     for item in fields:
+        if item[0]=='charge_enable' and item[2]=='on' and not all(results):
+            log.error('Keeping charge schedule disabled: one or more inverter writes failed')
+            return False
         field_started=asyncio.get_running_loop().time(); result=await controller.ensure(*item); results.append(result); elapsed=asyncio.get_running_loop().time()-field_started
         if elapsed>=1.0:log.info('Apply timing: field=%s elapsed=%.3fs result=%s',item[0],elapsed,'ok' if result else 'failed')
     log.info('Apply timing: total=%.3fs fields=%d writes_confirmed=%d success=%s',asyncio.get_running_loop().time()-apply_started,len(fields),controller.confirmed_writes_this_apply,'yes' if all(results) else 'no'); return all(results)
