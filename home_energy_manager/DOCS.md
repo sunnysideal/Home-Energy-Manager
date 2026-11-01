@@ -335,6 +335,10 @@ Targets export related to genuine solar generation. Normal forced export does no
 
 Leaves normal battery behaviour alone except when Home Energy Manager needs to prepare for or execute a qualifying Axle **Export** event. Temporary settings are restored/replanned after the event. This is useful when Axle support is wanted without the normal daily optimiser.
 
+## EV Smart Charging handover
+
+During a currently confirmed discounted EV settlement half-hour, Home Energy Manager may charge the battery only where the forecast indicates a genuine need (such as arriving below the configured safety buffer at the next regular off-peak start). Once that need is met, it stops the EV battery top-up, preserves battery energy for the remainder of the confirmed half-hour and restores the separately planned regular overnight charge. EV top-ups cannot run beyond their confirmed settlement half-hour or be joined to the following overnight charge window.
+
 ## Axle overlay in normal modes
 
 Qualifying Axle Export events can overlay `minimise_export`, `maximise_export` and `export_generated`. `forecast_only` remains completely write-free.
