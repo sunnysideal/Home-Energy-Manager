@@ -312,6 +312,40 @@ async def run(data):
                 "last_full": db.get("last_full_soc_at"),
                 "auto_enabled": controller.c["calibration_enabled"],
             }
+    if data.get("case") == "ev_charge_to_preserve":
+        # Two planning cycles on the same controller/inverter. The first
+        # confirmed half-hour needs energy; the second already meets the
+        # off-peak arrival buffer and must restore the future overnight slot.
+        assert data.get("ev_active") and data.get("arrival_soc", 0) < 20
+        assert plan["intelligent_go"]["intelligent_charge_target_soc"] is not None
+        assert plan["charge"]["planned_kwh"] > 0
+        initial["ev_charging"] = {
+            "plan": plan, "charge_start": ha.states[entities["charge_slot_1_start"]]["state"],
+            "charge_end": ha.states[entities["charge_slot_1_end"]]["state"],
+        }
+        controller.confirmed = {
+            "charge_start": plan["charge"]["start"],
+            "charge_end": plan["charge"]["end"],
+            "charge_rate_w": plan["charge"]["rate_w"],
+            "charge_target_soc": plan["charge"]["target_soc"],
+        }
+        now = BASE + timedelta(minutes=15)
+        source["attributes"]["forecast_generated_at"] = instant(now)
+        source["attributes"]["overnight_start_soc_no_slots"] = 22
+        ha.set(entities["battery_soc"], 84)
+        ha.set("sensor.home_energy_manager_battery_model", "ready", battery_model(now))
+        ha.writes.clear()
+        preserved = await controller.plan(source, 84, {
+            "start": CHEAP_START, "end": CHEAP_END, "rate_p": 6.99,
+        })
+        assert preserved is not None
+        assert await controller.apply(preserved)
+        initial["ev_preserved"] = {
+            "plan": preserved, "writes": list(ha.writes),
+            "charge_start": ha.states[entities["charge_slot_1_start"]]["state"],
+            "charge_end": ha.states[entities["charge_slot_1_end"]]["state"],
+            "pause_mode": ha.states[entities["pause_mode"]]["state"],
+        }
     if data.get("case") == "axle_sequence":
         # Exercise the *same* controller, HA readback and persisted request as
         # the Axle event approaches, runs, then expires; not three fresh plans.
