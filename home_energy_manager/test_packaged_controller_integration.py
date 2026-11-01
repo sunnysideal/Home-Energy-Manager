@@ -308,6 +308,27 @@ def test_confirmed_edf_slot_skips_topup_when_arrival_buffer_sufficient(simulate)
     assert result["plan"]["intelligent_go"]["charge_reason"] == "battery_energy_sufficient"
 
 
+def test_edf_topup_to_preserve_restores_overnight_after_buffer_reached(simulate):
+    result = simulate(
+        case="ev_charge_to_preserve", ev_active=True,
+        arrival_soc=16, soc=82, clock_minutes=11,
+    )
+    charging = result["ev_charging"]
+    assert charging["plan"]["intelligent_go"]["intelligent_charge_target_soc"] is not None
+    assert charging["charge_end"] == "14:30:00"
+
+    restored = result["ev_preserved"]
+    assert restored["plan"]["intelligent_go"]["charge_reason"] == "battery_energy_sufficient"
+    assert restored["plan"]["intelligent_go"]["intelligent_charge_target_soc"] is None
+    assert restored["plan"]["charge"]["planned_kwh"] >= 0
+    assert restored["charge_start"] != charging["charge_start"]
+    assert restored["charge_end"] == "06:00:00"
+    assert restored["pause_mode"] == "PauseBoth"
+    writes = restored["writes"]
+    assert not any(item["entity"] == result["entities"]["charge_slot_1_target"]
+                   for item in writes)
+
+
 def test_power_down_uses_existing_controller_overlay_without_target_write(simulate):
     result = simulate(power_down=True, natural_soc=18)
     assert result["plan"].get("power_down")
