@@ -93,6 +93,7 @@ async def charge_end_with_live_extension(controller, plan, log, step_minutes=5):
     start=parse_dt(charge.get('start')); end=parse_dt(charge.get('end')); off_end=parse_dt(offpeak.get('end'))
     target=as_float(charge.get('target_soc')); rate=as_float(charge.get('rate_w')); planned_kwh=as_float(charge.get('planned_kwh'))
     if not start or not end or not off_end or target is None or rate is None or rate<=0 or planned_kwh is None or planned_kwh<=0:return end
+    if (plan.get('intelligent_go') or {}).get('confirmed'):return end
     now=controller.now()
     try:start=start.astimezone(controller.tz); end=end.astimezone(controller.tz); off_end=off_end.astimezone(controller.tz); now=now.astimezone(controller.tz)
     except Exception:return end
@@ -179,9 +180,16 @@ async def desired_inverter_fields(controller, plan, log):
         charge_start,charge_end_time,charge_rate=locked_charge
         charge_end=parse_dt(plan['offpeak']['end'])
     else:
-        charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],controller.tstr(parse_dt(plan['charge']['start'])))
         charge_end=await charge_end_with_live_extension(controller,plan,log)
         charge_end_time=controller.tstr(charge_end)
+        desired_start=controller.tstr(parse_dt(plan['charge']['start']))
+        observed_end_state=await controller.ha.state(controller.c['charge_slot_1_end_entity'])
+        observed_end=str((observed_end_state or {}).get('state') or '')
+        # An active EV half-hour is not an overnight charging session.
+        if observed_end==charge_end_time:
+            charge_start=await controller.preserve_active_slot_start('charge',controller.c['charge_slot_1_start_entity'],controller.c['charge_slot_1_end_entity'],desired_start)
+        else:
+            charge_start=desired_start
         charge_rate=plan['charge']['rate_w']
     discharge_start=await controller.preserve_active_slot_start('discharge',controller.c['discharge_slot_1_start_entity'],controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['start'])))
     fields=[('eco',controller.c['eco_mode_entity'],'on',None),('charge_enable',controller.c['charge_schedule_enable_entity'],'on',None),('discharge_enable',controller.c['discharge_schedule_enable_entity'],'on',None),('pause_mode',controller.c['pause_mode_entity'],pause['mode'],wend),('pause_start',controller.c['pause_start_entity'],pause_start,wend),('pause_end',controller.c['pause_end_entity'],pause['end'],wend),('charge_start',controller.c['charge_slot_1_start_entity'],charge_start,wend),('charge_end',controller.c['charge_slot_1_end_entity'],charge_end_time,wend),('charge_target',controller.c['charge_slot_1_target_entity'],plan['charge']['target_soc'],wend),('charge_rate',controller.c['charge_rate_entity'],charge_rate,wend),('discharge_start',controller.c['discharge_slot_1_start_entity'],discharge_start,parse_dt(plan['offpeak']['start'])),('discharge_end',controller.c['discharge_slot_1_end_entity'],controller.tstr(parse_dt(plan['discharge']['end'])),parse_dt(plan['offpeak']['start'])),('discharge_rate',controller.c['discharge_rate_entity'],plan['discharge']['rate_w'],parse_dt(plan['offpeak']['start']))]
@@ -192,6 +200,21 @@ async def desired_inverter_fields(controller, plan, log):
 
 async def apply_plan(controller, plan, log):
     apply_started=asyncio.get_running_loop().time(); controller.confirmed_writes_this_apply=0; fields=await desired_inverter_fields(controller,plan,log); results=[]
+    # Charge selectors are written individually. Neutralise an active charge
+    # before replacing its window; re-arm only after both values are confirmed.
+    field_map={item[0]:item for item in fields}
+    current_start=await controller.ha.state(controller.c['charge_slot_1_start_entity'])
+    current_end=await controller.ha.state(controller.c['charge_slot_1_end_entity'])
+    active=controller.daily_slot_active(str((current_start or {}).get('state') or ''),str((current_end or {}).get('state') or ''))
+    changed=(str((current_start or {}).get('state') or '')!=str(field_map['charge_start'][2]) or
+             str((current_end or {}).get('state') or '')!=str(field_map['charge_end'][2]))
+    if active and changed:
+        enabled=await controller.ha.state(controller.c['charge_schedule_enable_entity'])
+        if str((enabled or {}).get('state') or '').lower() in ('on','true','1'):
+            if not await controller.ensure('charge_enable',controller.c['charge_schedule_enable_entity'],'off',None):
+                log.error('Cannot safely replace active charge slot: failed to disable charging')
+                return False
+            fields=[item for item in fields if item[0]!='charge_enable']+[field_map['charge_enable']]
     for item in fields:
         field_started=asyncio.get_running_loop().time(); result=await controller.ensure(*item); results.append(result); elapsed=asyncio.get_running_loop().time()-field_started
         if elapsed>=1.0:log.info('Apply timing: field=%s elapsed=%.3fs result=%s',item[0],elapsed,'ok' if result else 'failed')
