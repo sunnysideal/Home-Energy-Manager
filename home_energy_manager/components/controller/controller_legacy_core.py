@@ -1465,11 +1465,21 @@ class Controller:
                 cstart=control_w['start']; cend=cstart; planned_charge=0.0
                 estimated_charge_start_soc=initial_soc
 
-        # Preserve an already-active charge start/rate.
-        if self.confirmed:
+        # Preserve only an active *regular off-peak* charge. A confirmed EV
+        # half-hour can temporarily occupy charge slot 1, but its remembered
+        # start must never be joined to the next regular overnight end time.
+        # During an EV overlay the independent regular plan remains movable.
+        if self.confirmed and not intelligent.get('confirmed'):
             cs=parse_dt(self.confirmed.get('charge_start')); ce=parse_dt(self.confirmed.get('charge_end'))
-            if cs and ce and cs.astimezone(self.tz)<=n<ce.astimezone(self.tz) and not waiting_for_floor and not export_waiting_floor:
-                cstart=cs.astimezone(self.tz); cend=control_w['end'].replace(second=0,microsecond=0); rate=int(self.confirmed.get('charge_rate_w',rate)); target=int(self.confirmed.get('charge_target_soc',target)); needs_charge=True
+            if cs and ce and not waiting_for_floor and not export_waiting_floor:
+                cs_utc=cs.astimezone(timezone.utc); ce_utc=ce.astimezone(timezone.utc)
+                now_utc=n.astimezone(timezone.utc)
+                off_start_utc=control_w['start'].astimezone(timezone.utc)
+                off_end_utc=control_w['end'].astimezone(timezone.utc)
+                if off_start_utc<=cs_utc<ce_utc<=off_end_utc and cs_utc<=now_utc<ce_utc:
+                    cstart=cs.astimezone(self.tz); cend=control_w['end'].replace(second=0,microsecond=0)
+                    rate=int(self.confirmed.get('charge_rate_w',rate))
+                    target=int(self.confirmed.get('charge_target_soc',target)); needs_charge=True
 
         # Confirmed EV Smart Charging is a hard current-slot override.
         #
