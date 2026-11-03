@@ -31,7 +31,11 @@ async def coordinate_minimise_offpeak(controller, state, plan, window, fallback=
     if fallback or not plan or controller.operation_mode() != 'minimise_export':
         return plan
     if plan.get('intelligent_go', {}).get('confirmed'):
-        return plan
+        # Confirmed EV discount inside the supplier's regular cheap window
+        # must not steal or retime the normal overnight battery charge slot.
+        _, regular_active = active_or_next_offpeak(controller, window)
+        if not regular_active:
+            return plan
     if controller.calibration_state() in ('awaiting_deep_low', 'deep_recharge'):
         return plan
 
