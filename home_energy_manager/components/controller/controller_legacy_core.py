@@ -1513,13 +1513,10 @@ class Controller:
 
             buffer_soc=max(float(reserve),float(self.c.get('safety_buffer_soc',20)))
             required_delta_pct=0.0
-            if mode == 'minimise_export':
-                # Match the active-window selection used by the charge planner.
-                # The forecast's next off-peak window is often tomorrow's.
-                from controller_minimise_offpeak import active_or_next_offpeak
-                _regular_window, inside_regular_offpeak = active_or_next_offpeak(self, w)
-            else:
-                inside_regular_offpeak=bool(self.current_active_offpeak())
+            # A forecast can report tomorrow's off-peak while the previous
+            # regular cheap window is still running. Handle both consistently.
+            from controller_minimise_offpeak import active_or_next_offpeak
+            _regular_window, inside_regular_offpeak = active_or_next_offpeak(self, w)
 
             # A confirmed Intelligent half-hour outside the regular cheap
             # window is useful when the no-slots forecast would arrive at the
@@ -1554,7 +1551,7 @@ class Controller:
                 required_delta_pct=max(required_delta_pct,max(0.0,target-ils))
                 intelligent_charge_reason='calibration_deep_recharge'
 
-            if required_delta_pct>0.5 and n<ib and not (mode == 'minimise_export' and inside_regular_offpeak):
+            if required_delta_pct>0.5 and n<ib and not inside_regular_offpeak:
                 intelligent_pause_mode='Disabled'
                 intelligent_charge_target=int(round(clamp(ils+required_delta_pct,reserve,100)))
                 # GivEnergy stores recurring wall-clock times; a start already
@@ -1590,7 +1587,7 @@ class Controller:
                     mode=='export_generated' and solar_pause_window and
                     ia < solar_pause_window['end'] and ib > solar_pause_window['start']
                 )
-                if mode == 'minimise_export' and inside_regular_offpeak:
+                if inside_regular_offpeak:
                     # The regular cheap window already owns battery charging;
                     # EV confirmation must neither replace nor pause its slot.
                     intelligent_pause_mode='Disabled'
