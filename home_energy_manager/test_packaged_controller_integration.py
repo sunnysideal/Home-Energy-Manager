@@ -267,6 +267,31 @@ def test_normal_minimise_export_eco_remains_available_before_charge(simulate):
     assert_no_unauthorised_target_write(result)
 
 
+def test_overnight_ev_does_not_change_running_battery_charge(simulate):
+    # Regression from 2026-11-03: forecast points to tomorrow's cheap window,
+    # current inverter charge is still running and EV confirms another slot.
+    result = simulate(
+        ev_active=True, existing_active_charge=True, forecast_next_offpeak=True,
+        clock_minutes=15*60+50, soc=99,
+    )
+    assert result['plan']['intelligent_go']['confirmed'] is True
+    assert result['plan']['intelligent_go']['charge_reason'] == 'regular_offpeak_unchanged'
+    assert result['charge_after'] == {
+        'start': '01:47:00', 'end': '06:00:00',
+        'rate': '3991', 'pause_mode': 'Disabled',
+    }
+    # The packaged test's stub writes every requested value, even unchanged
+    # ones. Assert that no transient or final write changes protected settings.
+    expected = {
+        result['entities']['charge_slot_1_start']: '01:47:00',
+        result['entities']['charge_slot_1_end']: '06:00:00',
+        result['entities']['charge_rate']: '3991',
+    }
+    for write in result['writes']:
+        if write['entity'] in expected:
+            assert str(write['value']) == expected[write['entity']]
+
+
 def test_confirmed_ev_smart_charging_uses_no_forced_export(simulate):
     result = simulate(ev_active=True, request=True, natural_soc=18, clock_minutes=10)
     assert result["plan"]["intelligent_go"]["confirmed"] is True

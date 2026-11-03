@@ -67,7 +67,7 @@ Any person or AI modifying this project MUST read this file before changing cont
    - In `minimise_export`, do not schedule a regular overnight preservation pause: allow Eco/self-consumption to supply household load during the cheap window until an actual charging slot begins. This does not override higher-priority Axle, calibration, or confirmed EV Smart Charging controls.
    - Size and time the regular charge from the forecast SOC at its proposed start, including household load/PV before charging. When already in the cheap window, anchor that projection to live SOC; update on subsequent planning cycles. The charge must still finish before the regular cheap window ends, accounting for the configured charging safety margin.
    - When projected SOC at cheap-window end already meets the overnight target without forced charging, schedule no regular charge. If forecast coverage is missing, prefer charging promptly over assuming the battery will retain SOC without a pause.
-   - Once an ordinary `minimise_export` charge slot has actually started in the regular cheap window, routine replanning must leave its observed start, end and charge rate unchanged through its scheduled end; it may continue updating the target and diagnostic forecast without writing these three active inverter settings. Forecast household consumption is included before the slot but must not be deducted again as if the battery were discharging while forced charging is active. Existing calibration, Axle and confirmed EV Smart Charging interventions and explicit safety actions may override the normal slot lock; other operating modes are unchanged.
+   - Once an ordinary `minimise_export` charge slot has actually started in the regular cheap window, routine replanning must leave its observed start, end and charge rate unchanged through its scheduled end; it may continue updating the target and diagnostic forecast without writing these three active inverter settings. Forecast household consumption is included before the slot but must not be deducted again as if the battery were discharging while forced charging is active. Existing calibration, Axle and explicit safety actions may override the normal slot lock. Confirmed EV Smart Charging within the regular off-peak window must not alter an already active regular charge's start, end or rate, nor pause its charging; other operating modes are unchanged.
 
 8. **No overnight pre-export of forecast solar**
    - The regular overnight cheap period must not be used to pre-export the current day's forecast solar generation.
@@ -81,9 +81,10 @@ Any person or AI modifying this project MUST read this file before changing cont
     - A confirmed Intelligent slot must not silently erase or invalidate the normal future overnight charge plan.
     - If no extra battery charge is useful, preserve the normal charge schedule and normally use `PauseDischarge` for the confirmed half-hour.
     - Exception: in `export_generated`, while the confirmed half-hour overlaps the forecast-defined solar PauseCharge window, preserve `PauseCharge` so forecast PV is preferentially exported directly rather than stored and re-exported with battery losses.
-    - If a genuine cheap-charge need exists, a confirmed Intelligent slot may temporarily use charge slot 1 and disable `PauseCharge`; the normal plan must be restored/replanned afterwards.
+    - If a genuine cheap-charge need exists **outside the regular off-peak period**, a confirmed Intelligent slot may temporarily use charge slot 1 and disable `PauseCharge`; the normal plan must be restored/replanned afterwards.
+    - A confirmed EV half-hour **within the regular overnight cheap window** must not repurpose, retime, resize or pause the normal overnight charge slot. Ordinary cheap-rate charging remains controlled by the battery model and normal planner, even when EV charging is concurrently confirmed.
 
-11. **Confirmed Intelligent charging may be used when genuinely beneficial**
+11. **Confirmed Intelligent charging may be used when genuinely beneficial outside regular off-peak**
     - A confirmed Intelligent slot may charge the battery when needed to:
       - avoid later peak-rate import;
       - protect arrival SOC at the next regular off-peak period;
@@ -91,7 +92,7 @@ Any person or AI modifying this project MUST read this file before changing cont
       - make the day's genuine `export_generated` target achievable while preserving the safety buffer;
       - satisfy an otherwise unreachable overnight target;
       - satisfy an explicitly documented calibration requirement.
-    - The controller should charge only the useful amount, subject to battery headroom and available slot duration.
+    - The controller should charge only the useful amount, subject to battery headroom and available slot duration. During regular off-peak, the normal charge planner controls battery charging instead; confirmed EV charging may not replace its programmed slot.
     - For ordinary Rule-1 protection, a confirmed Intelligent slot outside the regular cheap window should use the forecaster's `overnight_start_soc_no_slots` at the tariff-derived next off-peak start. If that forecast arrival SOC is below the safety buffer, charge by the SOC shortfall; do not duplicate the forecaster's load/PV simulation in the controller.
 
 ### Calibration

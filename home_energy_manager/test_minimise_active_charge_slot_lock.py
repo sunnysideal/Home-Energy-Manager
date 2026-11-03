@@ -52,6 +52,10 @@ class Controller:
     def now(self):
         return self.clock
 
+    def current_active_offpeak(self):
+        start, end = datetime.fromisoformat(OFFPEAK['start']), datetime.fromisoformat(OFFPEAK['end'])
+        return {'start': start, 'end': end, 'rate_p': OFFPEAK['rate_p']} if start <= self.clock < end else None
+
     def tstr(self, value):
         return value.strftime('%H:%M:%S')
 
@@ -132,10 +136,36 @@ def test_lock_expires_after_cheap_rate():
     assert asyncio.run(locked_minimise_charge_slot(c, plan(), logging.getLogger(__name__))) is None
 
 
+def test_confirmed_ev_cannot_rewrite_running_regular_slot():
+    p = plan(
+        intelligent_go={'confirmed': True, 'pause_mode': 'Disabled',
+                        'intelligent_charge_target_soc': None},
+        charge={'start': '2026-09-22T05:50:00+01:00',
+                'end': '2026-09-22T06:00:00+01:00',
+                'rate_w': 5508, 'target_soc': 100, 'planned_kwh': 0.14},
+    )
+    applied = fields(Controller({'cs': '01:47:00', 'cr': '3991', 'soc': '99'}), p)
+    assert (applied['charge_start'], applied['charge_end'], applied['charge_rate']) == (
+        '01:47:00', '06:00:00', 3991)
+    assert applied['pause_mode'] == 'Disabled'
+
+
+def test_next_forecast_window_does_not_unlock_tonights_charge():
+    p = plan(
+        offpeak={'start': '2026-09-22T23:00:00+01:00',
+                 'end': '2026-09-23T06:00:00+01:00', 'rate_p': 6.99},
+        charge={'start': '2026-09-22T05:50:00+01:00',
+                'end': '2026-09-22T06:00:00+01:00',
+                'rate_w': 5508, 'target_soc': 100, 'planned_kwh': 0.14},
+    )
+    applied = fields(Controller({'cs': '01:47:00', 'cr': '3991', 'soc': '99'}), p)
+    assert (applied['charge_start'], applied['charge_end'], applied['charge_rate']) == (
+        '01:47:00', '06:00:00', 3991)
+
+
 def test_high_priority_overlays_can_replace_running_slot():
     baseline = plan()
     variants = (
-        {'intelligent_go': {'confirmed': True}},
         {'calibration': {'state': 'deep_recharge'}},
         {'calibration': {'state': 'awaiting_deep_low'}},
         {'calibration': {'state': 'top_due'}},

@@ -131,12 +131,21 @@ def test_incomplete_forecast_does_not_delay_overnight_charge():
     assert result['pause']['mode'] == 'Disabled'
 
 
-def test_higher_priority_calibration_and_confirmed_ev_are_untouched():
+def test_higher_priority_calibration_and_ev_outside_regular_are_untouched():
     controller = Controller(START)
     controller.calibration_state = lambda: 'awaiting_deep_low'
     original = plan()
     assert run(controller, forecast(), original) is original
-    controller.calibration_state = lambda: 'disabled'
     original = plan()
     original['intelligent_go'] = {'confirmed': True}
-    assert run(controller, forecast(), original) is original
+    assert run(Controller(START-timedelta(hours=1)), forecast(), original) is original
+
+
+def test_ev_confirmed_inside_regular_window_still_uses_normal_charge_planner():
+    original = plan()
+    original['intelligent_go'] = {'confirmed': True}
+    result = run(Controller(START+timedelta(hours=2), 50), forecast(), original)
+    assert result['forecast']['joint_pause_charge_plan'] is True
+    assert result['pause']['mode'] == 'Disabled'
+    assert result['charge']['planned_kwh'] > 0
+    assert datetime.fromisoformat(result['charge']['end']) == END

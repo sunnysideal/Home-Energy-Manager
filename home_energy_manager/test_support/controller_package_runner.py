@@ -163,6 +163,10 @@ async def run(data):
         # 18:30, but the applier must preserve the observed inverter start.
         ha.set(entities["discharge_slot_1_start"], "18:35:00")
         ha.set(entities["discharge_slot_1_end"], "19:30:00")
+    if data.get("existing_active_charge"):
+        ha.set(entities["charge_slot_1_start"], "01:47:00")
+        ha.set(entities["charge_slot_1_end"], "06:00:00")
+        ha.set(entities["charge_rate"], 3991)
     ha.set("sensor.home_energy_manager_battery_model", "ready", battery_model(now)
            if not data.get("invalid_model") else {"schema_version": 0})
     ev_entity = "switch.integration_ev_active"
@@ -195,6 +199,12 @@ async def run(data):
     controller.now = lambda: now
     source = forecast(now, entities, data.get("natural_soc", 4),
                       complete=not data.get("incomplete_forecast"))
+    if data.get("forecast_next_offpeak"):
+        source["attributes"]["offpeak"] = {
+            "start": instant(CHEAP_START + timedelta(days=1)),
+            "end": instant(CHEAP_END + timedelta(days=1)),
+            "rate_p": 6.99,
+        }
     if "arrival_soc" in data:
         source["attributes"]["overnight_start_soc_no_slots"] = data["arrival_soc"]
     assert controller.discover_from_forecast(source)
@@ -208,8 +218,10 @@ async def run(data):
 
     async def compute():
         controller.confirmed = None
+        next_shift = timedelta(days=1) if data.get("forecast_next_offpeak") else timedelta()
         plan = await controller.plan(source, data.get("soc", 82),
-                                     {"start": CHEAP_START, "end": CHEAP_END, "rate_p": 6.99})
+                                     {"start": CHEAP_START + next_shift,
+                                      "end": CHEAP_END + next_shift, "rate_p": 6.99})
         if plan is not None:
             assert await controller.apply(plan)
         return plan
@@ -273,6 +285,16 @@ async def run(data):
                "calibration_attrs": controller.calibration_attrs(),
                "low_requested_at": db.get("manual_low_calibration_requested_at"),
                "high_requested_at": db.get("manual_high_calibration_requested_at")}
+    if data.get("existing_active_charge"):
+        initial["charge_after"] = {
+            key: ha.states[entities[field]]["state"]
+            for key, field in (
+                ("start", "charge_slot_1_start"),
+                ("end", "charge_slot_1_end"),
+                ("rate", "charge_rate"),
+                ("pause_mode", "pause_mode"),
+            )
+        }
     if data.get("case") == "calibration_request_control":
         # Exercise clear ordering, 99%/100% completion, and retention of
         # historical calibration records without fabricating BMS observations.

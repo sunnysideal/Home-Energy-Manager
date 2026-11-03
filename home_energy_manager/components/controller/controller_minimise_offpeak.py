@@ -9,6 +9,10 @@ def active_or_next_offpeak(controller, window):
     now = controller.now()
     if active and active['start'] <= now < active['end']:
         return active, True
+    # The supplied tariff period can itself be the running overnight window.
+    # Do not require a persisted prior plan just to recognise it as active.
+    if window['start'] <= now < window['end']:
+        return window, True
     local_start = window['start'].astimezone(controller.tz)
     local_end = window['end'].astimezone(controller.tz)
     previous_day = local_start.date() - timedelta(days=1)
@@ -31,7 +35,11 @@ async def coordinate_minimise_offpeak(controller, state, plan, window, fallback=
     if fallback or not plan or controller.operation_mode() != 'minimise_export':
         return plan
     if plan.get('intelligent_go', {}).get('confirmed'):
-        return plan
+        # Confirmed EV discount inside the supplier's regular cheap window
+        # must not steal or retime the normal overnight battery charge slot.
+        _, regular_active = active_or_next_offpeak(controller, window)
+        if not regular_active:
+            return plan
     if controller.calibration_state() in ('awaiting_deep_low', 'deep_recharge'):
         return plan
 
