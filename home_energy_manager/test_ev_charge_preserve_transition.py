@@ -5,7 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from components.controller.controller_plan_applier import (
-    apply_plan, desired_inverter_fields, charge_end_with_live_extension,
+    apply_plan, desired_inverter_fields,
 )
 from test_minimise_active_charge_slot_lock import Controller, plan
 
@@ -92,8 +92,8 @@ def test_confirmed_ev_charge_is_never_extended_into_regular_offpeak():
         "target_soc": 95,
         "planned_kwh": 0.5,
     }
-    end = asyncio.run(charge_end_with_live_extension(c, p, logging.getLogger(__name__)))
-    assert end.isoformat() == "2026-11-01T09:30:00+00:00"
+    desired = field_values(c, p)
+    assert desired["charge_end"] == "09:30:00"
 
 
 def test_active_ev_to_overnight_write_disables_schedule_until_times_confirmed():
