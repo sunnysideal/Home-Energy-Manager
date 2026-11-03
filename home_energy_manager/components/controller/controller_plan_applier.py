@@ -8,6 +8,7 @@ remain unchanged.
 import asyncio
 from datetime import timedelta, timezone
 from controller_utils import parse_dt, iso, as_float
+from controller_minimise_offpeak import active_or_next_offpeak
 
 
 def _positive_transfer(slot):
@@ -87,28 +88,6 @@ def repair_disabled_discharge(controller, plan, log):
     plan['discharge']['start']=iso(disabled_at); plan['discharge']['end']=iso(disabled_at); plan['discharge']['planned_kwh']=0.0
 
 
-async def charge_end_with_live_extension(controller, plan, log, step_minutes=5):
-    """Extend a controller-owned cheap-rate charge in small live-SOC steps."""
-    charge=plan.get('charge') or {}; offpeak=plan.get('offpeak') or {}
-    start=parse_dt(charge.get('start')); end=parse_dt(charge.get('end')); off_end=parse_dt(offpeak.get('end'))
-    target=as_float(charge.get('target_soc')); rate=as_float(charge.get('rate_w')); planned_kwh=as_float(charge.get('planned_kwh'))
-    if not start or not end or not off_end or target is None or rate is None or rate<=0 or planned_kwh is None or planned_kwh<=0:return end
-    if (plan.get('intelligent_go') or {}).get('confirmed'):return end
-    now=controller.now()
-    try:start=start.astimezone(controller.tz); end=end.astimezone(controller.tz); off_end=off_end.astimezone(controller.tz); now=now.astimezone(controller.tz)
-    except Exception:return end
-    safety_end=off_end-timedelta(minutes=max(0,float(controller.c.get('charge_safety_margin_minutes',10))))
-    if not (start<=now<safety_end) or end>=safety_end:return end
-    step=timedelta(minutes=max(1,int(step_minutes)))
-    if now<end-step:return end
-    st=await controller.ha.state(controller.c.get('battery_soc_entity','')); soc=as_float(st.get('state')) if st else None
-    if soc is None or soc>=target-0.5:return end
-    extended=min(safety_end,max(end+step,now+step))
-    if extended<=end:return end
-    log.info('Cheap-rate charge last-mile extension: SOC %.1f%% < logical target %.1f%%; end %s -> %s (safety_end=%s offpeak_end=%s)',soc,target,end.strftime('%H:%M'),extended.strftime('%H:%M'),safety_end.strftime('%H:%M'),off_end.strftime('%H:%M'))
-    return extended
-
-
 async def locked_minimise_charge_slot(controller, plan, log):
     """Keep an already-running regular Minimise Export charge slot unchanged.
 
@@ -116,8 +95,6 @@ async def locked_minimise_charge_slot(controller, plan, log):
     Explicit priority interventions must remain free to replace that schedule.
     """
     if (plan.get('operation') or {}).get('mode') != 'minimise_export':
-        return None
-    if (plan.get('intelligent_go') or {}).get('confirmed'):
         return None
     if (plan.get('calibration') or {}).get('state') not in ('disabled', 'normal'):
         return None
@@ -128,8 +105,18 @@ async def locked_minimise_charge_slot(controller, plan, log):
     offpeak = plan.get('offpeak') or {}
     off_start = parse_dt(offpeak.get('start'))
     off_end = parse_dt(offpeak.get('end'))
-    if not off_start or not off_end or not (off_start <= controller.now() < off_end):
+    if not off_start or not off_end:
         return None
+    # The forecast usually supplies the NEXT overnight window, while the
+    # minimise-export coordinator may already be charging in the CURRENT one.
+    # Use its identical window selection rather than comparing dates from
+    # different nights (which previously unlocked the live rate and times).
+    active_window, active = active_or_next_offpeak(
+        controller, {'start': off_start, 'end': off_end, 'rate_p': offpeak.get('rate_p')}
+    )
+    if not active:
+        return None
+    off_end = active_window['end']
     charge = plan.get('charge') or {}
     if str(charge.get('kind') or '') not in ('', 'regular', 'minimise_export', 'overnight'):
         return None
@@ -178,9 +165,19 @@ async def desired_inverter_fields(controller, plan, log):
     locked_charge=await locked_minimise_charge_slot(controller,plan,log)
     if locked_charge is not None:
         charge_start,charge_end_time,charge_rate=locked_charge
-        charge_end=parse_dt(plan['offpeak']['end'])
     else:
-        charge_end=await charge_end_with_live_extension(controller,plan,log)
+        charge_end=parse_dt(plan['charge']['end'])
+        # Never extend a regular charge outside its actual cheap-rate window.
+        # EV-confirmed periods outside regular off-peak are separate overlays.
+        if (plan.get('operation') or {}).get('mode') == 'minimise_export':
+            active_window, active = active_or_next_offpeak(controller, window)
+            charge_start_dt = parse_dt((plan.get('charge') or {}).get('start'))
+            if (active and charge_start_dt and
+                    active_window['start'] <= charge_start_dt < active_window['end'] and
+                    charge_end > active_window['end']):
+                log.warning('Capping regular charge end at current cheap-rate cutoff: %s -> %s',
+                            iso(charge_end), iso(active_window['end']))
+                charge_end = active_window['end']
         charge_end_time=controller.tstr(charge_end)
         desired_start=controller.tstr(parse_dt(plan['charge']['start']))
         observed_end_state=await controller.ha.state(controller.c['charge_slot_1_end_entity'])
