@@ -218,8 +218,10 @@ async def run(data):
 
     async def compute():
         controller.confirmed = None
+        next_shift = timedelta(days=1) if data.get("forecast_next_offpeak") else timedelta()
         plan = await controller.plan(source, data.get("soc", 82),
-                                     {"start": CHEAP_START, "end": CHEAP_END, "rate_p": 6.99})
+                                     {"start": CHEAP_START + next_shift,
+                                      "end": CHEAP_END + next_shift, "rate_p": 6.99})
         if plan is not None:
             assert await controller.apply(plan)
         return plan
