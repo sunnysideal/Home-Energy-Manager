@@ -59,7 +59,7 @@ Combines normal household load, ASHP demand, PV forecast, battery state/schedule
 
 ### Battery model diagnostics
 
-`sensor.home_energy_manager_battery_model` exposes the Home Forecaster's learned SOC-band charging model. The Controller uses this model for charge-duration planning when it is valid and fresh. Charging time is calculated from the SOC-band model without any additional top-completion dwell; the independent configured charge safety margin still applies. If the model is missing, stale, invalid or incompatible, the Controller does not substitute a local battery model; charge planning uses its safe/degraded path.
+`sensor.home_energy_manager_battery_model` exposes the Home Forecaster's learned SOC-band charging model. The Controller uses this model for charge-duration planning when it is valid and fresh. Charging time is calculated from the SOC-band model without any additional top-completion dwell; the independent configured charge safety margin still applies. In `minimise_export`, once the regular overnight charge slot starts, its programmed start, end and rate are preserved through the cheap-rate cutoff. The controller does not chase the final 1% SOC by increasing charge power or extending the end time. EV Smart Charging confirmed during the regular overnight cheap window does not alter or pause that normal battery charge. If the model is missing, stale, invalid or incompatible, the Controller does not substitute a local battery model; charge planning uses its safe/degraded path.
 
 `sensor.home_energy_manager_battery_model_seed` exposes the Controller model used to initialise the Home Forecaster's learned battery state on a fresh data store. It is an internal hand-off entity and normally needs no user action.
 
