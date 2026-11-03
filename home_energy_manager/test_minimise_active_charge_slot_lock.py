@@ -52,6 +52,10 @@ class Controller:
     def now(self):
         return self.clock
 
+    def current_active_offpeak(self):
+        start, end = datetime.fromisoformat(OFFPEAK['start']), datetime.fromisoformat(OFFPEAK['end'])
+        return {'start': start, 'end': end, 'rate_p': OFFPEAK['rate_p']} if start <= self.clock < end else None
+
     def tstr(self, value):
         return value.strftime('%H:%M:%S')
 
