@@ -280,10 +280,16 @@ def test_overnight_ev_does_not_change_running_battery_charge(simulate):
         'start': '01:47:00', 'end': '06:00:00',
         'rate': '3991', 'pause_mode': 'Disabled',
     }
-    protected = {result['entities'][name] for name in (
-        'charge_slot_1_start', 'charge_slot_1_end', 'charge_rate',
-    )}
-    assert not protected.intersection(write['entity'] for write in result['writes'])
+    # The packaged test's stub writes every requested value, even unchanged
+    # ones. Assert that no transient or final write changes protected settings.
+    expected = {
+        result['entities']['charge_slot_1_start']: '01:47:00',
+        result['entities']['charge_slot_1_end']: '06:00:00',
+        result['entities']['charge_rate']: '3991',
+    }
+    for write in result['writes']:
+        if write['entity'] in expected:
+            assert str(write['value']) == expected[write['entity']]
 
 
 def test_confirmed_ev_smart_charging_uses_no_forced_export(simulate):
