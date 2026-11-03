@@ -9,6 +9,10 @@ def active_or_next_offpeak(controller, window):
     now = controller.now()
     if active and active['start'] <= now < active['end']:
         return active, True
+    # The supplied tariff period can itself be the running overnight window.
+    # Do not require a persisted prior plan just to recognise it as active.
+    if window['start'] <= now < window['end']:
+        return window, True
     local_start = window['start'].astimezone(controller.tz)
     local_end = window['end'].astimezone(controller.tz)
     previous_day = local_start.date() - timedelta(days=1)
