@@ -185,3 +185,44 @@ def test_slot_is_not_locked_when_inverter_rate_or_times_are_unavailable():
                      {'ce': '05:45:00'}, {'ce': '06:30:00'}):
         c = Controller(override)
         assert asyncio.run(locked_minimise_charge_slot(c, plan(), logging.getLogger(__name__))) is None
+
+
+def test_20261106_smart_extension_cannot_interrupt_original_overnight_charge():
+    # The forecaster moved the end from 06:00 to 06:30 at 05:35.
+    # The actual inverter start/end/rate remain authoritative while active.
+    c = Controller({'cs': '01:46:00', 'ce': '06:00:00', 'cr': '3512'},
+                   now=datetime(2026, 11, 6, 5, 35, tzinfo=TZ))
+    # Simulate persisted current regular tariff.
+    c.current_active_offpeak = lambda: {
+        'start': datetime(2026, 11, 5, 23, tzinfo=TZ),
+        'end': datetime(2026, 11, 6, 6, tzinfo=TZ),
+        'rate_p': 6.66,
+    }
+    p = plan(
+        offpeak={'start': '2026-11-06T23:00:00+00:00',
+                 'end': '2026-11-07T06:30:00+00:00', 'rate_p': 6.66},
+        charge={'start': '2026-11-06T05:59:00+00:00',
+                'end': '2026-11-06T06:30:00+00:00',
+                'rate_w': 3435, 'target_soc': 100, 'planned_kwh': 0.1},
+    )
+    observed = fields(c, p)
+    assert (observed['charge_start'], observed['charge_end'], observed['charge_rate']) == (
+        '01:46:00', '06:00:00', 3512)
+
+
+def test_running_overnight_slot_survives_an_extended_current_tariff():
+    # An already-running normal charge still locks if its end is earlier
+    # than a new (possibly EV-contaminated) tariff boundary.
+    c = Controller({'cs': '01:46:00', 'ce': '06:00:00', 'cr': '3512'},
+                   now=datetime(2026, 11, 6, 5, 35, tzinfo=TZ))
+    c.current_active_offpeak = lambda: None
+    p = plan(
+        offpeak={'start': '2026-11-05T23:00:00+00:00',
+                 'end': '2026-11-06T06:30:00+00:00', 'rate_p': 6.66},
+        charge={'start': '2026-11-06T05:59:00+00:00',
+                'end': '2026-11-06T06:30:00+00:00',
+                'rate_w': 3435, 'target_soc': 100, 'planned_kwh': 0.1},
+    )
+    observed = fields(c, p)
+    assert (observed['charge_start'], observed['charge_end'], observed['charge_rate']) == (
+        '01:46:00', '06:00:00', 3512)
