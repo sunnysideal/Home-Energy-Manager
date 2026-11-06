@@ -6,7 +6,7 @@ existing retry, readback, audit and runtime charge-target suppression semantics
 remain unchanged.
 """
 import asyncio
-from datetime import timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from controller_utils import parse_dt, iso, as_float
 from controller_minimise_offpeak import active_or_next_offpeak
 
@@ -128,9 +128,24 @@ async def locked_minimise_charge_slot(controller, plan, log):
     rate = as_float((rate_state or {}).get('state'))
     if rate is None or rate <= 0 or not controller.daily_slot_active(start, end):
         return None
-    # Only lock the normal slot that ends at the regular cheap-rate boundary.
-    # A distinct active charge schedule must remain manageable by its owner.
-    if end != controller.tstr(off_end):
+    # Recognise the already-running regular charge by its observed timestamps,
+    # not by matching a mutable tariff-derived end clock. Otherwise an EV
+    # discount extending the forecast cheap period unlocks and interrupts it.
+    try:
+        now = controller.now().astimezone(controller.tz)
+        observed_start = datetime.combine(now.date(), time.fromisoformat(start), controller.tz)
+        if observed_start.astimezone(timezone.utc) > now.astimezone(timezone.utc):
+            observed_start -= timedelta(days=1)
+        observed_end = datetime.combine(now.date(), time.fromisoformat(end), controller.tz)
+        if observed_end.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
+            observed_end += timedelta(days=1)
+    except ValueError:
+        return None
+    if not (active_window['start'].astimezone(timezone.utc) <= observed_start.astimezone(timezone.utc)
+            and observed_end.astimezone(timezone.utc) <= off_end.astimezone(timezone.utc)):
+        return None
+    # An explicit EV battery top-up outside regular off-peak remains manageable.
+    if (plan.get('intelligent_go') or {}).get('intelligent_charge_target_soc') is not None:
         return None
     log.info('Preserving active minimise-export charge slot: start=%s end=%s rate=%.0fW; ignoring routine replan start=%s end=%s rate=%sW',
              start, end, rate, charge.get('start'), charge.get('end'), charge.get('rate_w'))
