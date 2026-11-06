@@ -1568,7 +1568,8 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
     tariff_source = "supplier" if supplier_tomorrow else "unverified"
     if import_rates and not supplier_tomorrow:
         copied, copy_reason = tariff_calendar.project_next_local_day(
-            parse_rates(import_current_day), now.astimezone(tz).date(), tz)
+            parse_rates(import_current_day), now.astimezone(tz).date(), tz,
+            regular_profile=tariff_calendar.saved_regular_profile(store))
         if copied:
             import_rates.extend(copied)
             tariff_source = "calendar_projection"
@@ -1608,22 +1609,29 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
 
     overnight_blocks = find_overnight_blocks(supplier_import_rates, tz)
     overnight_blocks.sort(key=lambda x: x[0])
-    selected_offpeak = select_controller_offpeak(supplier_import_rates, now, tz)
-    cheap_rate_p = selected_offpeak[2] if selected_offpeak else (min((r["rate_p"] for r in supplier_import_rates), default=None))
+    try:
+        candidate = select_controller_offpeak(supplier_import_rates, now, tz)
+    except HAError as exc:
+        candidate = None
+        LOG.warning("Regular tariff candidate unavailable: %s", exc)
+    selected_offpeak, regular_reason = tariff_calendar.stable_regular_offpeak(
+        store, supplier_import_rates, now, tz, candidate)
+    cheap_rate_p = (selected_offpeak[2] if selected_offpeak else
+                    min((r["rate_p"] for r in supplier_import_rates), default=None))
     if selected_offpeak:
-        target_start = selected_offpeak[0]
-        target_end = selected_offpeak[1]
-        if not tariff_calendar.covers_window(supplier_import_rates, target_start, target_end, float(cheap_rate_p)):
-            LOG.error("Regular offpeak rejected: incomplete or inconsistent cheap coverage: %s->%s",target_start,target_end)
-            selected_offpeak = None
-        else:
-            LOG.info("Regular offpeak: source=%s start=%s end=%s duration_hours=%.1f rate_p=%.3f",
-                     tariff_source, target_start.isoformat(),target_end.isoformat(),
-                     (target_end.astimezone(timezone.utc)-target_start.astimezone(timezone.utc)).total_seconds()/3600.0,
-                     float(cheap_rate_p))
-    if selected_offpeak is None:
-        # Never manufacture supplier-independent tariff hours from missing data.
-        raise HAError("Regular overnight tariff unavailable or incomplete; preserving previously verified inverter schedule")
+        target_start, target_end, _ = selected_offpeak
+        LOG.info("Regular offpeak: source=%s start=%s end=%s duration_hours=%.1f rate_p=%.3f",
+                 regular_reason, target_start.isoformat(), target_end.isoformat(),
+                 (target_end.astimezone(timezone.utc)-target_start.astimezone(timezone.utc)).total_seconds()/3600.0,
+                 float(cheap_rate_p))
+    else:
+        # Physical forecasting is independent of authorising an inverter
+        # schedule. Continue publishing current-timestamp data while the
+        # controller safely refuses an unknown regular cheap window.
+        target_start = target_end = horizon_end
+        tariff_source = "unavailable"
+        reasons.append("Regular overnight tariff unavailable: " + regular_reason)
+        LOG.warning("Regular offpeak unavailable (%s); publishing physical forecast without controller tariff", regular_reason)
 
     ev_cfg = cfg.section("ev")
     dispatch_entity = str(ev_cfg.get("smart_charging_dispatch_entity") or "").strip()
@@ -1773,10 +1781,13 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
                 no_batt_kwh, no_imp, no_exp, no_pre_soc_pct, no_soc_pct, ir, er
             )
 
-    if overnight_start_soc is None:
-        overnight_start_soc = int(round(100 * soc_kwh / batt["capacity"])) if output_slots else int(round(batt["soc"]))
-    if overnight_start_soc_no_slots is None:
-        overnight_start_soc_no_slots = int(round(100 * no_slots_soc_kwh / batt["capacity"])) if no_slots_output else int(round(batt["soc"]))
+    if selected_offpeak is None:
+        overnight_start_soc = overnight_start_soc_no_slots = None
+    else:
+        if overnight_start_soc is None:
+            overnight_start_soc = int(round(100 * soc_kwh / batt["capacity"])) if output_slots else int(round(batt["soc"]))
+        if overnight_start_soc_no_slots is None:
+            overnight_start_soc_no_slots = int(round(100 * no_slots_soc_kwh / batt["capacity"])) if no_slots_output else int(round(batt["soc"]))
 
     # Today actual + forecast summaries.
     actual, actual_extremes = actual_today(client, cfg, now, import_rates, export_rates, completed, cheap_rate_p, imp_e, exp_e)
@@ -1847,12 +1858,12 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
         "unit_of_measurement": "%",
         "icon": "mdi:home-lightning-bolt-outline",
         "forecast_generated_at": now.isoformat(),
-        "offpeak": {
+        "offpeak": ({
             "start": target_start.isoformat(),
             "end": target_end.isoformat(),
-            "rate_p": round(float(cheap_rate_p), 4) if cheap_rate_p is not None else None,
-            "source": tariff_source,
-        },
+            "rate_p": round(float(cheap_rate_p), 4),
+            "source": regular_reason,
+        } if selected_offpeak is not None else None),
         "overnight_start_soc": int(overnight_start_soc),
         "overnight_start_soc_no_slots": int(overnight_start_soc_no_slots),
         "metering": {
@@ -1918,7 +1929,7 @@ def make_forecast(client: HAClient, store: Store, cfg: Config, now: datetime) ->
             "tomorrow": no_slots_tomorrow,
         },
     }
-    return {"state": int(overnight_start_soc), "attributes": attrs}, reasons
+    return {"state": int(overnight_start_soc if overnight_start_soc is not None else batt["soc"]), "attributes": attrs}, reasons
 
 
 # ---------- Midnight forecast verification ----------
