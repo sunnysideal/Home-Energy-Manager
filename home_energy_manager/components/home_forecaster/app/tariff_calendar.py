@@ -39,7 +39,7 @@ def _profile(rates, source_day, tz):
     return profile, None
 
 
-def project_next_local_day(rates, source_day, tz):
+def project_next_local_day(rates, source_day, tz, regular_profile=None):
     """Return (projected_slots, reason), or ([], reason) when unsafe.
 
     A recurring overnight pattern must contain a sustained cheap period at the
@@ -71,6 +71,20 @@ def project_next_local_day(rates, source_day, tz):
 
     morning_end = slot_keys[early]
     evening_start = slot_keys[-late]
+    if regular_profile:
+        try:
+            end_minutes = int(regular_profile["end_minute"])
+            start_minutes = int(regular_profile["start_minute"])
+            morning_end = (end_minutes // 60, end_minutes % 60)
+            evening_start = (start_minutes // 60, start_minutes % 60)
+            if not (morning_end < evening_start):
+                return [], "invalid_recurring_tariff_profile"
+            # Never copy one-off cheap discounts at the edges of the night.
+            if any(abs(source[key] - cheap) > EPS for key in slot_keys
+                   if key < morning_end or key >= evening_start):
+                return [], "stored_recurring_profile_conflicts_with_tariff"
+        except (KeyError, TypeError, ValueError):
+            return [], "invalid_recurring_tariff_profile"
     def is_regular(key):
         return key < morning_end or key >= evening_start
 
@@ -124,6 +138,15 @@ def covers_window(rates, start, end, expected_rate):
 REGULAR_PROFILE_KEY = "validated_regular_offpeak_profile"
 
 
+def saved_regular_profile(store):
+    import json
+    try:
+        raw = store.meta_get(REGULAR_PROFILE_KEY)
+        return json.loads(raw) if raw else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def _profile_window(profile, day, tz):
     """Construct one local recurring overnight window across either DST change."""
     start_minute = int(profile["start_minute"])
@@ -143,11 +166,9 @@ def stable_regular_offpeak(store, rates, now, tz, candidate):
     """
     import json
 
-    raw = store.meta_get(REGULAR_PROFILE_KEY)
-    profile = None
-    if raw:
+    profile = saved_regular_profile(store)
+    if profile:
         try:
-            profile = json.loads(raw)
             if not (0 <= int(profile["start_minute"]) < 1440
                     and 0 <= int(profile["end_minute"]) < 1440
                     and float(profile["rate_p"]) >= 0):
