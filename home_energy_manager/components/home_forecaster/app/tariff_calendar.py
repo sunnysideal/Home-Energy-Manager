@@ -147,6 +147,53 @@ def saved_regular_profile(store):
         return None
 
 
+def snapshot_regular_profile(store, day, tz):
+    """Bootstrap a trusted clock from yesterday's frozen forecast for today.
+
+    This predates today's EV smart-discount changes. A current-day forecast
+    cannot establish the baseline because its cheap periods may already have
+    been extended by an Intelligent dispatch.
+    """
+    try:
+        frozen = store.forecast_snapshot(day)
+        if not frozen:
+            return None
+        captured_at, slots = frozen
+        if datetime.fromisoformat(captured_at).astimezone(tz).date() >= day:
+            return None
+        rates = []
+        for slot in slots:
+            start = datetime.fromisoformat(slot["start"]).astimezone(UTC)
+            rate = float(slot["import_rate_p"])
+            rates.append({"start": start, "end": start + HALF_HOUR, "rate_p": rate})
+        by_clock, reason = _profile(rates, day, tz)
+        if by_clock is None:
+            return None
+        keys = [(at.hour, at.minute) for _, _, at in _day_slots(day, tz)]
+        cheap = min(by_clock.values())
+        first_peak = next((i for i, key in enumerate(keys)
+                           if by_clock[key] > cheap + EPS), None)
+        last_peak = next((i for i in range(len(keys) - 1, -1, -1)
+                          if by_clock[keys[i]] > cheap + EPS), None)
+        if first_peak is None or last_peak is None:
+            return None
+        if not (4 <= first_peak <= 16 and last_peak < len(keys) - 1):
+            return None
+        if any(abs(by_clock[key] - cheap) > EPS for key in keys[:first_peak]):
+            return None
+        if any(abs(by_clock[key] - cheap) > EPS for key in keys[last_peak + 1:]):
+            return None
+        end_hour, end_minute = keys[first_peak]
+        start_hour, start_minute = keys[last_peak + 1]
+        if start_hour < 17 or end_hour > 8:
+            return None
+        return {"start_minute": start_hour * 60 + start_minute,
+                "end_minute": end_hour * 60 + end_minute,
+                "rate_p": cheap}
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
 def _profile_window(profile, day, tz):
     """Construct one local recurring overnight window across either DST change."""
     start_minute = int(profile["start_minute"])
@@ -176,7 +223,15 @@ def stable_regular_offpeak(store, rates, now, tz, candidate):
         except (ValueError, TypeError, KeyError):
             profile = None
 
-    if profile is None and candidate is not None:
+    if profile is None:
+        # Prefer pre-dispatch evidence. On an upgraded running system the
+        # today's supplier projection may already contain a 06:30/07:30
+        # discount; learning it as a new regular schedule would be unsafe.
+        profile = snapshot_regular_profile(store, now.astimezone(tz).date(), tz)
+        if profile is not None:
+            store.meta_set(REGULAR_PROFILE_KEY, json.dumps(profile))
+
+    if profile is None and candidate is not None and not hasattr(store, "forecast_snapshot"):
         start, end, rate = candidate
         local_start, local_end = start.astimezone(tz), end.astimezone(tz)
         elapsed = end.astimezone(UTC) - start.astimezone(UTC)
