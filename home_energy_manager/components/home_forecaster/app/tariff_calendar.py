@@ -119,3 +119,67 @@ def covers_window(rates, start, end, expected_rate):
             return False
         cursor = next_time
     return True
+
+
+REGULAR_PROFILE_KEY = "validated_regular_offpeak_profile"
+
+
+def _profile_window(profile, day, tz):
+    """Construct one local recurring overnight window across either DST change."""
+    start_minute = int(profile["start_minute"])
+    end_minute = int(profile["end_minute"])
+    start = datetime.combine(day, time(start_minute // 60, start_minute % 60), tzinfo=tz)
+    end = datetime.combine(day + timedelta(days=1),
+                           time(end_minute // 60, end_minute % 60), tzinfo=tz)
+    return start, end, float(profile["rate_p"])
+
+
+def stable_regular_offpeak(store, rates, now, tz, candidate):
+    """Keep a validated recurring supplier boundary separate from EV discounts.
+
+    The first fully covered regular block establishes the daily clock profile.
+    Later same-price extensions cannot move that boundary. Unknown or changed
+    rates make the scheduling window unavailable without blocking forecasting.
+    """
+    import json
+
+    raw = store.meta_get(REGULAR_PROFILE_KEY)
+    profile = None
+    if raw:
+        try:
+            profile = json.loads(raw)
+            if not (0 <= int(profile["start_minute"]) < 1440
+                    and 0 <= int(profile["end_minute"]) < 1440
+                    and float(profile["rate_p"]) >= 0):
+                profile = None
+        except (ValueError, TypeError, KeyError):
+            profile = None
+
+    if profile is None and candidate is not None:
+        start, end, rate = candidate
+        local_start, local_end = start.astimezone(tz), end.astimezone(tz)
+        elapsed = end.astimezone(UTC) - start.astimezone(UTC)
+        if (local_start.date() < local_end.date()
+                and local_start.hour >= 17 and local_end.hour <= 8
+                and timedelta(hours=2) <= elapsed <= timedelta(hours=10)
+                and covers_window(rates, start, end, float(rate))):
+            profile = {"start_minute": local_start.hour * 60 + local_start.minute,
+                       "end_minute": local_end.hour * 60 + local_end.minute,
+                       "rate_p": float(rate)}
+            store.meta_set(REGULAR_PROFILE_KEY, json.dumps(profile))
+
+    if profile is None:
+        return None, "regular_profile_unavailable"
+
+    local_day = now.astimezone(tz).date()
+    possible = []
+    for offset in (-1, 0, 1):
+        start, end, rate = _profile_window(profile, local_day + timedelta(days=offset), tz)
+        if end.astimezone(UTC) <= now.astimezone(UTC):
+            continue
+        if covers_window(rates, start, end, rate):
+            possible.append((start, end, rate))
+    if not possible:
+        return None, "regular_profile_tariff_coverage_unavailable"
+    active = [w for w in possible if w[0].astimezone(UTC) <= now.astimezone(UTC)]
+    return (active[0] if active else min(possible, key=lambda w: w[0].astimezone(UTC))), "validated_regular_profile"
