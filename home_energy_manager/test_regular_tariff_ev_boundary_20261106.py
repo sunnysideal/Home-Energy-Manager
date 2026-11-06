@@ -46,11 +46,10 @@ def source_rates(day, cheap_end_hour=6, cheap_end_minute=0, smart_end_hour=0):
 def test_original_regular_boundary_remains_fixed_during_morning_ev_discount():
     day = date(2026, 11, 6)
     store = Store()
-    normal = source_rates(day)
-    candidate = (local(day, 23), local(day + timedelta(days=1), 6), 6.66)
+    normal = source_rates(day - timedelta(days=1)) + source_rates(day)
     # The previously validated regular window remains authoritative.
     picked, reason = calendar.stable_regular_offpeak(
-        store, normal + source_rates(day + timedelta(days=1)), local(day, 2), TZ,
+        store, normal, local(day, 2), TZ,
         (local(day - timedelta(days=1), 23), local(day, 6), 6.66))
     # First candidate should be based on a fully covered window.
     assert picked is not None, reason
@@ -60,7 +59,7 @@ def test_original_regular_boundary_remains_fixed_during_morning_ev_discount():
     for extra in (30, 90):
         extended = source_rates(day, 6, extra)
         future = source_rates(day + timedelta(days=1), 6, extra)
-        rows = extended + future
+        rows = source_rates(day - timedelta(days=1)) + extended + future
         selected, reason = calendar.stable_regular_offpeak(
             store, rows, local(day, 5, 35), TZ,
             (local(day, 23), local(day + timedelta(days=1), 7, 30), 6.66))
