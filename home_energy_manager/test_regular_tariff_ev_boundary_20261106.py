@@ -96,3 +96,35 @@ def test_no_verified_profile_refuses_new_charge_but_does_not_throw():
         store, [], local(date(2026, 11, 6), 7, 10), TZ, None)
     assert selected is None
     assert reason == "regular_profile_unavailable"
+
+
+def test_first_run_during_0730_ev_extension_uses_frozen_midnight_profile():
+    day = date(2026, 11, 6)
+    store = Store()
+    predicted = source_rates(day)
+    frozen = (local(day - timedelta(days=1), 23, 55).isoformat(),
+              [{"start": item["start"].isoformat(), "import_rate_p": item["rate_p"]}
+               for item in predicted])
+    store.forecast_snapshot = lambda query_day: frozen if query_day == day else None
+    actual = source_rates(day, 7, 30)
+    tomorrow = source_rates(day + timedelta(days=1), 7, 30)
+    rows = actual + tomorrow
+    window, reason = calendar.stable_regular_offpeak(
+        store, rows, local(day, 7, 55), TZ,
+        (local(day, 23), local(day + timedelta(days=1), 7, 30), 6.66))
+    assert window is not None, reason
+    assert window[0] == local(day, 23)
+    assert window[1] == local(day + timedelta(days=1), 6)
+    assert json.loads(store.meta_get(calendar.REGULAR_PROFILE_KEY))["end_minute"] == 360
+
+
+def test_no_frozen_profile_does_not_learn_0730_as_recurring():
+    day = date(2026, 11, 6)
+    store = Store()
+    store.forecast_snapshot = lambda _day: None
+    rows = source_rates(day, 7, 30) + source_rates(day + timedelta(days=1), 7, 30)
+    window, reason = calendar.stable_regular_offpeak(
+        store, rows, local(day, 7, 55), TZ,
+        (local(day, 23), local(day + timedelta(days=1), 7, 30), 6.66))
+    assert window is None
+    assert store.meta_get(calendar.REGULAR_PROFILE_KEY) is None
